@@ -1,0 +1,14 @@
+Agent3 (Security Reviewer) 审核 v1
+结论：FAIL
+
+问题
+1. strip 执行存在工具路径风险，未限制命令来源；需避免命令注入与 PATH 劫持。
+2. 未定义“strip 失败时”默认行为，存在半保护产物风险。
+3. 函数 internalization 规则未限制入口函数/导出 API，可能破坏可执行文件或 ABI。
+4. 没有对 `eippf_cc.py` 新参数做输入校验规则（空值、非法路径、重复值）。
+
+建议
+1. strip 工具仅允许白名单（`llvm-strip`/`strip`），并使用参数数组调用。
+2. 提供 `EIPPF_STRIP_FAIL_CLOSED=1` 严格模式，默认行为需明确。
+3. internalization 排除 `main`、导出符号和地址被外部可见函数。
+4. 补充 wrapper 参数校验与拒绝策略。

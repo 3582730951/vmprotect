@@ -1,0 +1,358 @@
+# Constraint Acknowledgement
+The following constraints are acknowledged and treated as hard requirements:
+1. Code generation remains out of scope for this step; only Phase 1 and Phase 2 are revised.
+2. The implementation remains C++20-first, no exceptions/RTTI in protected modules, and `Result<T, ErrorCode>`-style error propagation.
+3. Ownership uses `std::unique_ptr` (or equivalent RAII wrappers) and secure wiping for sensitive buffers.
+4. Production implementation stays under `core/`; planning artifacts stay under `plan/`.
+
+## Phase 1: Revised Software Architecture Design (SAD)
+
+### 1. System Workflow (with Post-Link Mutation)
+1. **Compiler interception**: `wrapper` replaces `cl.exe` / `gcc` / `g++` entrypoints and captures the original command line without breaking CMake/MSBuild semantics.
+2. **Flag normalization**: wrapper maps frontend flags to `clang-cl` or `clang`, preserving unsupported flags through controlled passthrough rules.
+3. **IR protection pipeline**: LLVM passes perform:
+   - String/constant extraction and encryption metadata emission.
+   - CFF/BCF on selected paths.
+   - AOT protected block carving (position-independent blocks for critical code regions).
+4. **Standard link stage**: linker produces a normal PE/ELF plus protection metadata (`ProtectionManifest`).
+5. **Post-link binary mutator stage** (`post_link_mutator`):
+   - Parses final PE/ELF.
+   - Injects `PIC Bootstrapper` section and encrypted AOT block container.
+   - Encrypts protected code regions (policy can be full `.text` or selected ranges).
+   - Rewrites startup flow: OEP/e_entry redirected to bootstrap trampoline.
+   - Enforces early-boot precedence:
+     - PE: bootstrap inserted as TLS callback index 0 and old callbacks chained later.
+     - ELF: bootstrap inserted into `.preinit_array` and/or redirected entry trampoline before CRT/user init.
+   - Compresses static import surface toward near-zero (runtime-resolved APIs only).
+6. **Integrity finalization**: mutator seals metadata (hash/signature), writes relocation-safe offsets, and emits hardened binary.
+
+### 2. Module Interconnection (PIC-first Initialization Sequence)
+- **Boot Chain (no circular dependency)**:
+  1. `PIC Bootstrapper` starts first (before original TLS/CRT path).
+  2. Bootstrapper performs inline hash-based seed resolution (no import table reliance) to obtain minimum memory primitives.
+  3. Bootstrapper allocates secure arena and loads/initializes `Runtime Core`.
+  4. `Runtime Core` launches full `Dynamic Resolver` (PEB/Ldr for PE, loader structures for ELF).
+  5. Resolver materializes API table used by all protected modules.
+  6. `String Vault` and `Block Mapper` operate on runtime API table and secure arena.
+  7. Control returns to original startup chain only after attestation and minimum runtime readiness checks pass.
+
+- **Reinterpreted “JIT Engine”**:
+  - Not ORC/LLVM JIT compilation.
+  - It is **Just-In-Time Decryption/Mapping** of **AOT-compiled encrypted PIC blocks**:
+    1. Allocate `RW-` page from secure arena.
+    2. Decrypt selected block into page.
+    3. Transition `RW- -> R-X` (W^X compliance).
+    4. Execute block.
+    5. Zeroize and release/remap page.
+
+### 3. Performance Mitigation Strategy (<10% Overhead)
+Use a bounded overhead model:
+- `Tp = Tbase + Tobf + Tmap + Tatt + Tres`
+- Budget targets:
+  - `Tobf/Tbase <= 0.04` (selective CFF/BCF only)
+  - `Tmap/Tbase <= 0.03` (AOT decrypt/map, no runtime compilation)
+  - `Tatt/Tbase <= 0.01` (front-loaded, sampled re-checks)
+  - `Tres/Tbase <= 0.01` (one-time resolver warmup + cached table)
+- Total target `<= 0.09` (9%), leaving 1% contingency.
+
+Engineering controls:
+1. Profile-guided policy: heavy protection only on annotated critical regions.
+2. Arena page pool for decrypt/map to avoid frequent OS allocation overhead.
+3. Single-pass resolver cache with immutable function table.
+4. CI perf gate blocks merges if protected benchmarks exceed 10% on reference workloads.
+
+## Phase 2: Revised Development Roadmap & Directory Structure
+
+### 1. Repository Directory Tree (Revised)
+```text
+mi_vmp_protect/
+├── AGENTS.md
+├── plan.txt
+├── plan/
+│   └── 2026-2-26.txt
+└── core/
+    ├── CMakeLists.txt
+    ├── cmake/
+    │   ├── CompilerOptions.cmake
+    │   ├── PerfBudget.cmake
+    │   └── HardenTarget.cmake
+    ├── wrapper/
+    │   ├── CMakeLists.txt
+    │   ├── include/wrapper/
+    │   └── src/
+    ├── passes/
+    │   ├── CMakeLists.txt
+    │   ├── include/passes/
+    │   └── src/
+    ├── bootstrap/
+    │   ├── CMakeLists.txt
+    │   ├── include/bootstrap/
+    │   └── src/
+    ├── runtime/
+    │   ├── CMakeLists.txt
+    │   ├── include/runtime/
+    │   └── src/
+    │       ├── resolver/
+    │       ├── attestation/
+    │       ├── block_mapper/
+    │       └── string_vault/
+    ├── post_link_mutator/
+    │   ├── CMakeLists.txt
+    │   ├── include/post_link_mutator/
+    │   └── src/
+    │       ├── pe/
+    │       └── elf/
+    ├── tests/
+    │   ├── CMakeLists.txt
+    │   ├── unit/
+    │   ├── integration/
+    │   ├── perf/
+    │   └── mutation/
+    └── third_party/
+```
+
+### 2. Root `core/CMakeLists.txt` Structure (Revised)
+```cmake
+cmake_minimum_required(VERSION 3.27)
+project(EIPPF LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(EIPPF_BUILD_TESTS "Build tests" ON)
+option(EIPPF_ENABLE_PERF_GATES "Enable performance gates" ON)
+
+include(cmake/CompilerOptions.cmake)
+include(cmake/PerfBudget.cmake)
+include(cmake/HardenTarget.cmake)
+
+add_subdirectory(bootstrap)
+add_subdirectory(passes)
+add_subdirectory(runtime)
+add_subdirectory(post_link_mutator)
+add_subdirectory(wrapper)
+
+# Hardened target flow:
+# 1) wrapper drives clang + passes
+# 2) linker emits regular binary
+# 3) post_link_mutator rewrites startup/import/layout
+# eippf_harden_target(<app_target>)
+
+if(EIPPF_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
+```
+
+### 3. Revised Development Phases
+- **Phase 3**: Build `core/` skeleton and shared CMake infrastructure (`HardenTarget.cmake`, perf gate wiring).
+- **Phase 4**: Implement wrapper interception and deterministic `cl/gcc -> clang` mapping.
+- **Phase 5**: Implement `bootstrap` PIC stub with seed resolver (no import dependency) and secure arena bootstrap.
+- **Phase 6**: Implement LLVM passes for string extraction/encryption metadata + selective CFF/BCF.
+- **Phase 7**: Implement AOT protected block generation and manifest schema.
+- **Phase 8**: Implement runtime resolver, attestation pipeline, string vault, and block mapper.
+- **Phase 9**: Implement `post_link_mutator` for PE/ELF: code-region encryption, OEP/e_entry redirect, TLS/preinit precedence, import compression.
+- **Phase 10**: End-to-end integration: wrapper + passes + mutator + runtime resume to original program startup.
+- **Phase 11**: Security verification: anti-debug checks, static diffing resistance, startup-order validation.
+- **Phase 12**: Performance stabilization and CI perf gates (<10% overhead enforcement).
+- **Phase 13**: Cross-platform hardening, release packaging, and architecture freeze.
+
+## Phase 14: Pillar 5 — 动态 API 解析与 IAT 最小化（增量计划，2026-02-26）
+
+### 14.1 目标
+1. 识别并改写 IR 中对外部声明函数的直接 `call/invoke`，收敛静态导入暴露面。
+2. 将直接调用替换为 `eippf_resolve_api(uint32_t hash)` 解析后的间接调用。
+3. 保持 LLVM intrinsic 严格不改写，避免编译器内部状态损坏。
+4. 在功能可用前提下维持性能预算，整体端到端开销不突破 `<10%`。
+
+### 14.2 实施范围（当前已落地）
+1. 新增 pass 插件目标：`eippf_iat_minimization_pass`。
+2. 新增 `IATMinimizationPass`：
+   - 遍历 `CallInst/InvokeInst`。
+   - 仅处理 `isDeclaration()==true` 且非 intrinsic 的直接 callee。
+   - 对 callee 名做 FNV-1a 32-bit 哈希。
+   - 注入 resolver 调用并以 bitcast 后函数指针替换原直接调用。
+   - 回收无引用外部声明，减少符号泄漏面。
+3. 增加 fail-closed 空指针保护（resolver 返回空时触发 `llvm.trap`）。
+4. 注册策略：
+   - `OptimizerLastEP` 自动挂载；
+   - pipeline token：`eippf-iat-minimization`；
+   - 默认插件注册切换到 `eippf_iat_minimization_pass`。
+
+### 14.3 验收标准
+1. 构建可通过：`eippf_iat_minimization_pass` 与现有 `eippf_mba_obfuscation_pass` 均可成功编译。
+2. 安全门禁：
+   - intrinsic（至少 `llvm.trap/memset/lifetime.*`）不被改写；
+   - resolver 失败进入 fail-closed 路径，不出现空函数指针直接调用。
+3. 可观测性：
+   - 目标调用点在 IR 中不再是外部直接调用（白名单例外）；
+   - 无引用外部声明被清理。
+
+### 14.4 剩余风险与后续阶段
+1. 当前哈希键仅函数名 32-bit FNV-1a，存在碰撞与同名导出误解析风险；后续引入模块维度与冲突策略。
+2. 间接调用/地址逃逸场景仍可能保留明文符号；后续补充覆盖与产物扫描门禁。
+3. 需补齐 `core/tests/` 三类测试（success/failure/security-edge）并接入 `ctest`。
+
+## Phase 15: Pillar 6 — Secure Runtime Enclave 与 Anti-Tamper 初始化（增量计划，2026-02-26）
+
+### 15.1 目标
+1. 提供 `eippf_runtime` 静态库，补齐 `eippf_resolve_api(uint32_t)` 运行时实现。
+2. 在进入业务逻辑前执行环境完整性检查（反调试），并严格 fail-closed。
+3. API 解析具备线程安全缓存机制，避免每次调用都重复慢路径解析。
+
+### 15.2 当前已落地实现（MVP）
+1. 新增 `core/runtime/CMakeLists.txt`，构建 `eippf_runtime` 静态库。
+2. 新增 `core/runtime/src/EippfRuntime.cpp`：
+   - 导出 `extern "C" void* eippf_resolve_api(uint32_t) noexcept`；
+   - FNV-1a 32-bit 哈希对齐 pass 侧算法；
+   - 采用 `std::mutex + std::unordered_map` 做线程安全缓存；
+   - cache miss 时执行 MVP 解析路径（`dlsym/GetProcAddress`）并回填缓存。
+3. 反调试：
+   - Linux：`ptrace(PTRACE_TRACEME, 0, 1, 0)`；
+   - Windows：`IsDebuggerPresent` 与 PEB `BeingDebugged`；
+   - 检测失败即 `_exit/abort`，禁止异常回退。
+4. 初始化时机：
+   - `__attribute__((constructor))`（GCC/Clang）；
+   - 运行时门禁 `ensure_runtime_initialized()` 双保险，避免仅依赖构造器顺序。
+
+### 15.3 验收结果
+1. `cmake` 配置成功；
+2. `eippf_runtime` 与 `eippf_iat_minimization_pass` 构建成功；
+3. 当前工程无测试注册（`ctest` 显示 `No tests were found!!!`），后续需补齐测试基线。
+
+### 15.4 剩余风险与下一步
+1. 明文候选 API/模块名仍存在于 MVP 运行时实现中，后续需迁移到导出遍历/密文表策略。
+2. 32-bit 函数名哈希存在碰撞风险，生产版升级到 64-bit 或复合键（模块+函数）并加冲突门禁。
+3. 当前未建立并发、fail-closed、初始化顺序与字符串泄漏扫描的自动化测试门禁。
+
+## Phase 16: Pillar 7 — 通用编译拦截器与跨架构一致性（增量计划，2026-02-26）
+
+### 16.1 目标
+1. 提供 `gcc/g++/cl` 透明代理入口，不改客户端 CI/CD 脚本即可接入 LLVM pass。
+2. 将运行时反调试逻辑扩展到 Windows/Linux/macOS（含 Apple Silicon），并保持 fail-closed。
+
+### 16.2 当前已落地实现
+1. 新增 Python 通用拦截器：`core/wrapper/eippf_cc.py`
+   - 基于 `argv0 + 参数特征` 识别 `gcc/g++/cl` 意图；
+   - 映射到底层 `clang/clang++/clang-cl`；
+   - 注入 `-fpass-plugin=...` 或 `/clang:-fpass-plugin=...`；
+   - 通过 `subprocess.run` 透明执行并返回下游退出码。
+2. Runtime 跨架构分支升级：`core/runtime/src/EippfRuntime.cpp`
+   - Windows：显式 `_M_X64/_M_IX86/_M_ARM64/_M_ARM`；
+   - Linux：显式 `__x86_64__/__i386__/__arm__/__aarch64__`；
+   - macOS：显式 `__APPLE__ && __MACH__` + `PT_DENY_ATTACH`（Intel 与 Apple Silicon）。
+
+### 16.3 验收结果
+1. `python3 -m py_compile core/wrapper/eippf_cc.py` 通过；
+2. `eippf_runtime` 与 `eippf_iat_minimization_pass` 构建通过；
+3. 安全审计确认 Pillar 7 当前阻断项已关闭（架构覆盖与 wrapper 透明性）。
+
+### 16.4 后续风险
+1. 运行时仍包含明文候选 API 表，需在后续混淆扫尾中去明文化。
+2. 解析缓存仍基于 32-bit 单键（hash->ptr），后续升级到 64-bit/复合键并加冲突策略。
+3. 需补齐自动化回归：wrapper 透明性（stdout/stderr/exit code）与跨平台 anti-tamper 行为测试。
+
+## Phase 17: Pillar 8 — Zero-Plaintext Runtime 与 64-Bit 哈希收敛（增量计划，2026-02-26）
+
+### 17.1 目标
+1. 将 IAT 最小化与运行时解析链路统一到 FNV-1a 64-bit（offset `14695981039346656037`，prime `1099511628211`）。
+2. 在运行时中消除敏感明文模块/API 字符串的静态暴露，采用编译期密文 + 按需解密 + 立即清零。
+3. 保持线程安全缓存与 fail-closed 行为不退化，并继续满足总体性能预算 `<10%`。
+
+### 17.2 当前已落地实现
+1. Pass 侧升级：
+   - `IATMinimizationPass` 改为 64-bit FNV-1a，并将 resolver 调用签名改为 `i64 -> i8*`。
+   - `StringProtectionPass` 的内部 FNV 计算路径升级到 64-bit 常量。
+2. Runtime 侧升级：
+   - `eippf_resolve_api` 签名升级为 `extern "C" void* eippf_resolve_api(uint64_t) noexcept`。
+   - 解析缓存升级为固定容量 `ResolverCacheEntry[256]` + `std::mutex` 保护。
+   - 引入 `consteval/constexpr` 字段编码器，候选 API/模块名以密文字节存储；解析时解密到栈缓冲并执行安全清零。
+   - Linux 解析路径采用 `dl_iterate_phdr + ELF dynamic/export` 扫描，避免对 `dlsym/dlopen` 的直接依赖。
+3. 跨平台收敛补丁：
+   - Runtime CMake 增加 Windows 下 `bootstrap/include` 头文件路径，保障 Windows 分支可编译。
+   - Windows HAL 导出解析接口改为 64-bit 名称哈希匹配，避免在后端再次降为 32-bit。
+   - Runtime 目标加入 `-fno-builtin-memset/memcpy/memmove`（Unix GCC/Clang）减少明文符号泄露面。
+
+### 17.3 验收结果
+1. 构建验证通过：`eippf_runtime`、`eippf_iat_minimization_pass`、`eippf_string_protection_pass` 可成功构建。
+2. 审计验证通过：
+   - IAT pass 仍严格跳过 LLVM intrinsic（`llvm.*`）；
+   - pass/runtime 的 64-bit FNV 常量与 resolver 位宽一致；
+   - `strings` 对运行时产物未命中 `kernel32.dll`、`user32.dll`、`libc.so.6`、`libdl.so.2`、`dlsym`、`dlopen`、`dlclose`、`GetProcAddress`、`LoadLibraryA/W`。
+
+### 17.4 剩余风险与下一步
+1. 目前仍存在 duplicated FNV 常量定义（pass/runtime/windows-hal），后续建议收敛到共享常量头以避免漂移。
+2. 64-bit FNV 仅显著降低碰撞概率，生产阶段仍建议引入模块+函数复合键或二次校验。
+3. 需补齐 `core/tests/`：resolver success/failure/security-edge（含并发与 fail-closed）以及字符串泄漏自动化扫描门禁。
+
+## Phase 18: Pillar 9 — Secure JIT Execution Enclave（增量计划，2026-02-26）
+
+### 18.1 目标
+1. 在 runtime 暴露统一 JIT 执行入口：`extern "C" void eippf_execute_jit_enclave(const uint8_t*, size_t, uint8_t)`。
+2. 对关键执行载荷采用“密文载荷 -> 临时执行页解密执行 -> 立即清零释放”路径，降低静态分析可见性。
+3. 内存分配 API（`VirtualAlloc/mmap`）通过 64-bit 哈希 resolver 间接解析，避免运行时逻辑出现直接导入调用。
+
+### 18.2 当前已落地实现（MVP）
+1. Runtime JIT Enclave：
+   - 新增 `eippf_execute_jit_enclave` 入口。
+   - Windows 分支通过 `eippf_resolve_api(fnv1a_hash_literal(\"VirtualAlloc\"/\"VirtualFree\"))` 获取函数指针后执行分配/释放。
+   - Linux/macOS 分支通过 `eippf_resolve_api(fnv1a_hash_literal(\"mmap\"/\"munmap\"))` 获取函数指针后执行分配/释放。
+   - 密文载荷按字节 XOR 解密后执行，并在释放前执行逐字节清零。
+2. LLVM Pass：
+   - 新增 `JITEnclavePass`（pipeline token：`eippf-jit-enclave`）。
+   - 扫描 `llvm.global.annotations` 中 `drm_jit_target` 注解函数，替换函数体为调用 `eippf_execute_jit_enclave`。
+   - MVP 阶段注入 dummy 密文 payload 与 key，完成端到端调用链打通。
+3. 构建集成：
+   - 新增插件目标 `eippf_jit_enclave_pass`，可作为 pass plugin 参与编译流程。
+
+### 18.3 验收结果
+1. 构建通过：`eippf_runtime`、`eippf_jit_enclave_pass`、`eippf_iat_minimization_pass`。
+2. 审计通过：
+   - 分配 API 通过 resolver 间接调用，未出现 runtime 代码中的直接 `VirtualAlloc/mmap` 调用路径。
+   - 清零动作先于 `VirtualFree/munmap` 执行（正常返回路径）。
+3. 产物检查：
+   - `nm` 未检出 runtime 对 `VirtualAlloc/VirtualFree/mmap/munmap` 的直接未解析符号导入。
+
+### 18.4 剩余风险与下一步
+1. 当前清理逻辑依赖 payload 正常返回；后续建议加异常/逃逸兜底（例如受控终止或 watchdog 路径）避免跳过清零。
+2. MVP 使用固定 key 与 dummy payload，后续需对接真实 AOT 密文块、校验头与版本化协议。
+3. 需补齐测试：JIT success/failure/security-edge（含 `size==0`、resolver miss、payload 崩溃场景）与性能门禁（<10%）。
+
+## Phase 19: Pillar 10 — 算法结构保护（Control Flow Flattening，增量计划，2026-02-26）
+
+### 19.1 目标
+1. 新增 CFF pass，将目标函数 CFG 展平为 `dispatcher + switch(state)` 状态机结构。
+2. 在展平前执行 PHI 降级（reg2mem 风格），避免因前驱变化导致 IR 非法。
+3. 与现有保护协同：跳过 `drm_critical_ip` 与 `drm_jit_target`，并通过注解/概率门控控制开销。
+
+### 19.2 当前已落地实现（MVP）
+1. 新增 pass：
+   - `core/passes/include/passes/CFFObfuscationPass.hpp`
+   - `core/passes/src/CFFObfuscationPass.cpp`
+2. CMake 集成：
+   - 新增插件目标 `eippf_cff_obfuscation_pass`；
+   - pipeline token：`eippf-cff-obfuscation`；
+   - 当 `EIPPF_PASS_PLUGIN` 未设置时，默认注册 `eippf_cff_obfuscation_pass`。
+3. 关键逻辑：
+   - 注解收集：识别 `drm_flatten` / `drm_critical_ip` / `drm_jit_target`；
+   - 选择策略：`drm_flatten` 强制生效，否则 deterministic 20% 门控；
+   - PHI 处理：`DemotePHIToStack` 先执行；
+   - CFG 展平：创建 `bootstrap/dispatcher/default(trap)`，将原 branch 终结改写为 `state` 转移；
+   - 预检前置：不支持函数在改写前直接拒绝，避免 reject 路径残留半变更。
+
+### 19.3 验收结果
+1. 构建通过：`eippf_cff_obfuscation_pass`、`eippf_runtime`、`eippf_jit_enclave_pass` 可成功构建。
+2. IR 验证通过：
+   - `opt-18 -passes=eippf-cff-obfuscation,verify` 在 `drm_flatten` 样例通过；
+   - 输出含 `eippf.cff.dispatcher` 与 `switch`，且无 PHI 残留。
+3. 安全审计通过：
+   - PHI 降级在展平前执行；
+   - 开销门控存在（注解或 deterministic 20%）；
+   - `drm_critical_ip` 与 `drm_jit_target` 被明确跳过；
+   - EH 等不支持函数在 reject 路径不再留下 `bootstrap` 残改写。
+
+### 19.4 剩余风险与下一步
+1. 仍存在低风险：改写后期保留了防御性 bailout 分支，未来边界条件下可能出现“已改写后退出”的事务性风险；建议后续收敛为“两阶段构建 + 一次性提交”。
+2. 目前缺少 `core/tests` 自动化回归（success/failure/security-edge）；需补齐并接入 `ctest`。
+3. 需在 perf_smoke 中量化 Pillar 10 增量开销，确保全链路持续 `<10%`。

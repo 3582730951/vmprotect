@@ -1,0 +1,18 @@
+# Phase 1: Zero-Touch 目标
+1. 移除 `ip_weaver` 对 `[[clang::annotate]]` 的依赖。
+2. 默认按命名空间自动发现改写目标：`proprietary_hft_core`。
+3. 提供透明编译代理，保证研发仅执行常规 build 命令。
+
+# Phase 2: 工程实现
+1. `ip_weaver` 增加 `--target-namespace` 参数并改用 namespace 匹配。
+2. 新增 `core/wrapper/weaver_proxy.py`：
+   - 拦截编译命令；
+   - 对 C++ 源文件先运行 `ip_weaver` 生成 `.weaved.cpp`；
+   - 再调用真实编译器；
+   - 非编译场景原样透传。
+3. 新增 `core/cmake/WeaverLauncher.cmake`，提供全局 `CMAKE_CXX_COMPILER_LAUNCHER` 注入函数。
+
+# Phase 3: 验收
+1. 主工程 build/test 不被破坏。
+2. 代理严格透传 exit code（weaver 或 compiler 失败均可被 CI 感知）。
+3. 给出可直接拷贝的 CMake 注入片段。

@@ -1,0 +1,34 @@
+Agent4 实施报告
+日期：2026-02-27
+
+实现项
+1. 新增 `ProtectionAnchorPass`（PipelineStartEP）
+- 文件：`core/passes/include/passes/ProtectionAnchorPass.hpp`
+- 文件：`core/passes/src/ProtectionAnchorPass.cpp`
+- 功能：
+  - 解析注解并写入统一路由属性 `eippf.route`（jit/vm/cff）。
+  - 对受保护函数打 `noinline + optnone`，在任意 O-level 下阻断提前折叠删除。
+
+2. 新增组合插件 `eippf_protection_suite_pass`
+- 文件：`core/passes/src/ProtectionSuitePassPlugin.cpp`
+- 文件：`core/passes/CMakeLists.txt`
+- 功能：统一注册 Anchor + VM + JIT + CFF。
+
+3. VM/JIT/CFF 路由优先级接入
+- 文件：`core/passes/src/SelectiveVMPass.cpp`
+- 文件：`core/passes/src/JITEnclavePass.cpp`
+- 文件：`core/passes/src/CFFObfuscationPass.cpp`
+- 功能：根据 `eippf.route` 做冲突消解，避免同函数重复改写。
+
+4. Wrapper 增强
+- 文件：`core/wrapper/eippf_cc.py`
+- 功能：
+  - 支持多插件注入（`EIPPF_PASS_PLUGIN_LIST` + 可重复 `--pass-plugin`）。
+  - 支持链接后可选 strip（`EIPPF_STRIP_OUTPUT`、`EIPPF_STRIP_MODE`、`EIPPF_STRIP_FAIL_CLOSED`）。
+  - strip 工具白名单仅允许 `llvm-strip/strip`。
+
+验证结果
+1. `cmake --build /workspace/build_team2 -j` 通过。
+2. `ctest --test-dir /workspace/build_team2 --output-on-failure` 通过。
+3. `-O0/-O2/-O3` 下 `demo_flatten` 的 IR 仍保留 `call @protected_calc(...)`，不再被常量折叠为直接 `67`。
+4. 开启 strip-all 后 `nm` 显示 `no symbols`，满足 IDA `sub_` 命名预期（内部函数名不暴露）。

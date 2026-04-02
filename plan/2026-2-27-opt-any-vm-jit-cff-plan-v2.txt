@@ -1,0 +1,89 @@
+2026-2-27 任意优化级别 VM+JIT+CFF 计划（Agent1 v2）
+日期：2026-02-27
+状态：重写版（修复 Agent2/Agent3 阻塞项）
+
+Phase 1: 目标与硬约束
+1. 目标
+- 在 `-O0/-O1/-O2/-O3/Os` 下，注解保护函数仍可被 VM/JIT/CFF 处理，不被提前优化抹除。
+- 产物在逆向视角下默认不泄露保护函数明文符号名，IDA 优先呈现 `sub_...`。
+2. 硬约束
+- 保护模块禁用异常/RTTI。
+- 所有新增逻辑必须输入校验 + fail-closed（可配置开关需有安全默认）。
+- 不破坏 `main` 与必要导出 ABI。
+
+Phase 2: 注解冲突优先级矩阵（强制）
+1. 注解集合
+- `drm_jit_target`
+- `drm_critical_ip`（VM）
+- `drm_flatten`（CFF）
+2. 同函数冲突时优先级
+- P1: `drm_jit_target` > P2: `drm_critical_ip` > P3: `drm_flatten`
+3. 执行规则
+- 命中 P1：仅 JIT（不再进入 VM/CFF 变换）
+- 命中 P2 且未命中 P1：仅 VM
+- 仅命中 P3：CFF
+- 无注解：按既有 gating（可选）
+
+Phase 3: 任意优化级别稳定性方案
+1. 新增 `ProtectionAnchorPass`（PipelineStartEP）
+- 对注解函数加 `noinline + optnone`，阻断常量折叠和内联删除。
+- 必须在优化主流程前运行。
+2. 组合插件 `eippf_protection_suite_pass`
+- 注册顺序：`Anchor(PipelineStart)` + `VM(OptimizerLast)` + `JIT(OptimizerLast)` + `CFF(OptimizerLast)`。
+- 通过优先级矩阵避免同函数重复改写。
+
+Phase 4: IDA `sub_` 函数名策略（不影响执行）
+1. IR 层降暴露
+- 对可内部化的受保护函数执行 internalization + hidden：
+  - 允许条件：定义在当前模块、非 `main`、非显式导出、非外部可见 ABI 函数。
+  - 禁止 internalization：`main`、`externally_visible`、导出 API、地址被外部消费的函数。
+2. 链接后符号清理（ELF）
+- 仅在链接阶段且输出为 ELF 可执行/共享对象时执行 strip。
+- 默认模式：`strip --strip-all`（可配置）。
+- 兼容模式：`strip --strip-debug`（保留导出调试场景）。
+3. fail-closed
+- `EIPPF_STRIP_FAIL_CLOSED=1` 时 strip 失败直接返回非 0。
+- 否则记录错误并保留原退出码（兼容模式）。
+
+Phase 5: Wrapper 参数协议（强制）
+1. 多插件
+- `EIPPF_PASS_PLUGIN`：兼容单值。
+- `EIPPF_PASS_PLUGIN_LIST`：多值，使用 `os.pathsep` 分隔（Linux `:`，Windows `;`）。
+- CLI `--pass-plugin=<path>` 可重复，优先级高于环境变量。
+2. strip 相关
+- `EIPPF_STRIP_OUTPUT`：`0/1`。
+- `EIPPF_STRIP_MODE`：`all` 或 `debug`。
+- `EIPPF_STRIP_TOOL`：仅允许 `llvm-strip` 或 `strip`（白名单）。
+- `EIPPF_STRIP_FAIL_CLOSED`：`0/1`。
+3. 输入校验
+- 空字符串、重复路径、不可执行路径、非法 mode 直接拒绝并返回错误。
+
+Phase 6: 安全要求
+1. wrapper 只使用 `subprocess.run([...])` 参数数组，不拼接 shell 字符串。
+2. strip 工具白名单 + `shutil.which` 解析，拒绝任意命令路径注入。
+3. internalization 前必须检查 ABI 安全条件，避免破坏入口和导出。
+4. 所有错误必须映射到可追踪错误码，禁止 silent ignore（除显式兼容模式）。
+
+Phase 7: 实施文件
+1. `core/passes/include/passes/ProtectionAnchorPass.hpp`
+2. `core/passes/src/ProtectionAnchorPass.cpp`
+3. `core/passes/src/ProtectionSuitePassPlugin.cpp`
+4. `core/passes/include/passes/SelectiveVMPass.hpp` / `src/SelectiveVMPass.cpp`（增加 OptimizerLastEP）
+5. `core/passes/CMakeLists.txt`
+6. `core/wrapper/eippf_cc.py`
+
+Phase 8: 自动化验收命令
+1. 构建
+- `cmake -S core -B build_team2 -G "Unix Makefiles"`
+- `cmake --build build_team2 -j`
+2. 任意优化验证（示例）
+- `-O0/-O2/-O3` 各编译一次 demo，检查 IR/二进制未出现常量折叠直出路径。
+3. 符号验证
+- `nm -C demo.elf | rg protected_calc` 期望无命中（strip all 模式）。
+4. 功能验证
+- 运行 demo 输出正确、exit code 正确。
+
+Phase 9: 通过标准
+1. 任意优化级别下，注解目标可稳定进入对应保护路径。
+2. IDA 等价视角（通过 `nm/readelf`）下不暴露目标明文函数名。
+3. 4 类安全风险全闭环：命令注入、半保护产物、ABI 破坏、参数未校验。

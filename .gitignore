@@ -1,0 +1,9 @@
+passwd.txt
+2
+build/
+build_*/
+CMakeFiles/
+test/
+.DS_Store
+*.pyc
+__pycache__/

@@ -1,0 +1,30 @@
+# Phase 1: 架构目标（Universal Polyglot Zero-Trust Pipeline）
+1. 覆盖前端语言：C/C++/Rust/Assembly。
+2. 统一中间层：尽可能收敛到 LLVM Bitcode，做 IR->IR weaving。
+3. 维持编译链透明：代理失败/下游失败必须原样返回退出码，避免 CI 假绿。
+4. 满足 SLA：Hot path 路由 JIT，Cold path 路由高密度解释器。
+
+# Phase 2: 编译链路迁移（Source-to-Source -> IR Bridge）
+1. 旧链路：源码 AST 改写后再编译。
+2. 新链路：
+   - Frontend: source -> input.bc
+   - Weaver: input.bc -> weaved.bc
+   - Backend: weaved.bc -> object
+   - Linker: object -> binary
+3. 优势：
+   - 多语言统一治理（Rust 与 C/C++共享 IR 变换阶段）
+   - 可做跨架构后端（x86_64 / AArch64）
+4. 限制与降级：
+   - Assembly 原生不稳定产出 LLVM IR，走对象级保底路径（透明透传）
+
+# Phase 3: 代理策略
+1. 编译步骤识别：仅在 compile invocation 介入；link/archive 一律 passthrough。
+2. 单 TU 优先：CMake/Ninja 常见模式是一条命令一个源文件。
+3. 失败闭环：任一步骤失败立即返回该步骤退出码。
+
+# Phase 4: 性能路由（HeuristicProfiler）
+1. 指标：圈复杂度、循环深度、指令密度、数学操作密度。
+2. 路由：
+   - score >= threshold -> jit_backend
+   - score < threshold  -> interpreter_backend
+3. 目标：在全局覆盖下维持 <10% overhead。

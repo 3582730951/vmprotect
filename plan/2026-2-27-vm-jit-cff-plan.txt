@@ -1,0 +1,477 @@
+2026-2-27 VM+JIT+CFF+BCF 开发计划（Agent 1 / Planner 重写版 Round 3）
+日期：2026-02-27
+状态：替换原稿，闭环本轮 10 项阻塞（A-J）
+
+一、修订目标与阻塞项映射
+1. 目标：在不突破端到端 `<10%` 性能预算前提下，补齐 VM/JIT/CFF/BCF 自动路由的可执行成本模型、可复现验证协议、签名绑定安全链路、严格 fail-closed 与 CI 安全硬门禁。
+2. 阻塞项与落点：
+- 阻塞 A（冷启动矛盾）-> 2.2、2.5、6.2（显式一致）。
+- 阻塞 B（BCF 缺失）-> 2.1、2.3、2.7、3.1、8.2。
+- 阻塞 C（安全 gate 可绕过）-> 8.3、9（删除绕过条款）。
+- 阻塞 D（manifest 反回滚/新鲜度不足）-> 5.1、5.4、5.5。
+- 阻塞 E（规范化与解析一致性不足）-> 5.2（严格 Canonicalization + Parser Parity）。
+- 阻塞 F（Critical 降级仅 ID 绑定）-> 5.1、5.4、7.2、7.3。
+- 阻塞 G（紧急密钥撤销与运行时拒绝链缺失）-> 5.3、5.4、5.5、8.1、8.2。
+- 阻塞 H（高水位持久化防篡改不足）-> 5.5、5.6、8.2、9。
+- 阻塞 I（双签主体/密钥未强隔离）-> 5.1、5.4、7.2、7.3、8.2。
+- 阻塞 J（可信时间锚不足，易受本地回拨）-> 5.1、5.4、5.5、8.2、9。
+3. 角色责任（固定三角色）：
+- Agent 1 (Planner)：定义规则、阈值、阶段验收、审批与签名绑定格式。
+- Agent 2 (Engineer)：在 `core/` 实现模型、路由、签名校验、反回滚、CI gate、测试。
+- Agent 3 (Security Reviewer)：审核 Critical 降级申请、签名链路、fail-closed 与性能预算合规。
+
+二、可执行 C 成本模型（含 C_bcf）
+2.1 输出定义（函数级，强制）
+1. 对每个函数 `f` 输出组件成本字段（单位：比例，0.10=10%）：
+- `C_cff_hat(f)`：CFF 预计开销。
+- `C_bcf_hat(f)`：BCF 预计开销（新增硬字段，不能为空）。
+- `C_jit_hat(f)`：JIT 预计开销。
+- `C_vm_hat(f)`：VM 预计开销。
+- `C_mix_hat(f,s)`：组合策略交互项开销。
+- `C_total_hat(f,s)`：路由策略 `s` 的总预计开销。
+2. 路由引擎输入输出（必须产物）：
+- `build/perf/model_inputs/function_features.parquet`
+- `build/perf/model_outputs/c_cost_predictions.json`（含 `C_bcf_hat`）
+- `build/perf/model_outputs/route_policy_report.json`
+
+2.2 特征分层与一致性约束（修复 2.2/2.5/6.2 矛盾）
+1. 静态特征集合 `X_static`（无历史可用）：
+- `x1` 指令数（IR instruction count）
+- `x2` 基本块数（BB count）
+- `x3` CFG 边数
+- `x4` 最大循环嵌套深度
+- `x5` 分支密度
+- `x6` 间接调用占比
+- `x7` PHI 节点占比
+- `x14` 是否 Critical（0/1）
+- `x15` 是否加密字符串密集（0/1）
+- `x16` ABI 复杂度等级
+2. 动态特征集合 `X_dyn`（仅历史路径可用）：
+- `x8` 调用频率（calls/sec）
+- `x9` cycles_share
+- `x10` baseline p95（us）
+- `x11` branch_miss_rate
+- `x12` iTLB_miss_rate
+- `x13` L1I_miss_rate
+3. 特征配置文件（严格二选一）：
+- `Profile-H`（有历史）：要求 `X_static ∪ X_dyn` 全部存在。
+- `Profile-N`（无历史）：只要求 `X_static`；`x8/x11/x12` 不需要、不可作为失败条件。
+4. 一致性规则：
+- `2.5` 冷启动仅允许 `Profile-N`；
+- `6.2` 的 `ABSENT_HISTORY` 仅走 `Profile-N`；
+- 任何实现不得在 `ABSENT_HISTORY` 下隐式要求 `x8/x11/x12`。
+
+2.3 可执行模型公式（v2）
+1. 标准化：
+- `z_k(f) = (x_k(f) - mu_k) / sigma_k`
+2. `Profile-H` 组件模型：
+- `C_cff_hat = clip(a0 + a1*z2 + a2*z5 + a3*z7 + a4*z13, 0.0, 0.25)`
+- `C_bcf_hat = clip(b0 + b1*z2 + b2*z3 + b3*z5 + b4*z11, 0.0, 0.20)`
+- `C_jit_hat = clip(c0 + c1*z4 + c2*z6 + c3*z8 + c4*z10 + c5*z14, 0.0, 0.30)`
+- `C_vm_hat = clip(d0 + d1*z4 + d2*z5 + d3*z9 + d4*z14 + d5*z15, 0.0, 0.40)`
+3. `Profile-N` 组件模型（无 `X_dyn`）：
+- `C_cff_hat = clip(a0n + a1n*z2 + a2n*z5 + a3n*z7, 0.0, 0.25)`
+- `C_bcf_hat = clip(b0n + b1n*z2 + b2n*z3 + b3n*z5, 0.0, 0.20)`
+- `C_jit_hat = clip(c0n + c1n*z4 + c2n*z6 + c3n*z14 + c4n*z16, 0.0, 0.30)`
+- `C_vm_hat = clip(d0n + d1n*z4 + d2n*z5 + d3n*z14 + d4n*z15, 0.0, 0.40)`
+4. 总成本：
+- `C_total_hat(f,s) = C_cff_hat*I_cff(s) + C_bcf_hat*I_bcf(s) + C_jit_hat*I_jit(s) + C_vm_hat*I_vm(s) + C_mix_hat(f,s)`
+- 其中 `I_*` 为策略启用指示函数。
+
+2.4 训练数据来源与版本冻结
+1. 数据来源（唯一允许）：
+- CI 基线：`build/perf/baseline/<commit>/<workload>.json`
+- CI 保护态：`build/perf/protected/<commit>/<strategy>/<workload>.json`
+- 运行时遥测：`build/perf/telemetry/<window_id>/function_counters.json`
+2. 标签定义：
+- `y(f,s) = (p95_protected(f,s) - p95_baseline(f,NONE)) / p95_baseline(f,NONE)`
+3. 样本门槛：
+- 每策略 `>= 2000` 函数样本，否则该策略模型不晋升。
+4. 冻结清单：
+- `build/perf/model_dataset_manifest.json`（输入 SHA256、提交 SHA、采集窗口）。
+
+2.5 冷启动回退（无历史数据，显式不依赖 x8/x11/x12）
+1. 允许场景：
+- 输入状态为 `ABSENT_HISTORY`，且 `X_static` 完整。
+2. 回退公式（确定性，`Profile-N`）：
+- `C_cff_fallback = clip(0.006 + 0.002*norm(x2) + 0.001*x5 + 0.001*x7, 0.006, 0.14)`
+- `C_bcf_fallback = clip(0.005 + 0.002*norm(x3) + 0.002*x5, 0.005, 0.12)`
+- `C_jit_fallback = clip(0.012 + 0.003*norm(x4) + 0.002*x6 + 0.002*x16 + 0.002*x14, 0.012, 0.22)`
+- `C_vm_fallback = clip(0.018 + 0.004*norm(x4) + 0.003*x5 + 0.003*x15 + 0.002*x14, 0.018, 0.32)`
+3. 冷启动热度代理（静态）与路由：
+- `H_static = 0.35*norm(x4) + 0.25*x5 + 0.20*x6 + 0.10*x7 + 0.10*x14`
+- `Hot`（`H_static >= 0.68`）必须应用 `CFF+BCF`。
+- `Hot + Critical`：`JIT_ENCLAVE + CFF_FULL + BCF_STRONG`。
+- `Hot + 非 Critical`：`CFF_FULL + BCF_STANDARD`。
+- `Warm + Critical`：`VM_STRONG + CFF_LITE + BCF_LITE`（禁止 `NONE`）。
+- `Cold + 非 Critical`：可选 `NONE` 或 `CFF_LITE+BCF_LITE`（受预算 gate 约束）。
+4. 冷启动约束：
+- manifest 必须标记 `cost_model_mode=cold_start_no_history`。
+- 首次发布后 7 天内必须切换至 `Profile-H` 训练模型，否则 CI hard-fail。
+
+2.6 漂移与失效处理
+1. 连续 3 天 `MAPE > 0.20`：
+- 自动回滚到上一版生产模型；
+- 触发 `model_drift_incident.md`；
+- 暂停任何 Critical 降级建议。
+
+2.7 路由策略（BCF 显式纳入）
+1. 策略集合：`NONE`、`CFF_LITE+BCF_LITE`、`CFF_FULL+BCF_STANDARD`、`JIT_ENCLAVE+CFF_FULL+BCF_STRONG`、`VM_STRONG+CFF_LITE+BCF_LITE`。
+2. 热路径硬规则：
+- 所有 `Hot` 函数必须启用 `CFF` 与 `BCF` 同时生效；缺任一即策略非法。
+- `Hot + Critical` 必须包含 `JIT_ENCLAVE`，且仍保留 `CFF+BCF`。
+3. 路由目标函数：
+- `Score(f,s) = RiskGain(f,s) - lambda * C_total_hat(f,s)`
+- 在满足安全硬约束后选择 `Score` 最大策略。
+4. BCF 成本约束字段：
+- `route_policy_report.json` 中必须有 `C_bcf_hat`、`C_bcf_share`、`bcf_enabled`，缺失即 hard-fail。
+
+三、<10% 预算公式与 BCF 成本门禁
+3.1 预算公式（唯一标准）
+1. 工作负载集合：`W={w1...wn}`，由 `core/tests/perf/workload_set_v1.yaml` 冻结。
+2. 实测单工作负载开销：
+- `overhead_i = (median(p95_protected_i) - median(p95_baseline_i)) / median(p95_baseline_i)`
+3. 预测单工作负载开销（用于预筛）：
+- `overhead_pred_i = median_{f in wi}(C_total_hat(f, route_f))`
+4. 显式权重：
+- `weight_i = qps_i / Σ(qps_j)`
+- 冷启动使用 `core/tests/perf/cold_start_weights_v1.json`。
+5. 全局预算：
+- `Budget_real = Σ(weight_i * overhead_i)`
+- `Budget_pred = Σ(weight_i * overhead_pred_i)`
+6. 通过条件（全部满足）：
+- `Budget_pred <= 0.10`
+- `Budget_real <= 0.10`
+- 每个 Critical 函数簇 `overhead_g_p95 <= 0.15`
+- `p99_timeout_count == 0`
+
+3.2 可复现测量窗口
+1. 采样窗口（冻结）：`2026-02-10 00:00:00 UTC` 到 `2026-02-24 23:59:59 UTC`。
+2. CI 流程：baseline 后 protected；每 workload 预热 10 次、采样 30 次、种子 `20260227`。
+3. 统计：MAD>3.5 剔除；有效样本 `<24` 直接 hard-fail。
+4. 环境锁定：`perf_env_lock.json` 固定 CPU governor/turbo/绑核/镜像 digest。
+
+3.3 BCF 专项 gate
+1. 覆盖率：
+- `coverage_hot_cff_bcf = hot_functions_with_cff_and_bcf / all_hot_functions`
+- 要求：`coverage_hot_cff_bcf = 1.0`。
+2. Critical 热路径约束：
+- `coverage_hot_critical_jit_cff_bcf = 1.0`。
+3. 成本占比：
+- `C_bcf_share = Σ(weight_i * median(C_bcf_hat_i))`
+- 要求：`C_bcf_share <= 0.03`，超限需回调策略但不得移除 Hot 的 BCF。
+
+四、热点分析验证可复现协议
+4.1 标注数据集来源与版本冻结
+1. 数据集目录：`core/tests/perf/datasets/hotspot/hsds-2026-02-27-r2/`。
+2. 冻结文件：`dataset_manifest.json`（样本 SHA256、采集命令、提交 SHA）。
+3. 样本来源：
+- 微基准：`core/tests/perf/micro/*`
+- E2E 回放：`core/tests/perf/e2e_replay/*`
+- 脱敏生产回放：`core/tests/perf/replay_sanitized/*`
+
+4.2 标注规则
+1. 热度标签（Hot/Warm/Cold）：
+- `H = 0.45*cycles_share + 0.25*call_freq_norm + 0.20*p95_norm + 0.10*branch_miss_norm`
+- `Hot`: `H >= 0.70` 或 `cycles_share >= 0.02`
+- `Warm`: `0.40 <= H < 0.70`
+- `Cold`: `H < 0.40`
+2. Critical 标签：
+- 命中 `drm_critical_ip` 注解或 `core/runtime/policy/critical_function_list_v1.txt`。
+3. 热路径保护映射：
+- 被标记 `Hot` 的函数在路由落地时必须映射到含 `CFF+BCF` 的策略。
+
+4.3 抽样与去重
+1. 样本窗口：`2026-02-01` 到 `2026-02-24`。
+2. 按模块分层抽样，每模块至少 100 函数样本。
+3. 去重键：`module_sha256 + function_symbol_hash + cfg_hash`。
+
+4.4 F1 评估流程
+1. 划分：模块级 70/10/20，种子 `20260227`。
+2. 门槛：`Macro-F1 >= 0.90`，Critical `F1 >= 0.97`。
+3. 未达标：分类器不可用于自动路由（hard-fail）。
+
+五、Manifest/Route 安全加固（签名 + 反回滚 + 审批哈希绑定 + 撤销与时间锚）
+5.1 路由清单强制字段
+1. `route_manifest.json` 必须包含：
+- `manifest_version`（uint64，单调不减）
+- `manifest_version_floor`（uint64，发布/运行最小版本下限）
+- `generated_at_utc`（RFC3339 UTC）
+- `valid_for_seconds`（有效窗口，`1..604800`）
+- `max_clock_skew_seconds`（时钟偏差容忍，建议 `<=300`）
+- `git_commit_sha`、`git_tree_sha256`
+- `input_binary_sha256`、`output_binary_sha256`
+- `cost_model_version`、`cost_model_mode`
+- `dataset_id`、`policy_version`
+- `canonical_profile`（固定：`JCS-RFC8785-STRICT-v1`）
+- `signing_key_id`、`signing_key_epoch`（uint64，随轮换单调不减）
+- `key_revocation_policy`（`crl_url`、`denylist_snapshot_id`、`min_allowed_key_epoch`、`crl_next_update_utc`）
+- `trusted_time_anchor`（`signed_build_timestamp_utc`、`build_timestamp_sig_sha256`、`time_anchor_pubkey_id`、`max_monotonic_drift_seconds`、`require_remote_attestation_fallback`）
+- `critical_downgrade_approval_bindings[]`
+2. `critical_downgrade_approval_bindings[]` 元素结构（禁止仅 ID）：
+- `approval_id`
+- `approval_payload_sha256`
+- `approval_sig_sha256[]`（双签签名文件哈希，固定 2 个）
+- `approver_principal_ids[]`（固定 2 个）
+- `approver_pubkey_ids[]`（固定 2 个）
+- `approval_not_after_utc`
+
+5.2 严格 Canonicalization Profile 与 Parser Parity
+1. 解析前置拒绝：
+- 重复 key 直接拒绝（hard-fail）。
+- 非 UTF-8、含 BOM、非法 surrogate、控制字符未转义直接拒绝。
+2. 数值规范化：
+- 禁止 `NaN/Inf/-Inf`。
+- `-0` 规范化为 `0`。
+- 禁止前导零整数（`0` 除外）。
+- 小数去尾零；指数记法统一小写 `e`，去 `+` 号与多余前导零。
+3. 编码规范：
+- UTF-8（无 BOM）+ Unicode NFC。
+- 对象键按字典序排序。
+- 仅允许 `\n` 作为换行。
+4. Parser Parity（CI 与 Runtime 必须一致）：
+- CI 签名器与 Runtime 验签器使用同一规范化版本号 `canon_profile_rev`。
+- `core/tests/security/canonicalization/golden/*` 与 `adversarial/*` 必须双端产出相同 canonical bytes 与 SHA256。
+- 任一差异 -> hard-fail，禁止发布。
+
+5.3 签名机制与紧急撤销流程
+1. 算法：Ed25519 detached signature；签名证据链包含 `signing_key_id + signing_key_epoch`。
+2. 产物：
+- `route_manifest.json`
+- `route_manifest.sig`
+- `route_manifest.pubid`
+- `key_crl.json`（撤销列表，签名）
+- `key_denylist.json`（紧急拒绝列表，签名）
+3. 私钥：仅 CI KMS 可读；公钥 ID、主体标识、轮换策略、epoch 映射入库。
+4. 常规轮换：90 天强制轮换，旧 key 最多并行验证 14 天，`signing_key_epoch` 每次轮换递增。
+5. 紧急撤销（必须可执行，RTO <= 15 分钟）：
+- T+0：安全事件立案（`security_incident_id`），冻结受影响签名 key。
+- T+5m：由 `Agent 3 (Security Reviewer)` 与安全负责人双签发布 `key_denylist.json`（含 `revoked_key_ids[]`、`revoked_epochs[]`、`not_before_utc`、`reason_code`）。
+- T+10m：发布 `key_crl.json` 并提升 `min_allowed_key_epoch`。
+- T+15m：CI 与 Runtime 必须加载新拒绝链；命中撤销 key/epoch 立即 hard-fail，不得降级为告警。
+
+5.4 CI 绑定校验（hard-fail）
+1. 校验顺序：
+- Canonicalization 结果与 hash
+- manifest 签名与 `signing_key_id/signing_key_epoch`
+- `key_crl.json` + `key_denylist.json` + `min_allowed_key_epoch`
+- commit/tree/binary 绑定
+- `critical_downgrade_approval_bindings` 的 payload hash + 双签主体/密钥隔离校验
+- 可信时间锚校验（签名构建时间 + 单调时钟偏差 + 远程证明回退）
+- 新鲜度、版本下限与高水位回放检查
+2. 绑定规则：
+- `git_commit_sha` 必须等于当前构建提交。
+- `output_binary_sha256` 必须等于构建产物 hash。
+- `manifest_version` 必须大于主分支最近已发布版本（防回滚发布）。
+- `manifest_version >= manifest_version_floor`。
+- `signing_key_id` 不得出现在 denylist；`signing_key_epoch >= min_allowed_key_epoch`。
+- 双签审批必须满足：`approver_principal_ids[0] != approver_principal_ids[1]` 且 `approver_pubkey_ids[0] != approver_pubkey_ids[1]`。
+- 双签公钥必须映射到不同主体（subject separation），同主体双 key 视为不合规。
+- `signed_build_timestamp_utc` 签名必须可验；与 CI 当前 UTC 偏差超过 `max_clock_skew_seconds` 时必须附带有效远程时间证明，否则 hard-fail。
+
+5.5 运行时校验（反回滚 + 新鲜度 + 撤销 + 时间锚，fail-closed）
+1. 启动阶段必须执行：
+- 验证 `route_manifest.sig` 与 `route_manifest.pubid`。
+- 校验 `signing_key_id/signing_key_epoch`：不得命中本地拒绝链（`key_crl.json`/`key_denylist.json`），且 `signing_key_epoch >= min_allowed_key_epoch`；任一不满足立即失败。
+- 校验当前二进制 hash 与 `output_binary_sha256`。
+- 校验 `git_commit_sha` 与嵌入构建元数据一致。
+- 校验可信时间锚：先验 `signed_build_timestamp_utc` 签名，再计算 `wall_clock_delta` 与 `monotonic_delta`；若检测到本地时钟回拨（`wall_clock_delta + max_monotonic_drift_seconds < monotonic_delta`），必须要求远程证明时间令牌，缺失或验签失败即 hard-fail。
+- 校验 `generated_at_utc`：不得晚于锚定当前时间 `+max_clock_skew_seconds`，且不得早于锚定当前时间 `-valid_for_seconds`。
+- 校验版本下限：`manifest_version >= manifest_version_floor` 且 `manifest_version >= kRuntimeManifestFloor`。
+- 校验单调性：`manifest_version >= last_accepted_manifest_version`（持久化高水位，见 5.6）；更高版本通过后原子更新高水位。
+- 校验 `critical_downgrade_approval_bindings`：payload canonical hash、双签、公钥 ID、主体隔离、过期时间全部匹配。
+2. 任一失败行为：
+- 进入 fail-closed：禁止启动受保护主流程并终止。
+- `signing_key_id/signing_key_epoch` 撤销命中时返回 `ErrorCode::kSigningKeyRevoked`（立即硬失败，不重试主流程）。
+- 时钟回拨且无有效远程证明时返回 `ErrorCode::kClockRollbackDetected`。
+- 高水位篡改/回滚时返回 `ErrorCode::kManifestRollbackDetected`。
+
+5.6 反回滚高水位持久化（防篡改）
+1. 持久化对象：
+- `manifest_hwm.sealed`（主槽）与 `manifest_hwm.sealed.bak`（备槽），内容字段：
+- `hwm_manifest_version`、`hwm_key_epoch`、`hwm_wall_clock_utc`、`hwm_monotonic_ticks`、`monotonic_counter`、`state_mac`。
+2. 防篡改封装：
+- payload 采用 canonical JSON 序列化后计算 `state_mac = HMAC-SHA256(k_seal, payload)`。
+- `k_seal` 来源于平台密封密钥（TPM/Keychain/DPAPI）；不可导出。
+3. 单调计数策略：
+- 优先硬件单调计数（TPM NV counter/可信执行环境计数器）。
+- 无硬件计数器时，采用双槽日志 + 计数器递增 + MAC 校验；任一槽校验失败不自动覆盖另一槽。
+4. 原子更新策略：
+- 仅在 manifest 校验全通过后写入高水位；
+- 流程为 `write tmp -> fsync -> rename`，并同步更新备槽；
+- 新值必须满足 `new_manifest_version >= old_manifest_version` 且 `new_key_epoch >= old_key_epoch`。
+5. 恢复行为（必须 fail-closed）：
+- 首次启动（状态文件缺失）允许初始化主槽并记录 `monotonic_counter=1`。
+- 非首次启动若主槽损坏则尝试备槽；主备均损坏或计数器回退时，返回 `ErrorCode::kHighWatermarkStateCorrupt` 并终止。
+- 禁止“清空状态后继续运行”；仅允许加载双签恢复包 `hwm_recovery_bundle.json`（Reviewer+Owner 双签，且主体/密钥仍需隔离）。
+
+六、遥测/分类输入严格 fail-closed（与 2.2/2.5 对齐）
+6.1 输入状态分类
+1. `OK`：文件存在、schema 完整、签名/hash 全通过。
+2. `ABSENT_HISTORY`：历史遥测为空，但 `X_static` 完整且元数据合法。
+3. `CORRUPT`：签名错误、hash 不匹配、字段缺失、非法数值、时间戳非法。
+
+6.2 处理矩阵（强制）
+1. `OK`：使用 `Profile-H`（`X_static ∪ X_dyn`）进行模型推断与路由。
+2. `ABSENT_HISTORY`：仅允许进入 `Profile-N` 与 `2.5` 冷启动路由；`x8/x11/x12` 缺失视为正常，不得报错。
+3. `CORRUPT`：
+- CI：立即 hard-fail，禁止生成新路由；
+- Runtime：拒绝加载路由并 fail-closed。
+
+6.3 禁止行为
+1. 禁止 silent fallback 到 `NONE`。
+2. 禁止在输入损坏时继续沿用“未签名最新路由”。
+3. 禁止因缺少 `X_dyn` 就阻断 `ABSENT_HISTORY` 路径。
+
+七、Critical 路径防弱化与加密审批绑定
+7.1 强制路由底线
+1. `critical=1` 的函数禁止 `strategy -> NONE`。
+2. `Hot + Critical` 仅允许 `JIT_ENCLAVE + CFF_FULL + BCF_STRONG`。
+3. `Non-Hot + Critical` 最低保护线为 `VM_STRONG + CFF_LITE + BCF_LITE`。
+
+7.2 审批工作流（双签 + 主体/密钥隔离 + 有效期）
+1. 申请载荷文件：`core/runtime/policy/critical_downgrade_requests/<approval_id>.json`（Canonical JSON）。
+2. 必填字段：
+- `approval_id`
+- `function_id`
+- `from_strategy` / `to_strategy`
+- `commit_range`
+- `justification`
+- `perf_evidence_report_sha256`
+- `risk_assessment`
+- `issued_at_utc` / `not_after_utc`
+- `ticket_id`
+- `security_reviewer_principal_id`
+- `security_owner_principal_id`
+- `security_reviewer_pubkey_id`
+- `security_owner_pubkey_id`
+3. 双签文件（detached）：
+- `<approval_id>.security_reviewer.sig`
+- `<approval_id>.security_owner.sig`
+4. 隔离硬规则（CI + Runtime 同步执行）：
+- `security_reviewer_principal_id != security_owner_principal_id`
+- `security_reviewer_pubkey_id != security_owner_pubkey_id`
+- 两把 key 必须映射到不同主体证书链（subject DN 或等价主体 ID 不得相同）。
+
+7.3 审批与 manifest 的加密绑定（修复“仅 ID”）
+1. CI 在路由生成时必须计算并写入 manifest：
+- `approval_payload_sha256 = SHA256(canonical(approval_payload))`
+- `approval_sig_sha256[] = SHA256(signature_files)`
+- `approver_principal_ids[] = [security_reviewer_principal_id, security_owner_principal_id]`
+- `approver_pubkey_ids[] = [security_reviewer_pubkey_id, security_owner_pubkey_id]`
+2. Runtime 验证顺序：
+- 读取 manifest 的 binding；
+- 加载对应 approval payload 与签名文件；
+- 复算 payload/sig hash 与 manifest 对比；
+- 验证双签公钥 ID 与签名有效性；
+- 验证主体隔离与密钥隔离（principal 不同 + key 不同 + 证书主体不同）；
+- 校验 `not_after_utc` 与 `commit_range`。
+3. 任一不匹配：fail-closed。
+4. 错误码细分：
+- 哈希/签名不匹配：`ErrorCode::kCriticalApprovalBindingFailed`
+- 主体或密钥未隔离：`ErrorCode::kApprovalSeparationFailed`
+
+7.4 审批生效边界
+1. 批准有效期最长 30 天，过期自动失效。
+2. 仅对指定 `function_id + commit_range` 生效，不可泛化。
+
+八、CI 安全 hard-fail 门禁（含 BCF、反回滚、撤销链与时间锚）
+8.1 CI 阶段顺序（固定）
+1. Stage S1：输入完整性校验（telemetry/model/dataset/schema）。
+2. Stage S2：热点分类复现实验与 F1 验证。
+3. Stage S3：路由生成与策略合法性校验（含 Hot 必须 CFF+BCF）。
+4. Stage S4：Canonicalization/Parser Parity + manifest 签名校验。
+5. Stage S5：密钥信任链校验（`key_crl.json`、`key_denylist.json`、`min_allowed_key_epoch`）。
+6. Stage S6：commit/tree/binary/approval hash 绑定 + 双签主体/密钥隔离校验。
+7. Stage S7：可信时间锚校验（签名构建时间 + monotonic delta + 远程证明回退）。
+8. Stage S8：高水位持久化防篡改演练（主备槽损坏、计数器回退、恢复包校验）。
+9. Stage S9：fail-closed 单元/集成测试。
+10. Stage P1：性能预算 gate（第三章）。
+
+8.2 Hard-fail 条件（任一触发即阻断）
+1. 签名校验失败或公钥 ID 不在信任列表。
+2. `signing_key_id` 命中 denylist/CRL，或 `signing_key_epoch < min_allowed_key_epoch`。
+3. `git_commit_sha` / `binary_sha256` 任一不匹配。
+4. 热点 F1 未达门槛。
+5. 任意 Hot 函数未启用 `CFF+BCF`。
+6. `C_bcf_hat` 字段缺失或非法。
+7. telemetry/classification 输入为 `CORRUPT`。
+8. Critical 降级缺失 payload hash 绑定、双签不通过，或主体/密钥未隔离。
+9. `manifest_version` 回退、低于 floor，或 `generated_at_utc` 超窗口。
+10. 高水位状态主备槽均损坏、MAC 失败或 monotonic counter 回退。
+11. 检测到本地时钟回拨且无有效远程证明时间令牌。
+12. 紧急撤销发布后 15 分钟内 CI/Runtime 未拉取到新拒绝链。
+13. fail-closed 测试失败。
+14. 性能预算不达标（`Budget_pred` 或 `Budget_real` 超标，或 Critical `p95 > 0.15`）。
+
+8.3 禁止绕过条款（硬要求）
+1. 所有 hard-fail gate 一律禁止 bypass，不存在白名单开关。
+2. 禁止 `--allow-insecure`、`--skip-security-gates`、`FORCE_MERGE` 类覆盖参数。
+3. gate 执行器不可用或超时视同失败，不得降级为告警。
+
+8.4 必须归档产物
+1. `build/perf/perf_gate_result.json`
+2. `build/perf/security_gate_result.json`
+3. `build/perf/hotspot_report.json`
+4. `build/perf/route_policy_report.json`
+5. `build/perf/route_manifest.json` + `.sig`
+6. `build/perf/critical_downgrade_audit.json`
+7. `build/perf/key_revocation_audit.json`
+8. `build/perf/time_anchor_validation_report.json`
+9. `build/perf/hwm_persistence_audit.json`
+
+九、分阶段实施（Phase 28-34）
+Phase 28：C 成本模型 v2 与 `C_bcf` 落地
+- 交付：特征提取器、`Profile-H/N` 推断器、`c_cost_predictions.json`。
+- 验收：`C_bcf_hat` 全量产出；`ABSENT_HISTORY` 可无 `x8/x11/x12` 运行。
+- 安全：模型文件签名校验接入。
+
+Phase 29：预算公式与 BCF gate 固化
+- 交付：`Budget_pred/Budget_real` 脚本、`coverage_hot_cff_bcf` 统计。
+- 验收：重复测量波动 `<=3%`，且 Hot 覆盖率达 100%。
+- 安全：环境锁定参数进入审计日志。
+
+Phase 30：热点验证可复现化
+- 交付：冻结数据集 r2、标注规则、F1 评估脚本。
+- 验收：Macro-F1/critical F1 达标。
+- 安全：样本脱敏检查通过。
+
+Phase 31：Manifest 强规范化 + 反回滚/新鲜度 + 高水位防篡改
+- 交付：Canonicalization 实现、parser parity 测试、`manifest_hwm.sealed` 主备槽、MAC 校验与 monotonic counter 逻辑。
+- 验收：篡改/回滚/过期样本 100% 被阻断；主槽损坏时可受控回退备槽；主备同时异常时 fail-closed。
+- 安全：禁止“清空状态继续运行”，仅允许双签恢复包流程。
+
+Phase 32：Critical 降级审批加密绑定 + 双签主体隔离
+- 交付：approval payload schema、双签工具、主体/密钥映射表、manifest binding 与 runtime 验证。
+- 验收：仅 ID 无 hash 绑定、同主体双签、同 key 双签均无法通过 CI/Runtime。
+- 安全：审批过期、签名不匹配、主体隔离失败立即阻断。
+
+Phase 33：密钥生命周期与紧急撤销并线
+- 交付：`key_crl.json`、`key_denylist.json`、`min_allowed_key_epoch` 门禁、撤销事件自动化脚本与审计日志。
+- 验收：撤销 key/epoch 在发布后 15 分钟内被 CI 与 Runtime 同步拦截（立即 hard-fail）。
+- 安全：撤销链拉取失败按失败处理，不得降级运行。
+
+Phase 34：CI 安全硬门禁并线（不可绕过）
+- 交付：S1-S9 + P1 全门禁流水线与归档产物。
+- 验收：安全 gate 与性能 gate 全绿方可合并。
+- 安全：不提供任何 hard-fail bypass 机制。
+
+十、最终验收总线（必须同时满足）
+1. 冷启动：`ABSENT_HISTORY` 路由不依赖 `x8/x11/x12`，且与 `2.2/2.5/6.2` 一致。
+2. BCF：`C_bcf_hat`、Hot 路径 `CFF+BCF`、BCF gate 均启用且生效。
+3. 门禁：安全 hard-fail gate 全部不可绕过。
+4. 新鲜度：runtime 完成 `manifest_version` 单调校验、`generated_at_utc` 窗口校验、`version floor` 校验并 fail-closed。
+5. 规范化：重复 key 拒绝、数值规范化、UTF-8/NFC 编码配置、parser parity 全通过。
+6. 审批：Critical 降级绑定 payload hash + 双签并由 runtime 验证，禁止仅 ID 通过。
+7. 撤销：存在紧急撤销 SOP；Runtime 启动时强制执行 `CRL/denylist/key_epoch` 校验，命中即 `kSigningKeyRevoked` 立即 hard-fail。
+8. 高水位：`manifest_hwm.sealed` 采用密封存储 + MAC + 单调计数策略；篡改、回滚、状态损坏恢复失败必须 fail-closed。
+9. 双签隔离：双签审批必须来自不同 principal 且不同 key，并在 CI 与 Runtime 双端强制检查。
+10. 时间锚：采用“签名构建时间 + monotonic delta + 远程证明回退”；本地时钟回拨无法绕过。
+
+十一、Agent 交接清单（本轮重写版）
+1. Agent 1 -> Agent 2
+- 提供：本计划、`Profile-H/N` 规则、BCF 路由策略、manifest 反回滚/规范化要求、审批绑定协议、密钥撤销与可信时间锚协议。
+2. Agent 2 -> Agent 3
+- 提供：实现 PR、门禁日志、parser parity 报告、反回滚测试、审批绑定验证结果、撤销链演练记录、高水位恢复演练记录。
+3. Agent 3 -> Agent 1
+- 提供：安全审计结论、风险评级、Critical 降级准入意见、撤销响应 SLA 审计结果、发布签署建议。

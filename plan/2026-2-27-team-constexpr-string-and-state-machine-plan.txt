@@ -1,0 +1,38 @@
+2026-2-27 Team计划：编译期字符串加密 + 状态机代码生成示例
+日期：2026-02-27
+角色：Agent1(Planner) / Agent2(Engineer) / Agent3(Security Reviewer)
+
+Phase 1 目标
+1. 在项目内提供 C++17 兼容的 `constexpr + std::index_sequence` 字符串加密工具。
+2. 提供运行时解密到栈内存并可立即清零的 RAII 容器。
+3. 提供“单 while(true) + switch(state)”控制流示例函数，模拟流程图后端代码生成目标。
+
+Phase 2 实施文件
+1. `core/runtime/include/runtime/constexpr_obfuscated_string.hpp`
+2. `core/tests/runtime/security/constexpr_obfuscated_string_test.cpp`
+3. `core/tests/runtime/codegen/state_machine_codegen_demo_test.cpp`
+4. `core/tests/CMakeLists.txt`（接入两个测试）
+
+Phase 3 关键设计
+1. 加密器
+- 模板参数：`Key` 与字符串长度 `N`。
+- 编译期密文：`std::array<std::uint8_t, N>`。
+- 运行时解密：返回 `DecryptedBuffer`（栈数组 + 析构清零）。
+2. 清零策略
+- 使用 `volatile` 写 + `std::atomic_signal_fence`，避免被优化掉。
+3. 状态机示例
+- 用 `fibonacci_state_machine` 展示：初始化、条件分支、循环回边、终止节点全部映射到 case。
+
+Phase 4 验收
+1. 字符串测试
+- 解密结果正确。
+- 密文字节不等于明文字节（除 '\0' 终止位）。
+- `wipe()` 后缓冲区为 0。
+2. 状态机测试
+- `n=0..10` 的 Fibonacci 输出正确。
+- 只有一个 `while(true)` 主循环，不使用普通 for/while 结构。
+
+Phase 5 安全与合规
+1. 不引入异常/RTTI依赖。
+2. 不写入不安全 API（如 strcpy/sprintf/system）。
+3. 测试仅在 `core/tests`，生产代码仅在 `core/runtime/include`。

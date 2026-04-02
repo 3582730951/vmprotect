@@ -1,0 +1,11 @@
+# Internal anchor strings that must not survive release packaging.
+tutorial_anchor
+secret_anchor
+internal_test_marker
+debug_tutorial
+frida_probe
+xposed_probe
+jdwp_probe
+lldb_probe
+windbg_probe
+ghidra_probe

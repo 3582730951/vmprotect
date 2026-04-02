@@ -1,0 +1,28 @@
+# Phase 1: 目标与验收边界
+1. 在 `core/runtime/include/runtime/` 新增三个模块：`memory_hal.hpp`、`dynamic_api_resolver.hpp`、`environment_attestation.hpp`。
+2. 约束：C++20 编译、无异常/无 RTTI、低开销（初始化一次，热路径缓存命中）。
+3. 验收：
+   - `SecureIREngine` 可在 Linux 构建并执行现有 IR/JIT 测试；
+   - 新增模块各自具备 success/failure/edge 测试；
+   - `perf_smoke` 全绿。
+
+# Phase 2: 架构落地
+1. `DynamicAPIResolver`：
+   - 使用 `constexpr_obfuscated_string` 输入（模块名/符号名）；
+   - 运行时解密后 `dlopen+dlsym` / `LoadLibraryA+GetProcAddress` 解析；
+   - 固定容量缓存（模块缓存 + 符号缓存），析构/`wipe()` 清理。
+2. `MemoryHAL`：
+   - POSIX：`mmap/mprotect/munmap`（经 resolver 动态解析）；
+   - Windows：`VirtualAlloc/VirtualProtect/VirtualFree`（经 resolver 动态解析）；
+   - 接口：`allocate_rw/protect_rx/protect_rw/release`。
+3. `EnvironmentAttestation`：
+   - Windows：PEB `BeingDebugged`（可用时） + `CheckRemoteDebuggerPresent`（动态解析）；
+   - Linux：解析 `/proc/self/status` 的 `TracerPid`；
+   - macOS：`ptrace(PT_DENY_ATTACH)`（动态解析）；
+   - 失败时返回 `kMitigated`，不抛异常不崩溃。
+
+# Phase 3: 引擎整合与防御行为
+1. `SecureIREngine::ExecutableMemory` 改为调用 `MemoryHAL`。
+2. `SecureIREngine::execute` 增加执行状态机：
+   - `kInit -> kAttest -> (kRun | kMitigate) -> kDone`。
+3. 当 attestation 失败时进入 `kMitigate`，返回确定性安全值 `0`（Silent Mitigation）。

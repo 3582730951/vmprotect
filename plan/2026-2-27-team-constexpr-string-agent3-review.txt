@@ -1,0 +1,20 @@
+Agent3 安全审查报告
+日期：2026-02-27
+结论：PASS
+
+审查项
+1. 安全 API 扫描
+- 新增文件未使用 `strcpy/sprintf/system/popen` 等不安全接口。
+- 未引入异常路径（throw/catch）。
+
+2. 字符串工具设计
+- 编译期密文存储在 `std::array<uint8_t, N>`，运行时明文在栈内缓冲。
+- 提供显式 wipe + 析构 wipe，降低崩溃后残留窗口。
+
+3. 状态机示例约束
+- 业务函数 `fibonacci_state_machine` 仅一个 `while(true)` 主循环。
+- 控制流通过 `switch(state)` 跳转实现，符合流程图后端代码生成目标。
+
+4. 风险提示（合规）
+- 该工具可降低 `.rodata` 明文暴露风险，但无法单独保证 core dump 完全无敏感数据。
+- 生产建议配套：禁/限 core dump、敏感页 `MADV_DONTDUMP`、最小化明文驻留时长。

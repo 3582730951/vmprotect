@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Label="UserMacros">
+    <EippfWrapperDir>C:\path\to\repo\core\wrapper\</EippfWrapperDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <CLToolPath>$(EippfWrapperDir)</CLToolPath>
+    <CLToolExe>eippf_cl_wrapper.cmd</CLToolExe>
+    <LinkToolPath>$(EippfWrapperDir)</LinkToolPath>
+    <LinkToolExe>eippf_link_wrapper.cmd</LinkToolExe>
+  </PropertyGroup>
+</Project>

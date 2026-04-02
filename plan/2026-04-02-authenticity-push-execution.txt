@@ -1,0 +1,84 @@
+# 2026-04-02 签名真实性与推送收口执行记录
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 已把 `artifact_audit` 从“格式校验”推进到“格式校验 + 外部真实性 verifier 协议”。
+- 已把 strict policy 固化为：required signed target 在 `--strict` 下必须来自 `--target-kind` 或 manifest `target_kind`，不能再只靠后缀。
+- 已完成本地全量构建、全量测试、`perf_smoke`。
+- 已完成三方 reviewer 复审并通过。
+
+Implemented Files:
+- [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+- [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+- [signature_verifier_fixture.py](/workspace/core/tests/tools/signature_verifier_fixture.py)
+- [core/tests/tools/CMakeLists.txt](/workspace/core/tests/tools/CMakeLists.txt)
+- [core/CMakeLists.txt](/workspace/core/CMakeLists.txt)
+- [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+- [.gitignore](/workspace/.gitignore)
+
+Key Outcomes:
+- `artifact_audit.py`
+  - 新增 verifier 信任边界：
+    - 必须绝对路径
+    - 拒绝 `/tmp` / `/var/tmp`
+    - 默认信任 `/workspace` 前缀
+    - 支持 `EIPPF_SIGNATURE_VERIFIER_TRUSTED_PREFIXES`
+    - 支持 `EIPPF_SIGNATURE_VERIFIER_TRUSTED_SHA256`
+  - 新增 verifier 执行协议：
+    - 输入：artifact / artifact-kind / target-kind / artifact-sha256 / optional manifest
+    - 输出：严格 JSON schema
+  - 新增 fail-closed 失败面：
+    - `signature_verifier_untrusted`
+    - `signature_verifier_failed`
+    - `signature_verifier_digest_mismatch`
+    - `signature_authenticity_rejected`
+  - `non-required` target 固定为 `optional_verifier_ignored`
+- `artifact_audit_strict_test.cpp`
+  - 覆盖 `required` / `non-required`
+  - 覆盖 verifier `success/reject/nonzero/invalid-json/bad-schema/empty/timeout/digest-mismatch`
+  - 覆盖 `policy_unresolved`
+  - 覆盖 `relative path` 与 `/tmp` untrusted path
+  - 覆盖 `.sys` / `.ko` / `Mach-O`
+- `core/CMakeLists.txt`
+  - 新增 `EIPPF_SIGNATURE_VERIFIER_TOOL` cache 入口
+- `HardenTarget.cmake`
+  - 已支持把全局 verifier tool 注入 audit 链
+
+Reviewer Verdicts:
+- Architect: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+Reviewer Reasons:
+- Architect
+  - strict policy source 被锁定为 explicit target-kind / manifest target-kind
+  - verifier 只在 policy resolved + structure present + format valid 后调用
+  - non-required target 不会被 verifier 影响
+- Security Reviewer
+  - `policy_unresolved`、untrusted path、invalid JSON、bad schema、timeout、digest mismatch、reject 都 fail-closed
+  - verifier ignore 路径不会影响 non-required target
+- Validation Reviewer
+  - 正反路径、布尔语义、所有 verifier fixture 模式都有断言
+  - `verifier_invoked` 的 `true/false` 都有证伪覆盖
+
+Validation:
+- `cmake -S /workspace/core -B /workspace/build_pm -G Ninja`
+- `cmake --build /workspace/build_pm -j`
+- `ctest --test-dir /workspace/build_pm --output-on-failure`
+- `cmake --build /workspace/build_pm --target perf_smoke`
+
+Validation Result:
+- `30/30 tests passed`
+- `perf_smoke passed`
+
+Open Risks:
+- verifier 当前是“可接入外部真实性验证器”的本地协议，不是操作系统信任链的完整联网校验。
+- 默认信任 `/workspace` 前缀是为了本地集成与 CI fixture；生产使用必须通过显式 trusted prefix / sha256 缩窄。
+
+Push Status:
+- `pending`

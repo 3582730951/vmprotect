@@ -1,0 +1,172 @@
+# Phase 18: Team 模式任务分配 —— 任意函数 100% VM 执行路径（无 native fallback）
+
+## 0. 硬约束
+1. 目标是“任意函数必须走 VM 执行路径”，不允许运行期 native fallback。
+2. 对无法 VM 化的 IR，不允许运行期降级；必须在编译期 fail-closed（报错并阻断产物）。
+3. 维持安全优先：内存越界、UB、未定义转换都必须 fail-closed。
+4. 性能预算仍按全局 <10% 约束，通过热点分层执行策略控制。
+
+## 1. Agent 角色与任务
+
+### Agent 1 (Planner)
+职责：规划与验收基线。
+
+任务：
+1. 输出 LLVM IR -> PIR 指令覆盖矩阵（must-have / optional / forbidden）。
+2. 定义“100% VM”判定标准：
+   - 编译期：目标函数不得残留可执行原始语义路径。
+   - 运行期：所有保护函数仅经 `eippf_generated_run_template_checked` 执行。
+3. 定义阻断策略：发现未覆盖 IR 指令时，构建直接失败，不生成可运行产物。
+4. 输出性能分层策略：
+   - Hot path: VM-JIT backend
+   - Cold path: VM-interpreter backend
+5. 输出统一验收清单：功能一致性、符号审计、安全审计、性能预算。
+
+交付物：`plan/2026-2-27.txt`（本文件持续更新）+ 覆盖矩阵附录。
+
+### Agent 2 (Engineer)
+职责：实现“无回退 VM 全覆盖”主链路。
+
+任务：
+1. `core/ip_weaver_ir/src/ip_weaver_ir.cpp`
+   - 完成全量 lowering：
+     - 控制流：`br/switch/indirectbr/phi`
+     - 算术：整数/浮点全家族
+     - cast：`trunc/zext/sext/fptrunc/fpext/fptosi/fptoui/sitofp/uitofp/ptrtoint/inttoptr/bitcast`
+     - 内存：`alloca/load/store/gep`（含动态索引）
+     - 调用：`call/invoke` 统一转 VM `kCall/kCallIndirect/kResolverCall`（含 vararg 规则）
+     - intrinsic：建立白名单映射（`fmuladd/fabs/sqrt/memcpy/memset/...`）
+   - 删除运行期 trap 回退语义，改为编译期不可通过。
+2. `core/runtime/src/vm_runtime_bridge.cpp`
+   - 扩展 VM2 执行器，覆盖与 lowering 对齐的 PIR 指令。
+   - 实现受控 FFI Gate（`kResolverCall/kFfiEnter/kFfiCall/kFfiExit`）。
+   - 对所有危险转换/越界场景统一 fail-closed。
+3. `core/tests/`
+   - 新增覆盖测试：
+     - success path（复杂算术/控制流）
+     - failure path（非法 opcode/越界/非法 cast）
+     - edge/security path（NaN/Inf/除零/大偏移 GEP）
+
+交付物：代码 + CTest + 代理端到端验证脚本。
+
+### Agent 3 (Security Reviewer)
+职责：安全与性能门禁。
+
+任务：
+1. 安全审计：
+   - 解析器与执行器边界检查、step budget、整数溢出、UB 转换。
+   - FFI 调用门禁与参数校验（禁止任意地址执行）。
+2. 一致性审计：
+   - 比对 native 与 VM 输出（随机/模糊输入）。
+   - 审计“无 native fallback”是否被违反。
+3. 性能审计：
+   - 统计 benchmark 回归，确保总体 <10%。
+
+交付物：阻断项列表（必须修复）+ 通过项报告。
+
+## 2. 分阶段执行
+
+### Phase 18-A（指令覆盖基线）
+- 输出当前已覆盖与缺口列表。
+- 建立 compile-time blocker（遇到未覆盖 IR 即失败）。
+
+### Phase 18-B（调用/内存模型闭环）
+- 完成 `call/invoke/gep(dynamic)/mem intrinsics` VM 化。
+- VM runtime 支持对应执行语义。
+
+### Phase 18-C（安全闭环）
+- 增加 fail-closed 与 UB 防护。
+- 增加模糊测试与边界测试。
+
+### Phase 18-D（性能闭环）
+- 热点路径走 JIT backend，冷路径走解释器。
+- perf gate 卡口：超过 10% 自动失败。
+
+## 3. 当前基线（2026-02-27）
+1. 已有 VM2 覆盖：整数/浮点基础算术、icmp/fcmp、select、switch lowering、部分 cast、phi、br、load/store（栈槽模型）。
+2. 已知缺口：
+   - 通用 `call/invoke`（含 vararg）未全覆盖。
+   - 内存 intrinsic 与动态复杂 GEP 语义仍不完整。
+   - compile-time blocker 尚未全面启用（部分路径仍 runtime trap）。
+
+## 4. 验收标准（通过即完成）
+1. 目标函数在 IR 与产物中均无 native fallback 执行路径。
+2. 任意受保护函数遇未覆盖语义时编译失败（非运行期降级）。
+3. `ctest` 通过：success/failure/security 三类测试齐全。
+4. 代理编译端到端通过，且差分结果与 native 一致（非禁止语义）。
+5. perf gate 达标：整体开销 <10%。
+
+## 5. Phase 18-E 进展记录（2026-02-27 晚间）
+1. 修复递归函数编译卡死：
+   - 根因：`inline_local_callees` 对递归被调函数重复内联，导致 IR 指数膨胀。
+   - 处理：新增“直接递归函数禁止内联”守卫。
+2. 修复 VM hostcall 段错误：
+   - 根因：`PtrToInt(栈地址)` 在 VM 降级中被当作槽值传播，运行时误当指针解引用。
+   - 处理：
+     - `ip_weaver_ir`：对可解析栈地址的 `PtrToInt` 直接降级为“槽位索引立即数”。
+     - `vm_runtime_bridge`：`kCall` 增加 `arg0_is_slot_base` 语义标志，仅在标志位打开时将 `arg0` 解释为槽基址并映射为真实内存指针。
+3. 回归验证结果：
+   - `ctest` 关键三项全部通过：
+     - `runtime_secure_ir_engine_test`
+     - `runtime_vm_runtime_bridge_vm2_test`
+     - `runtime_memory_hal_test`
+   - 复杂样例矩阵 10/10 通过（loop/nested/divmod/bitwise/struct/call/fp/switch/rec/goto）。
+   - 代理编译 `test/demo_flatten.c` 成功生成 ELF，运行输出正确：`protected_calc(9) = 12`。
+4. 当前结论：
+   - 在现有覆盖集内，复杂函数已走 VM 路径并保持与 native 一致。
+   - 对未覆盖 IR 仍保持编译期 fail-closed，不做运行期 native fallback。
+
+## 6. Phase 18-F 进展记录（2026-02-27 GPU 覆盖扩展）
+1. 新增 GPU 图形/设备执行级测试：
+   - OpenCL 设备执行集成测试：`core/tests/runtime/gpu/opencl_device_integration_test.cpp`
+   - Vulkan 设备执行集成测试：`core/tests/runtime/gpu/vulkan_device_integration_test.cpp`
+2. 覆盖内容：
+   - OpenCL：
+     - success：真实 `clBuildProgram + clEnqueueNDRangeKernel + clEnqueueReadBuffer` 结果校验
+     - failure：非法 kernel 源码构建失败
+     - edge/security：非法参数索引触发错误码，且有效路径可继续执行
+   - Vulkan：
+     - success：真实 `vkCreateInstance/vkCreateDevice/vkQueueSubmit/vkQueueWaitIdle/vkDeviceWaitIdle`
+     - failure：非法 extension 创建实例失败
+     - edge/security：`vkWaitForFences(timeout=0)` 返回超时类结果（未信号态）
+3. 环境兼容策略：
+   - 无 OpenCL loader 或无设备时，测试 `SKIP`（返回 0，避免误伤 CI）
+   - 无 Vulkan loader/设备时，测试 `SKIP`
+4. 构建接入：
+   - `core/tests/CMakeLists.txt` 已注册两个新测试并加入 `perf_smoke`。
+
+## 7. Phase 18-G 进展记录（2026-02-27 Rust 全覆盖推进）
+1. 代理层（`weaver_proxy.py`）：
+   - Rust 编译默认开启 `--protect-all-functions`（可通过 `EIPPF_RUST_FULL_COVERAGE=0` 关闭）。
+   - 自动注入 `--rust-crate-name=<crate>`，将“全覆盖”限定到当前 crate 符号域，避免误处理 `std/core/alloc` 运行时符号。
+2. IR Weaver（`ip_weaver_ir.cpp`）：
+   - 新增 CLI 开关：
+     - `--protect-all-functions`
+     - `--rust-crate-name=<name>`
+   - `should_protect_function` 增加 Rust 规则：
+     - 在 protect-all 下，仅保护当前 crate 的函数（mangled 名包含 crate 标识）。
+     - 排除 runtime/entry 关键符号（`main/_start/__rust_*`、`lang_start`、`eh_personality` 等）。
+3. 稳定性修复：
+   - 修复了 VM blob 匿名化与字符串二次加密顺序冲突，避免多函数场景下解密标志冲突导致的运行时误返回 0。
+   - 保留外部可见 Rust 导出符号（如 `#[no_mangle] extern "C"`），不强制匿名化为内部链接。
+4. 验证：
+   - 新增 `runtime_rust_vm_full_coverage_test`：
+     - 代理编译 Rust 样例（no_std）-> 产物与 C 驱动联编 -> 运行校验输出 `15 18`。
+   - 当前 `ctest`：13/13 全通过（含 Rust/OpenCL/Vulkan 设备级测试）。
+
+## 8. Phase 18-H 进展记录（2026-02-27 Cargo/rustc 零改造透明链接）
+1. `weaver_proxy.py` Rust 链接模式增强：
+   - 新增 `EmitKind.LINK`，对 Rust 默认 `rustc main.rs -o app` 与 `--emit=...link...` 走“透明链接模式”，不再误降级为 `.o`。
+   - Rust 链接阶段自动注入 VM runtime 链接参数（`-C link-arg=...`），包括：
+     - `libeippf_vm_rt.a`
+     - Linux: `-lstdc++ -pthread -lm -ldl`
+     - macOS: `-lc++ -pthread -lm`
+2. 零改造验证能力：
+   - `rustc` 直接命令（无改源码）可产出可执行并运行；
+   - `cargo build` 仅设置 `RUSTC_WRAPPER` + 环境变量（`EIPPF_IR_WEAVER_BIN`/`EIPPF_VM_RUNTIME_LIB`）即可构建并运行。
+3. 新增自动化测试：
+   - `runtime_rust_transparent_link_test`：
+     - 子用例 A：`rustc` 透明链接验证；
+     - 子用例 B：`cargo` 透明链接验证。
+4. 当前测试结果：
+   - `ctest` 14/14 全通过。

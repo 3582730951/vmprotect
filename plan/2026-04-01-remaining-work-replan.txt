@@ -1,0 +1,465 @@
+# 2026-04-01 剩余工作重规划（PM 多 Agent 并行）
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 当前主线已完成：
+  - `runtime safe-backend` 从 policy 推进到真实执行路径
+  - `HardenTarget -> runtime target anchor` 链路打通
+  - `artifact_audit --strict` 已从 lexical-only 升级到 `imports/symbols/signature presence`
+  - 本地验证已到 `30/30 tests passed`
+- 当前未完成但必须继续推进的剩余项：
+  - `T1 Signature Authenticity`
+  - `T2 MSVC Target Anchor Parity`
+  - `T3 Explicit Target Kind API`
+  - `T4 ELF/Mach-O Strict Tests`
+  - `T5 Dex/Script External Key Binding`
+
+Task Charter:
+- Objective:
+  - 在不由 PM 接管实现的前提下，完成剩余阻塞项的重规划、并行分派、审核门槛定义与下一轮实施前置冻结。
+- Scope:
+  - `core/tools/artifact_audit.py`
+  - `core/runtime/include/runtime/memory_hal.hpp`
+  - `core/cmake/HardenTarget.cmake`
+  - `core/include/contracts/protection_contracts.hpp`
+  - `core/tests/tools/*`
+  - `core/dex_toolchain/*`
+  - `core/script_guard/*`
+- Non-Goals:
+  - 本轮不直接编码修复 `T1-T5`
+  - 本轮不做 Git 推送、CI 下发
+  - 本轮不把 presence-based 签名校验伪装成真实性校验
+- Constraints:
+  - PM 不能临时接管实现
+  - 任何失败轨道必须重新分配新的 engineer/reviewer 接管
+  - 所有实现前必须先过计划评审与安全门
+- Acceptance Criteria:
+  - 形成正式的剩余工作 phase 切分
+  - 明确每个任务的 owner、文件边界、依赖顺序、质量门、接管规则
+  - 明确哪些是 release blocker，哪些可延期
+- Forbidden Shortcuts:
+  - 禁止 PM 直接改实现文件来补 agent 失败
+  - 禁止继续以文件后缀代替产物语义
+  - 禁止把 `presence_only` 当成签名真实性
+  - 禁止跳过 ELF/Mach-O 测试缺口
+  - 禁止把 `--key` CLI 当作 dex/script release 级方案
+- Source Of Truth:
+  - [2026-4-1-pm-multi-agent-execution.txt](/workspace/plan/2026-4-1-pm-multi-agent-execution.txt)
+  - [protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)
+  - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+  - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+  - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+  - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+  - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+
+Agent Roster:
+- Agent 1 / Planner / `main_agent`
+  - 责任：phase 切分、依赖图、文件所有权、strike ledger、最终验收
+  - 禁止：修改实现代码
+- Agent 2 / Engineer-A / replacement agent
+  - 责任：`T3 Explicit Target Kind API` + `T2 MSVC Target Anchor Parity`
+- Agent 2 / Engineer-B / replacement agent
+  - 责任：`T1 Signature Authenticity` + `T4 ELF/Mach-O Strict Tests`
+- Agent 2 / Engineer-C / replacement agent
+  - 责任：`T5 Dex/Script External Key Binding`
+- Agent 3 / Security Reviewer
+  - 责任：逐轨 gate，输出 `PASS/FAIL + blocking reason`
+- Agent 3 / Independent Validation Reviewer
+  - 责任：测试矩阵与 false-pass 风险复核
+
+Delegation Map:
+- Track A / Planner
+  - 输出：本计划、Decision Log、State Snapshot、接管规则
+- Track B / Engineer-A
+  - 输出：显式 `target_kind` 契约与 MSVC parity 实施方案
+- Track C / Engineer-B
+  - 输出：签名真实性门禁设计与跨平台 strict 测试矩阵
+- Track D / Engineer-C
+  - 输出：dex/script 外部密钥提供与消费链设计
+- Track E / Security Reviewer
+  - 输出：blocker 列表、验收门槛、延后项边界
+
+Canonical Artifacts:
+- `Task Charter`
+- `Decision Log`
+- `State Snapshot`
+- `Strike Ledger`
+- `Remaining Work Phase Plan`
+
+Parallel Tracks:
+- `Phase 1 / 契约冻结`
+  - Owner: Planner + Engineer-A + Security Reviewer
+  - 内容：
+    - 冻结显式 `target_kind` 输入契约
+    - 冻结签名状态语义：`structure_present` / `authenticity_verified`
+  - 依赖：无
+  - 阻塞后续：`T2`, `T1`, `T4`
+- `Phase 2 / 签名真实性`
+  - Owner: Engineer-B
+  - 内容：
+    - 把 `signature_state_passed` 从 `presence_only` 升级为真实性校验
+    - 驱动签名 requirement 从后缀驱动改为 manifest/target kind 驱动
+  - 依赖：Phase 1
+- `Phase 3 / MSVC 注入等价`
+  - Owner: Engineer-A
+  - 内容：
+    - 为非 GNU/Clang 补齐 runtime target 注入等价机制
+    - 关闭 Windows/MSVC 的 hardened target 偏差
+  - 依赖：Phase 1
+- `Phase 4 / Strict 测试矩阵`
+  - Owner: Engineer-B
+  - 内容：
+    - 补 ELF `.ko` 与 Mach-O 的 imports/symbols/signature/parse-failure
+  - 依赖：Phase 2
+- `Phase 5 / Dex/Script 外部密钥链`
+  - Owner: Engineer-C
+  - 内容：
+    - 去除静态 `--key` release 路径
+    - 引入 key provider + loader/launcher 消费链
+  - 依赖：可与 Phase 2/3 并行
+
+File Ownership:
+- [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+  - Primary Owner: Engineer-A
+- [protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)
+  - Primary Owner: Engineer-A
+- [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+  - Primary Owner: Engineer-A
+- [backend_policy.cpp](/workspace/core/runtime/src/backend_policy.cpp)
+  - Primary Owner: Engineer-A
+- [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+  - Primary Owner: Engineer-B
+- [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - Primary Owner: Engineer-B
+- `core/tests/tools/*` 新增 ELF/Mach-O fixture
+  - Primary Owner: Engineer-B
+- [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+  - Primary Owner: Engineer-C
+- [main.cpp](/workspace/core/script_guard/src/main.cpp)
+  - Primary Owner: Engineer-C
+- [dex_toolchain_smoke_test.cpp](/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp)
+  - Primary Owner: Engineer-C
+- [script_guard_smoke_test.cpp](/workspace/core/tests/script_guard/script_guard_smoke_test.cpp)
+  - Primary Owner: Engineer-C
+
+Dependencies:
+- `T3 -> T2`
+  - 先显式 target kind，再做 MSVC parity
+- `T1 -> T4`
+  - 先冻结签名真实性语义，再补跨平台 strict 测试
+- `T5` 与 `T1/T2` 可并行
+- 全部最终收敛后统一跑：
+  - `cmake -S core -B build -G Ninja`
+  - `cmake --build build -j`
+  - `ctest --test-dir build --output-on-failure`
+  - `cmake --build build --target perf_smoke`
+
+Regression Perimeter:
+- Directly Changed Logic:
+  - signature audit
+  - runtime target injection
+  - hardened target classification
+  - dex/script key handling
+- Adjacent Paths:
+  - `post_link_mutator`
+  - `backend_policy`
+  - tools/test CMake wiring
+  - `perf_smoke`
+- Unchanged Guarantees:
+  - fail-closed 默认不变
+  - PM 不写实现
+  - 当前已通过的 safe-backend 行为不回退
+- Second-Order Failure Scenarios:
+  - target kind 契约升级导致旧 target 名称行为漂移
+  - Windows/MSVC 与 GNU/Clang 结果再度分叉
+  - dex/script 改成 provider 后引入 fail-open
+
+Unchanged Guarantees:
+- `runtime safe-backend` 已有行为保持
+- `artifact_audit` denylist/W+X/bundle invariant gate 保持
+- `hardened target anchor` GNU/Clang 路径已验证结果保持
+- 当前 `30/30` 测试结果作为回归基线
+
+Second-Order Risks:
+- `signature authenticity` 涉及平台专有结构，若直接硬写假规则，会制造新的 false-pass
+- `MSVC parity` 若处理不当，Windows 路径会出现“测试环境通过，发布环境失效”
+- `dex/script` 若 provider 接口设计不严，可能把 key 外流面扩大
+- `explicit target kind` 若未与 manifest 统一，会出现 build-time 与 audit-time 语义分裂
+
+Model Routing:
+- Planner: 当前主会话模型
+- Engineer-A: `gpt-5.3-codex high`
+- Engineer-B: `gpt-5.3-codex high`
+- Engineer-C: `gpt-5.3-codex high`
+- Security Reviewer: `gpt-5.4 high`
+- Validation Reviewer: `gpt-5.2 high`
+
+Context Packages:
+- Engineer-A 只依赖：
+  - contracts
+  - `HardenTarget`
+  - runtime target 注入链
+- Engineer-B 只依赖：
+  - `artifact_audit`
+  - strict tests
+  - driver/signature policy
+- Engineer-C 只依赖：
+  - dex/script CLI
+  - smoke tests
+  - key provider 契约
+- Reviewers 不得把 engineer 摘要当主证据
+
+Quality Gates:
+- `G1 Planning Gate`
+  - Phase 切分、所有权、验收门槛明确
+- `G2 Security Gate`
+  - blocker 列表逐项对齐
+- `G3 Build Gate`
+  - 全量 configure/build/test/perf
+- `G4 Authenticity Gate`
+  - `signature_state_passed` 不能再是 `presence_only`
+- `G5 Windows Gate`
+  - MSVC parity 测试通过
+- `G6 Release Gate`
+  - dex/script 无 key provider 时 fail-closed
+
+Assurance Scorecard:
+- PM 边界完整性：`PASS`
+- 多 agent 重分配规则：`PASS`
+- 剩余 blocker 识别：`PASS`
+- 实施前审核充足性：`PASS`
+- 当前是否允许编码：`NOT YET`
+  - 原因：Phase 1 契约冻结尚未正式批准
+
+Merge Order:
+- `M1` 契约冻结：`T3`
+- `M2` Windows parity：`T2`
+- `M3` 签名真实性：`T1`
+- `M4` ELF/Mach-O strict 测试：`T4`
+- `M5` dex/script 外部密钥链：`T5`
+
+Open Risks:
+- `MSVC` 路径目前仍是 release blocker
+- `signature authenticity` 仍未实现
+- `dex/script` 仍未从声明型安全进入真实消费链
+- 当前还未进入新的编码回合
+
+State Snapshot:
+- 当前代码基线稳定，`30/30` 和 `perf_smoke` 已通过
+- 新规则已生效：
+  - PM 不能临时接管实现
+  - agent 失败必须重新分配新 agent
+- 下一步不是编码，而是：
+  - 先让本计划作为新的执行基线
+  - 再按 `Engineer-A/B/C` 重分配实现轨
+  - 由 `Security Reviewer + Validation Reviewer` 先审核通过后，才进入下一轮编码
+  - 注意：`T5` 轨存在失败 agent 留下的未验证半成品，新的 `Engineer-C` 必须接管并完成验证，PM 不接手
+
+## Active Assignment Snapshot
+- `Engineer-A / Dewey / 019d4b6b-83e5-7681-bfc3-dfcf9f1abe2f`
+  - Track: `T3 Explicit Target Kind API` + `T2 MSVC Target Anchor Parity`
+  - Write Scope:
+    - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+    - [protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)
+    - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+    - [backend_policy.cpp](/workspace/core/runtime/src/backend_policy.cpp)
+    - `core/tests/tools/*`
+    - [CMakeLists.txt](/workspace/core/tests/CMakeLists.txt)
+- `Engineer-B / Jason / 019d4b6b-8682-7953-a256-68a9f3c1723f`
+  - Track: `T1 Signature Authenticity` + `T4 ELF/Mach-O Strict Tests`
+  - Write Scope:
+    - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+    - [protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)
+    - `core/tests/tools/*`
+    - [CMakeLists.txt](/workspace/core/tests/CMakeLists.txt)
+- `Engineer-C / Epicurus / 019d4b6b-8549-72b3-9564-8cad1896c8a8`
+  - Track: `T5 Dex/Script External Key Binding`
+  - Write Scope:
+    - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+    - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+    - [dex_toolchain_smoke_test.cpp](/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp)
+    - [script_guard_smoke_test.cpp](/workspace/core/tests/script_guard/script_guard_smoke_test.cpp)
+
+## Reassignment Rule Snapshot
+- 任一 Engineer 若出现以下任一项，记 `missing_evidence` 或对应 strike，并立即重分配新 agent：
+  - 未提交可审阅证据
+  - 未跑完自己轨道相关验证
+  - 越权修改非自己 write scope
+  - 把 false-pass 包装成 PASS
+- PM 不得接管以上任一轨道的实现，只能：
+  - 记录 strike
+  - 冻结证据
+  - 重分配新 engineer
+
+## Strike Ledger Snapshot
+- `Engineer-A / Dewey / 019d4b6b-83e5-7681-bfc3-dfcf9f1abe2f`
+  - Track: `T3 + T2`
+  - Result: `FAIL`
+  - Reason:
+    - 未提交实现代码
+    - 未运行任何验证
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-A`
+- `Engineer-B / Jason / 019d4b6b-8682-7953-a256-68a9f3c1723f`
+  - Track: `T1 + T4`
+  - Result: `FAIL`
+  - Reason:
+    - 未提交实现代码
+    - 未运行任何验证
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-B`
+- `Engineer-C / Epicurus / 019d4b6b-8549-72b3-9564-8cad1896c8a8`
+  - Track: `T5`
+  - Result: `FAIL`
+  - Reason:
+    - 仅报告了未验证的半成品
+    - 未运行任何构建/测试验证
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-C`
+
+- `Replacement Engineer-A / Ampere / 019d4b72-6b32-7e41-a2b5-594d339cc150`
+  - Track: `T3 + T2`
+  - Result: `FAIL`
+  - Reason:
+    - 未提交实现代码
+    - 未运行任何验证
+    - 错误把计划文件变更当作自己轨道产出
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-A`
+- `Replacement Engineer-B / Nietzsche / 019d4b72-6f7d-7a03-8997-de99fb34d334`
+  - Track: `T1 + T4`
+  - Result: `FAIL`
+  - Reason:
+    - 未提交实现代码
+    - 未运行任何验证
+    - 报告越权触碰计划文件，不在 write scope 内
+  - Strike:
+    - `missing_evidence = 1`
+    - `ownership_violation = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-B`
+- `Replacement Engineer-C / Carver / 019d4b72-6d47-7252-9d74-b74c7e3c4e88`
+  - Track: `T5`
+  - Result: `FAIL`
+  - Reason:
+    - 未提交实现代码
+    - 未运行任何验证
+    - 错误把计划文件变更当作自己轨道产出
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 重新分配新的 `Engineer-C`
+
+- `Replacement Engineer-A v3 / James / 019d4b79-703e-7bc2-bcd6-00d291c0cc46`
+  - Track: `T3 + T2`
+  - Result: `FAIL`
+  - Reason:
+    - 已有代码落地，但未运行任何验证
+  - Landed But Unverified:
+    - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+    - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+    - [CMakeLists.txt](/workspace/core/tests/tools/CMakeLists.txt)
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 由新的 `Engineer-A` 接管现有代码并完成验证/修正
+- `Replacement Engineer-B v3 / Kierkegaard / 019d4b79-717d-7dc1-9f8e-d9443f262316`
+  - Track: `T1 + T4`
+  - Result: `FAIL`
+  - Reason:
+    - 已有代码落地，但未运行任何验证
+  - Landed But Unverified:
+    - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+    - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 由新的 `Engineer-B` 接管现有代码并完成验证/修正
+- `Replacement Engineer-C v3 / Euclid / 019d4b79-72a7-7be0-ab04-26f915fa5621`
+  - Track: `T5`
+  - Result: `FAIL`
+  - Reason:
+    - 仅落地了部分代码，未完成 `dex + tests`
+    - 未运行任何验证
+  - Landed But Unverified:
+    - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+    - 以及更早一轮遗留的 [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+  - Strike:
+    - `missing_evidence = 1`
+  - Action:
+    - 关闭 agent
+    - 由新的 `Engineer-C` 接管现有代码并完成验证/修正
+
+## PM Integration Closeout (2026-04-02)
+- Trigger:
+  - 用户明确授权 PM 执行一次“只做集成、验证、保留/退回判定，不新增功能实现”的收口动作。
+- Scope:
+  - `T3 + T2`：runtime target injection / test integration
+  - `T1 + T4`：artifact audit signature gate
+  - `T5`：`dex_toolchain` / `script_guard` CLI 与 smoke test 契约
+
+### Keep / Reject Decisions
+- `T3 + T2`
+  - Keep:
+    - 保留 `eippf_harden_target(... TARGET_KIND ...)` 的显式 target 链路
+    - 保留 runtime target anchor 机制
+    - 将 [CMakeLists.txt](/workspace/core/tests/CMakeLists.txt) 中相关 runtime tests 全部接到显式 `TARGET_KIND` 链路
+  - Reject:
+    - 不恢复旧的“默认 desktop fallback + 旧宏单独驱动 safe-backend”测试模式
+- `T1 + T4`
+  - Keep:
+    - 保留 `signature_details.required / structure_present / authenticity_verified / validation_mode`
+  - Reject:
+    - 退回“在未实现真实性校验器时直接把 required artifact 判死”的逻辑
+    - 当前主线恢复为“结构存在性通过”语义，真实性校验继续保留为后续 blocker
+- `T5`
+  - Keep:
+    - 保留 `--key-provider` / `--key-id` 外部 key 模式
+    - 保留 manifest 不嵌入 key / plaintext fingerprint 的方向
+  - Reject:
+    - 不回退到 `--key=` 命令行明文密钥模式
+    - 仅修正 smoke test 以匹配当前 CLI 契约
+
+### Files Integrated In This Closeout
+- [CMakeLists.txt](/workspace/core/tests/CMakeLists.txt)
+- [dex_toolchain_smoke_test.cpp](/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp)
+- [script_guard_smoke_test.cpp](/workspace/core/tests/script_guard/script_guard_smoke_test.cpp)
+- [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+
+### Verification
+- Passed:
+  - `cmake -S /workspace/core -B /workspace/build_pm -G Ninja`
+  - `cmake --build /workspace/build_pm -j`
+  - `ctest --test-dir /workspace/build_pm --output-on-failure`
+  - `cmake --build /workspace/build_pm --target perf_smoke`
+- Result:
+  - `30/30` tests passed
+  - `perf_smoke` passed
+
+### Residual Risks
+- `MSVC` 仍缺等价 target anchor / compile-contract 闭环
+- 当前签名 gate 仍是 `structure-present` 级别，不是完整真实性验证
+- `TARGET_KIND` 还未贯通到 mutator/audit 的统一 truth source
+- `dex/script` 当前 provider 仍是本地明文 provider file，不是最终外部密钥服务形态

@@ -1,0 +1,10 @@
+Agent5 安全审查 v1
+结论：FAIL
+
+问题
+1. 发现早期实现将注解函数做 external->internal 改写，存在跨翻译单元 ABI 破坏风险（外部引用可能链接失败）。
+
+处置要求
+1. 删除对 external 函数的强制 internalization。
+2. 仅允许重命名 local linkage 符号。
+3. 通过 strip 实现 IDA 侧 `sub_` 效果，不以 ABI 风险换取符号隐藏。

@@ -1,0 +1,22 @@
+Agent3 (Security Reviewer) 审核报告 - v1
+日期：2026-02-27
+结论：FAIL
+
+不通过项
+1. Manifest 安全链路不足
+- 缺少 canonicalization/profile 固化要求，存在解析歧义导致签名绕过风险。
+2. 缺少双签主体隔离
+- 仅提签名，未要求不同 principal + 不同 key 的强制校验。
+3. 时间新鲜度校验不完整
+- 缺少可信时间锚与本地时钟回拨检测策略。
+4. 反回滚缺少防篡改持久化设计
+- 仅提高水位概念，未规定双槽/原子更新/MAC 封装。
+5. Critical 降级审批绑定不完整
+- 无 payload hash 与签名 hash 绑定，存在“仅凭 ID 伪造审批”风险。
+
+整改建议
+1. 加入 canonicalization + parser parity。
+2. 增加双签主体/密钥隔离硬规则。
+3. 加入可信时间锚 + clock rollback fail-closed。
+4. 明确高水位密封存储与损坏恢复策略。
+5. 补充 critical 降级哈希绑定。

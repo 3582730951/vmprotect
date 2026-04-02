@@ -1,0 +1,19 @@
+# Phase 1: 工具目标
+1. 新增 `core/ip_weaver` 预编译源码改写工具（Source-to-Source）。
+2. 仅匹配 `[[clang::annotate("hft_secure_rule")]]` 函数定义。
+3. 使用 `Rewriter` 将原函数体替换为状态机骨架，验证 AST 管线可用。
+
+# Phase 2: 核心实现
+1. `MatchFinder` + `FrontendAction` + `ASTConsumer` 接入。
+2. 回调中提取签名与函数体文本；对无函数体/模板函数/宏位置进行跳过。
+3. 生成 `while(true)+switch(state)` 伪状态机并替换函数体。
+4. 支持 `-o` 输出到 `.weaved.cpp`。
+
+# Phase 3: 构建集成
+1. 新增 `EIPPF_BUILD_IP_WEAVER` 开关并在 `core/CMakeLists.txt` 挂载 `ip_weaver` 子目录。
+2. `ip_weaver/CMakeLists.txt` 使用 `LLVM` + `libclang-cpp` 进行链接。
+3. 若构建机缺少 Clang Tooling 头文件，自动禁用 `ip_weaver`，不影响主线目标构建。
+
+# Phase 4: 验收基线
+1. 主工程 `cmake --build` 与 `ctest` 通过。
+2. 在具备 Clang 开发头环境的构建机上，`ip_weaver` 可直接编译并执行。

@@ -1,0 +1,53 @@
+2026-2-27 任意优化级别 VM+JIT+CFF 计划（Agent1 v1）
+日期：2026-02-27
+目标：在 `-O0/-O1/-O2/-O3/Os` 下都可稳定启用 VM+JIT+CFF，并在 IDA 中尽量呈现 `sub_` 风格函数名，同时不影响程序正确执行。
+
+Phase 1: 问题根因
+1. `-O2/-O3` 下，常量传播与内联会删除/折叠受保护函数，导致后续 VM/JIT/CFF pass 无目标可处理。
+2. ELF 未 strip 或符号可见性过高时，IDA 会显示原始函数名。
+
+Phase 2: 架构方案
+1. 新增 `ProtectionAnchorPass`（PipelineStartEP）
+- 提前扫描 `drm_critical_ip` / `drm_jit_target` / `drm_flatten` 注解函数。
+- 给目标函数打 `noinline + optnone`，阻断跨函数常量折叠与内联删除。
+- 对可内部化函数设置 `hidden/internal`，减少明文符号暴露。
+2. 组合策略插件
+- 新增 `eippf_protection_suite_pass`，统一注册：Anchor -> VM -> JIT -> CFF。
+- 在任意优化级别下，Anchor 先执行，防止后续目标丢失。
+3. 包装器增强
+- 支持多 plugin 注入（单次编译可加载 suite 或多个插件）。
+- 链接成功后可选符号清理（strip all），让 IDA 对内部函数显示 `sub_...`。
+
+Phase 3: IDA 函数名处理（sub_）
+1. 编译阶段
+- 保护函数改为 hidden/internal，避免进入动态符号表。
+2. 链接后阶段
+- 默认开启（或通过环境变量开启）`strip --strip-all`（ELF）。
+- 若 strip 失败：按 fail-closed 策略可直接返回错误码，避免“半保护”产物。
+3. 兼容性
+- 对共享库导出符号场景保留开关：可禁用 strip-all，改为 strip-debug。
+
+Phase 4: 代码规范与安全要求
+1. 禁止异常/RTTI，统一 `Result<T, ErrorCode>`。
+2. 所有新逻辑 `noexcept`，输入参数严格校验。
+3. 包装器必须透传 stdout/stderr 与原始退出码。
+4. 新增选项不得默认破坏既有 CI（所有增强均可配置，默认安全可用）。
+
+Phase 5: 测试与验收
+1. O-level 覆盖：`-O0/-O2/-O3` 下编译同一样例，验证受保护函数未被常量折叠为字面量。
+2. 保护覆盖：IR 中存在 VM/JIT/CFF 预期痕迹（按注解路由）。
+3. IDA 等价验证：使用 `nm/readelf` 检查受保护函数符号不可见，strip 后仅保留必要动态符号。
+4. 回归：程序输出一致，exit code 一致。
+
+Phase 6: 落地文件
+1. `core/passes/src/ProtectionAnchorPass.cpp`
+2. `core/passes/include/passes/ProtectionAnchorPass.hpp`
+3. `core/passes/src/ProtectionSuitePassPlugin.cpp`
+4. `core/passes/CMakeLists.txt`（新增 target）
+5. `core/wrapper/eippf_cc.py`（多插件 + strip 选项）
+6. `core/tests/...`（新增最小回归脚本/样例）
+
+验收门槛
+1. 任意优化级别下，注解函数不会被折叠为常量打印路径。
+2. 启用 strip 后，`protected_calc` 不出现在符号表，反编译显示 `sub_` 风格。
+3. 无新增不安全代码路径（命令注入、未校验输入、错误吞噬）。

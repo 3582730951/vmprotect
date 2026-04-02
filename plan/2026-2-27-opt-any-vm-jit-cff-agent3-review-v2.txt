@@ -1,0 +1,11 @@
+Agent3 (Security Reviewer) 审核 v2
+结论：PASS
+
+通过点
+1. strip 工具白名单与参数数组调用可避免命令注入。
+2. fail-closed 与兼容模式边界清晰。
+3. internalization 安全边界覆盖 main/导出 ABI。
+4. 对 wrapper 输入校验有明确拒绝策略。
+
+保留建议
+1. 将 strip 默认值保持关闭，避免影响非保护构建；由环境变量显式开启。

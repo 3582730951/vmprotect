@@ -1,0 +1,266 @@
+# 2026-04-02 签名真实性与推送收口计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 当前代码基线已经完成：
+  - `TARGET_KIND` 真相源贯通
+  - `MSVC` target marker parity
+  - `ELF .ko` / `Mach-O` strict matrix
+  - `dex/script` provider 协议与负向门禁
+  - `30/30 tests passed`
+  - `perf_smoke passed`
+- 当前还未完全满足最初高保障计划的唯一核心缺口：
+  - `signature authenticity` 仍停在 `format_validation_only`
+- 本轮目标：
+  - 将 `artifact_audit` 升级为“格式校验 + 外部真实性验证协议”
+  - 在本地测试中验证该真实性协议链
+  - 完成 Git 初始化、提交、推送到 `origin`
+
+Task Charter:
+- Objective:
+  - 把签名审计从“结构存在 + 格式一致”推进到“可接入外部真实性验证器的 fail-closed 闭环”，并把当前仓库状态推送到远端 GitHub 仓库。
+- Scope:
+  - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+  - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - `core/tests/tools/signature_verifier_fixture.py` 新增
+  - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+  - 根目录 `.gitignore`
+- Non-Goals:
+  - 不在 Linux 本机伪造真实 Windows/macOS 系统信任链
+  - 不在本轮实现远程 KMS/签名服务
+  - 不做 PR 流程，只做直接推送
+- Constraints:
+  - PM 负责方案、分派、验收、提交和推送
+  - 实现轨只能按文件所有权修改
+  - 所有签名真实性失败必须 fail-closed
+- Acceptance Criteria:
+  - `--strict` 下 required 签名策略必须来自 `--target-kind` 或 manifest，不允许只靠后缀推断
+  - `artifact_audit --strict` 对 required signed target 在无 verifier 时失败
+  - `artifact_audit --strict` 在提供 verifier 且 verifier 返回 verified 时通过
+  - `artifact_audit --strict` 在 verifier 拒绝/异常/输出非法时失败
+  - 全量 `configure/build/ctest/perf_smoke` 通过
+  - 仓库完成 git 初始化、提交、推送
+- Forbidden Shortcuts:
+  - 禁止继续把 `required_format_only` 当成真实性通过
+  - 禁止 verifier 失败时降级为格式通过
+  - 禁止提交 `passwd.txt`
+  - 禁止把 token 写入仓库文件或计划文件
+
+Architecture Contract:
+- `artifact_audit` 新增 `--signature-verifier=<path>`
+- `strict` policy source：
+  - `--strict` + required signed target 时，必须存在 `--target-kind` 或 manifest `target_kind`
+  - 仅 path suffix 命中时，在 `--strict` 下固定为 `signature_policy_unresolved`
+- verifier 协议：
+  - verifier 路径必须是绝对路径
+  - verifier 路径必须通过信任校验：
+    - allowlist 路径前缀，或
+    - 固定 `sha256`
+  - 相对路径、临时目录路径、信任校验失败 -> `signature_verifier_untrusted`
+  - 输入参数至少含：
+    - `--artifact`
+    - `--artifact-kind`
+    - `--target-kind`
+    - `--manifest`（若存在）
+    - `--artifact-sha256`
+  - verifier 标准输出必须是 JSON，至少含：
+    - `schema_version: 1`
+    - `verified: bool`
+    - `reason: str`
+    - `artifact_sha256: str`
+  - verifier 退出码非 `0`、JSON 非法、字段缺失、字段类型错误、stdout 为空 -> `signature_verifier_failed`
+  - verifier 回传 `artifact_sha256` 与 audit 计算值不一致 -> `signature_verifier_digest_mismatch`
+  - verifier 调用必须有超时与输出大小上限；超时或超限 -> `signature_verifier_failed`
+- `validation_mode` 扩展：
+  - `not_required`
+  - `optional_format_only`
+  - `optional_verifier_ignored`
+  - `required_missing`
+  - `required_format_invalid`
+  - `policy_unresolved`
+  - `required_authenticity_missing`
+  - `external_verifier`
+- `passed` 规则：
+  - 非 required：现有逻辑保持
+    - 即使提供了 verifier，只要 target 非 required，verifier 失败也不得影响通过；该路径固定为 `optional_verifier_ignored`
+  - required：
+    - 必须 `policy_parse_ok`
+    - 必须 `parse_ok`
+    - 必须 `structure_present`
+    - 必须 `format_valid`
+    - 必须 `authenticity_verified`
+- 执行顺序：
+  - 先 policy 解析
+  - `policy_unresolved` 时不得调用 verifier，必须直接 fail-closed
+  - verifier 路径不受信时不得调用 verifier，必须直接 fail-closed
+  - 只有 `required + policy_parse_ok + parse_ok + structure_present + format_valid` 时才允许调用 verifier
+- `HardenTarget`：
+  - 若配置了全局 `signature verifier tool`，自动传给 audit
+  - 若未配置，不影响非 signed target
+
+Agent Roster:
+- `Agent 1 / Planner / main_agent`
+  - 责任：方案冻结、验收、git 提交/推送
+- `Agent 2 / Architect`
+  - 责任：审核 verifier 协议与 fail-closed 语义
+- `Agent 2 / Engineer`
+  - 责任：按 PM 指令修改 audit/test/CMake
+- `Agent 3 / Security Reviewer`
+  - 责任：审查真实性 gate 是否存在 fail-open
+- `Agent 3 / Validation Reviewer`
+  - 责任：审查 false-pass 与测试矩阵
+
+Parallel Tracks:
+- `Track A / Architecture Review`
+  - Owner: Architect
+  - 输出：是否认可 verifier 协议与 fail-closed 规则
+- `Track B / Security Review`
+  - Owner: Security Reviewer
+  - 输出：blockers 或 PASS
+- `Track C / Implementation`
+  - Owner: Engineer
+  - 输出：audit + tests + .gitignore
+- `Track D / Git Push`
+  - Owner: Planner
+  - 输出：commit + push
+
+File Ownership:
+- [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+  - Engineer
+- [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - Engineer
+- `core/tests/tools/signature_verifier_fixture.py`
+  - Engineer
+- [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+  - Engineer
+- `.gitignore`
+  - Planner
+
+Quality Gates:
+- `G1`: 架构/安全 reviewer 先通过
+- `G2`: verifier 缺失/失败/非法 JSON 负向测试覆盖
+- `G3`: 全量构建测试通过
+- `G4`: 推送成功
+
+Minimum Test Matrix:
+- `Case 1`
+  - required: `false`
+  - verifier: `none`
+  - expected `validation_mode`: `not_required`
+  - expected `signature_state_passed`: `true`
+  - expected strict exit: `0`
+- `Case 2`
+  - required: `false`
+  - verifier: `provided + returns verified=true`
+  - expected `validation_mode`: `optional_verifier_ignored`
+  - expected `signature_state_passed`: `true`
+  - expected strict exit: `0`
+- `Case 3`
+  - required: `false`
+  - verifier: `provided + non-zero`
+  - expected `validation_mode`: `optional_verifier_ignored`
+  - expected `signature_state_passed`: `true`
+  - expected strict exit: `0`
+- `Case 4`
+  - required: `true`
+  - structure: `missing`
+  - verifier: `none`
+  - expected `validation_mode`: `required_missing`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 5`
+  - required: `true`
+  - structure: `present but invalid`
+  - verifier: `none`
+  - expected `validation_mode`: `required_format_invalid`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 6`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `none`
+  - expected `validation_mode`: `required_authenticity_missing`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 7`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `returns verified=true`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `true`
+  - expected strict exit: `0`
+- `Case 8`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `returns verified=false`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 9`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `non-zero`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 10`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `invalid JSON`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 11`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `schema invalid / missing verified / wrong type`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 12`
+  - required: `true`
+  - structure: `present and valid`
+  - verifier: `timeout or stdout empty`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 13`
+  - policy: `explicit target-kind / manifest mismatch`
+  - verifier: `provided`
+  - expected `validation_mode`: `policy_unresolved`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+  - extra rule: verifier must not be invoked
+- `Case 14`
+  - policy: `required only by path suffix`
+  - verifier: `none`
+  - expected `validation_mode`: `policy_unresolved`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+- `Case 15`
+  - verifier path: `relative or temp path`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+  - expected failure: `signature_verifier_untrusted`
+- `Case 16`
+  - verifier: `verified=true but artifact_sha256 mismatched`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+  - expected failure: `signature_verifier_digest_mismatch`
+- `Case 17`
+  - verifier: `timeout`
+  - expected `validation_mode`: `external_verifier`
+  - expected `signature_state_passed`: `false`
+  - expected strict exit: `non-zero`
+  - expected failure: `signature_verifier_failed`
+
+State Snapshot:
+- 当前主线稳定
+- 本轮是最后一个“真实性闭环 + 推送”收口阶段

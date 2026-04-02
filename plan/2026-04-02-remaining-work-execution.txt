@@ -1,0 +1,205 @@
+# 2026-04-02 剩余工作执行计划（PM 多 Agent 并行）
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 当前基线已经稳定：
+  - `30/30` tests passed
+  - `perf_smoke` passed
+  - `runtime safe-backend` 与 `hardened target` 主链已闭环
+- 本轮目标是把剩余 blocker 全部收口到可验收状态：
+  - `T1` 显式 `target_kind` 真相源统一
+  - `T2` `MSVC` target injection parity
+  - `T3` 签名 gate 从 `presence_only` 升级到“结构+策略一致性”，并显式区分真实性能力
+  - `T4` 补齐 `ELF .ko` / `Mach-O` strict matrix
+  - `T5` `dex/script` 外部密钥绑定从“声明式”推进到“可消费协议 + 负向门禁”
+
+Task Charter:
+- Objective:
+  - 在不回退现有安全基线的前提下，完成剩余 blocker 的设计冻结、实现、复审、验证与验收。
+- Scope:
+  - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+  - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+  - [post_link_mutator](/workspace/core/post_link_mutator/src/main.cpp)
+  - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+  - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+  - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+  - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+  - 对应 `core/tests/*`
+- Non-Goals:
+  - 本轮不做 GitHub 推送与 CI 下发
+  - 不伪造跨平台完整 PKI/系统信任链验证能力
+  - 不把 `provider file` 当成最终发布级密钥服务
+- Constraints:
+  - PM 负责编排、计划、审查整合与验收
+  - 工程实现按文件所有权分轨，禁止并发写同一文件
+  - 所有发布语义必须 fail-closed
+- Acceptance Criteria:
+  - `TARGET_KIND` 从构建到 mutator/audit 使用同一真相源
+  - `MSVC` 路径不再依赖 GNU/Clang weak symbol 假设
+  - 签名 gate 不再是纯 `presence_only`
+  - `ELF .ko` / `Mach-O` strict tests 补齐
+  - `dex/script` 新增 provider 负向验证并落地可消费协议字段
+  - 全量 `configure/build/ctest/perf_smoke` 通过
+- Forbidden Shortcuts:
+  - 禁止把 `authenticity_verified=false` 但 `signature_state_passed=true` 伪装成真实性校验
+  - 禁止继续用 target 名称/后缀当唯一 target 语义
+  - 禁止重新启用 `--key=` 明文命令行密钥
+  - 禁止为通过测试引入 fail-open
+
+Agent Roster:
+- `Agent 1 / Planner / main_agent`
+  - 职责：计划、依赖图、决策日志、集成复验、验收
+- `Agent 2 / Engineer-A / Nash`
+  - 责任：`T1 + T2`
+  - 写入范围：
+    - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+    - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+    - [post_link_mutator](/workspace/core/post_link_mutator/src/main.cpp)
+    - [post_link_mutator_smoke_test.cpp](/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp)
+- `Agent 2 / Engineer-B / Dalton`
+  - 责任：`T3 + T4`
+  - 写入范围：
+    - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+    - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+- `Agent 2 / Engineer-C / Herschel`
+  - 责任：`T5`
+  - 写入范围：
+    - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+    - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+    - [dex_toolchain_smoke_test.cpp](/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp)
+    - [script_guard_smoke_test.cpp](/workspace/core/tests/script_guard/script_guard_smoke_test.cpp)
+- `Agent 3 / Security Reviewer / Leibniz`
+  - 责任：只读审查设计与代码，不写主工作区
+- `Agent 3 / Validation Reviewer / Averroes`
+  - 责任：只读审查测试矩阵与 false-pass 风险，不写主工作区
+
+Architecture Contract:
+- `target_kind` 统一契约：
+  - `HardenTarget` 显式传入 `TARGET_KIND`
+  - `post_link_mutator` 接收显式 `--target-kind`
+  - `artifact_audit` 接收显式 `--target-kind` 或 `--manifest`
+  - requirement 判断优先用显式 `target_kind`，不再优先依赖文件后缀
+- `MSVC parity`：
+  - 允许继续保留 GNU/Clang weak anchor
+  - Windows/MSVC 增加模块内 symbol lookup 等价路径
+  - 不要求 runtime library 重新按 target 重编译
+- `signature gate`：
+  - 输出字段仍保留：
+    - `required`
+    - `structure_present`
+    - `authenticity_verified`
+    - `validation_mode`
+  - `validation_mode` 必须诚实反映能力：
+    - `not_required`
+    - `missing`
+    - `structural_consistency`
+    - `external_verifier`
+  - 在当前环境无外部 verifier 时，`passed` 至少要求：
+    - 策略要求存在签名
+    - 签名结构存在
+    - 签名负载非空/边界一致
+    - target/manifest/artifact 一致
+- `dex/script key binding`：
+  - 继续外部 provider 模式
+  - 增加 provider 协议元数据，至少绑定 `key_id`
+  - 增加 provider 负向测试：缺失/拒绝/格式错误/ID 不匹配
+
+Parallel Tracks:
+- `Track A / Target Contract`
+  - Owner: Engineer-A
+  - Output: explicit target-kind flow from harden -> mutator -> audit
+- `Track B / Signature Policy`
+  - Owner: Engineer-B
+  - Output: signature policy gate + ELF/Mach-O strict tests
+- `Track C / External Key Binding`
+  - Owner: Engineer-C
+  - Output: provider protocol hardening + negative tests
+- `Track D / Security Review`
+  - Owner: Leibniz
+  - Output: PASS/FAIL + blocking reasons
+- `Track E / Validation Review`
+  - Owner: Averroes
+  - Output: test coverage review + false-pass assessment
+
+Dependencies:
+- `Track A` 与 `Track B` 可并行，但 `artifact_audit` 的最终 requirement 判断要消费 `Track A` 的 target-kind hint
+- `Track C` 独立并行
+- reviewer 从设计冻结开始并行，不等待实现结束
+
+Quality Gates:
+- `G1`: 计划冻结并通过双 reviewer 预审
+- `G2`: 各轨本地构建通过
+- `G3`: 负向测试覆盖新增失败路径
+- `G4`: 全量 `ctest`
+- `G5`: `perf_smoke`
+
+Merge Order:
+- `M1`: `Track A`
+- `M2`: `Track B`
+- `M3`: `Track C`
+- `M4`: 全量复验
+
+State Snapshot:
+- 当前主线全绿
+- 下一步进入真实多 agent 并行实现
+- PM 只在 agent 完成后做集成复验与退回判定
+
+## Execution Outcome
+- `Track A / Nash`
+  - 完成：
+    - `TARGET_KIND -> post_link_mutator --target-kind`
+    - `Windows/MSVC` runtime target marker 扫描路径
+    - `post_link_mutator` 显式 target-kind 优先与 target/artifact 兼容性校验
+  - 主文件：
+    - [HardenTarget.cmake](/workspace/core/cmake/HardenTarget.cmake)
+    - [memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)
+    - [main.cpp](/workspace/core/post_link_mutator/src/main.cpp)
+    - [post_link_mutator_smoke_test.cpp](/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp)
+- `Track B / Dalton -> PM integration closeout`
+  - 初始交付不合格，只做了只读审查，未形成实现
+  - PM 根据用户授权接管收口修复，并把已落地半成品补齐为一致状态
+  - 完成：
+    - signature gate 改为 `format_validation_only`
+    - `validation_mode` 诚实区分能力
+    - requirement 支持 `--target-kind` / `--manifest`
+    - `ELF .ko` / `Mach-O` strict matrix 补齐
+  - 主文件：
+    - [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+    - [artifact_audit_strict_test.cpp](/workspace/core/tests/tools/artifact_audit_strict_test.cpp)
+- `Track C / Herschel`
+  - 完成：
+    - external key provider 强制协议 `eippf.external_key.v1`
+    - 缺失/拒绝/格式错误/ID 不匹配全部 fail-closed
+    - bundle/manifest 增加可消费 `key_id` 绑定元数据
+  - 主文件：
+    - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp)
+    - [main.cpp](/workspace/core/script_guard/src/main.cpp)
+    - [dex_toolchain_smoke_test.cpp](/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp)
+    - [script_guard_smoke_test.cpp](/workspace/core/tests/script_guard/script_guard_smoke_test.cpp)
+
+## Final Acceptance
+- Passed:
+  - `cmake -S /workspace/core -B /workspace/build_pm -G Ninja`
+  - `cmake --build /workspace/build_pm -j`
+  - `ctest --test-dir /workspace/build_pm --output-on-failure`
+  - `cmake --build /workspace/build_pm --target perf_smoke`
+- Result:
+  - `30/30` tests passed
+  - `perf_smoke` passed
+
+## Closed Blockers
+- `T1 Explicit Target Kind API` -> `DONE`
+- `T2 MSVC Target Anchor Parity` -> `DONE`
+- `T3 Signature Policy Upgrade` -> `DONE`
+- `T4 ELF/Mach-O Strict Tests` -> `DONE`
+- `T5 Dex/Script External Key Binding` -> `DONE`
+
+## Honest Capability Notes
+- `signature_state_passed` 已不再是 `presence_only`
+- 当前签名能力明确标识为 `format_validation_only`，没有伪装成完整系统信任链校验
+- external key binding 已具备协议与 fail-closed 消费门，但仍未升级为远程密钥服务

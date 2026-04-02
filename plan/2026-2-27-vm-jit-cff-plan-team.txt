@@ -1,0 +1,188 @@
+2026-2-27 VM+JIT+CFF 开发计划（Team 版 / v2）
+日期：2026-02-27
+状态：Draft v2（按 Agent2/Agent3 失败项重写）
+
+Phase 1: 目标、约束与可交付
+1. 目标
+- 在端到端 `Budget_real < 0.10` 前提下，落地 VM+JIT+CFF 组合保护。
+- 提供自动热点分析 + 路由策略 + 性能门禁 + 安全门禁完整闭环。
+2. 硬约束
+- 生产代码仅在 `core/`。
+- C++20；保护模块禁用异常/RTTI。
+- 错误统一 `Result<T, ErrorCode>`；所有安全校验 fail-closed。
+3. 本轮可交付（文件级）
+- `core/runtime/include/runtime/policy_engine.hpp`
+- `core/runtime/src/policy_engine.cpp`
+- `core/tests/runtime/policy/policy_engine_test.cpp`
+- `core/tests/CMakeLists.txt`
+- `core/runtime/CMakeLists.txt`（接入新源码）
+- `plan/2026-2-27-vm-jit-cff-plan-team.txt`
+
+Phase 2: 热点自动分析（可复现）
+1. 数据输入
+- `core/tests/perf/input/function_profile.csv`
+- 必填列：
+  - `function_name`
+  - `calls_per_sec`
+  - `cycles_share`
+  - `p95_us`
+  - `branch_miss_rate`
+  - `is_critical`
+  - `has_drm_flatten`
+  - `has_drm_jit`
+2. 归一化协议（唯一标准）
+- 方法：`min-max`，公式 `x_norm = clamp((x - min)/(max-min), 0, 1)`。
+- 若 `max == min`：`x_norm = 0.0`（防除零，确定性）。
+- 归一化窗口固定为当前 workload 批次，不跨批复用。
+- 冷启动（无历史）时：`calls_per_sec_norm/branch_miss_norm=0`，并记录 `mode=cold_start`。
+3. 热度评分
+- `H = 0.45*cycles_share_norm + 0.25*calls_per_sec_norm + 0.20*p95_norm + 0.10*branch_miss_norm`
+- 分类阈值：
+  - `Hot`：`H >= 0.70` 或 `cycles_share >= 0.02`
+  - `Warm`：`0.40 <= H < 0.70`
+  - `Cold`：`H < 0.40`
+4. 冷启动静态代理
+- `H_static = 0.40*cfg_depth_norm + 0.30*branch_density_norm + 0.30*call_density_norm`
+- 阈值沿用 Hot/Warm/Cold。
+5. 可复现要求
+- 输入文件 SHA256 固定在 `hotspot_manifest.json`。
+- 同输入必须得到同输出（函数级策略完全一致）。
+
+Phase 3: 路由策略矩阵（Deterministic）
+1. Strategy 枚举
+- `NONE`
+- `CFF_LITE`
+- `CFF_FULL_BCF_STANDARD`
+- `VM_STRONG_CFF_LITE`
+- `JIT_ENCLAVE_CFF_FULL_BCF_STANDARD`
+2. 路由规则（按优先级从上到下）
+- R1: `has_drm_jit=1` -> `JIT_ENCLAVE_CFF_FULL_BCF_STANDARD`
+- R2: `Hot && is_critical=1` -> `JIT_ENCLAVE_CFF_FULL_BCF_STANDARD`
+- R3: `Hot && is_critical=0` -> `CFF_FULL_BCF_STANDARD`
+- R4: `Warm && is_critical=1` -> `VM_STRONG_CFF_LITE`
+- R5: `Cold && is_critical=1` -> `VM_STRONG_CFF_LITE`
+- R6: `has_drm_flatten=1` -> `CFF_LITE`
+- R7: 其余 -> `NONE`
+3. 安全硬限制
+- `is_critical=1` 时禁止 `NONE`。
+- `Hot` 函数禁止路由到 `NONE`。
+4. 预算回压规则
+- 若预估预算超限，只允许在 `non-critical && !Hot` 范围内从高策略降到低策略。
+- Critical 或 Hot 不允许预算降级绕过。
+
+Phase 4: 性能预算模型与门禁
+1. 函数级预估
+- `C_hat(f,s)` 由策略固定基线 + 热度微调得到：
+  - `NONE`: `0.000`
+  - `CFF_LITE`: `0.012 + 0.008*H`
+  - `CFF_FULL_BCF_STANDARD`: `0.028 + 0.020*H`
+  - `VM_STRONG_CFF_LITE`: `0.035 + 0.030*H`
+  - `JIT_ENCLAVE_CFF_FULL_BCF_STANDARD`: `0.045 + 0.040*H`
+2. workload 级预算
+- `overhead_pred_i = median(C_hat(f,route_f))`
+- `overhead_real_i = (p95_protected_i - p95_baseline_i) / p95_baseline_i`
+3. 全局预算
+- `Budget_pred = Σ(weight_i * overhead_pred_i)`
+- `Budget_real = Σ(weight_i * overhead_real_i)`
+- `weight_i = qps_i / Σqps`
+4. 通过门槛
+- `Budget_pred <= 0.10`
+- `Budget_real <= 0.10`
+- `critical_cluster_p95_overhead <= 0.15`
+
+Phase 5: 安全链路（签名/反回滚/时间锚）
+1. Manifest
+- 产物：`route_manifest.json`、`route_manifest.sig`。
+- 必填：`manifest_version,generated_at_utc,valid_for_seconds,git_commit_sha,input_sha256,output_sha256,signing_key_id,key_epoch,critical_approvals[]`。
+2. Canonicalization
+- `UTF-8(no BOM)`、对象 key 字典序、禁止重复 key。
+- 数值禁止 `NaN/Inf`，`-0` 归一化为 `0`。
+- CI 签名端与 Runtime 验签端共享同一 canonical profile 版本。
+3. 双签审批（Critical 降级）
+- 每条审批绑定：`approval_payload_sha256`、`approval_sig_sha256[2]`、`approver_principal_ids[2]`、`approver_pubkey_ids[2]`。
+- 必须满足：不同 principal + 不同 key。
+4. 反回滚
+- 维护高水位 `manifest_hwm.sealed`（主）与 `.bak`（备）。
+- 内容含 `manifest_version,key_epoch,monotonic_counter,state_mac`。
+- 更新流程：`tmp -> fsync -> rename`；单调递增。
+5. 时间新鲜度
+- 校验 `generated_at_utc` 与 `valid_for_seconds`。
+- 启用 `monotonic_delta` 检测本地时钟回拨；回拨即拒绝。
+6. 撤销链
+- 校验 `key_crl.json` + `key_denylist.json`；命中撤销 key/epoch 立即 hard-fail。
+
+Phase 6: 函数定义规范（落地强约束）
+1. 签名规范
+- 对外接口统一 `noexcept`。
+- 返回值统一 `Result<T, ErrorCode>` 或 `bool + out param`（内部辅助）。
+2. 长度与复杂度
+- 单函数目标 <= 50 逻辑行；超过需拆分 helper。
+- cyclomatic complexity > 10 的函数必须拆分。
+3. 输入校验
+- 指针判空、size 上下界、枚举值合法性全部前置校验。
+4. 并发安全
+- 共享容器读写必须由 `std::mutex`/原子保护。
+5. 敏感数据
+- 临时明文缓冲使用 `secure_zero_buffer` 清零。
+
+Phase 7: 编码规范（落地强约束）
+1. 命名
+- 类型 `PascalCase`；函数/变量 `snake_case`；常量 `kPascalCase`。
+2. 内存
+- 禁止 ownership raw pointer；默认值语义或 `std::unique_ptr`。
+3. 安全 API
+- 受保护逻辑禁止直接调用不受控系统 API；必须经 resolver 或受控封装。
+4. 日志
+- 禁止输出密钥、明文模块/API 名、未脱敏策略细节。
+5. 错误处理
+- 禁止 `throw/catch`；错误码必须可归类追踪。
+
+Phase 8: 测试矩阵与 CI Gate
+1. 成功路径
+- Hot+Critical 路由到 JIT+CFF；Budget 通过。
+2. 失败路径
+- CSV 缺字段/非法值 -> `kInvalidProfile`。
+- 预算超限 -> `kBudgetExceeded`。
+3. 安全边界
+- Critical 不能 `NONE` -> `kCriticalDowngradeRejected`。
+- `manifest_version` 回退 -> `kManifestRollbackDetected`。
+- key 撤销命中 -> `kSigningKeyRevoked`。
+4. CI 阶段
+- S1 输入 schema 校验
+- S2 热点分类与路由
+- S3 安全规则校验（Critical/Hot 约束）
+- S4 预算预测 gate
+- S5 构建 + 单元测试 + 安全边界测试
+- S6 实测预算 gate
+
+Phase 9: ErrorCode 约定（首版）
+1. `kOk`
+2. `kInvalidProfile`
+3. `kInvalidNumericRange`
+4. `kCriticalDowngradeRejected`
+5. `kBudgetExceeded`
+6. `kManifestRollbackDetected`
+7. `kSigningKeyRevoked`
+8. `kSignatureVerificationFailed`
+9. `kClockRollbackDetected`
+
+Phase 10: 角色与验收
+1. Agent1 (Planner)
+- 产物：本计划 + 验收标准。
+- 通过标准：覆盖热点、策略、规范、安全、预算、测试。
+2. Agent2 (Engineer)
+- 产物：策略引擎与测试代码。
+- 通过标准：编译通过、单测通过、无 Critical->NONE 路径。
+3. Agent3 (Security Reviewer)
+- 产物：安全审计报告。
+- 通过标准：无绕过路径、无明显未校验输入、fail-closed 生效。
+
+自检清单
+- [x] 热点自动分析（含归一化与冷启动）
+- [x] 热点/非热点关键函数路由
+- [x] 函数定义规范
+- [x] 编码规范
+- [x] 签名/反回滚/时间锚/撤销链
+- [x] 预算公式与 <10% gate
+- [x] 测试矩阵与 CI gate
+- [x] 文件级落地清单

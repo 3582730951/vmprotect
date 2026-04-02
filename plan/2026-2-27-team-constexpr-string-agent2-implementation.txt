@@ -1,0 +1,25 @@
+Agent2 实施报告
+日期：2026-02-27
+
+已完成
+1. 新增编译期字符串加密工具：
+- core/runtime/include/runtime/constexpr_obfuscated_string.hpp
+- 使用 `constexpr + std::index_sequence` 在编译期生成密文数组。
+- 提供 `decrypt()` 返回栈上 `DecryptedBuffer`。
+- 提供 `wipe()` 与析构自动清零（volatile + atomic_signal_fence）。
+
+2. 新增字符串加密测试：
+- core/tests/runtime/security/constexpr_obfuscated_string_test.cpp
+- 覆盖：解密一致性、密文不等于明文、wipe 清零。
+
+3. 新增状态机代码生成示例测试：
+- core/tests/runtime/codegen/state_machine_codegen_demo_test.cpp
+- `fibonacci_state_machine` 使用 `int state + while(true) + switch(state)` 表达分支与回边。
+
+4. 接入 CMake/CTest：
+- core/tests/CMakeLists.txt 新增两个测试目标并并入 perf_smoke。
+
+验证
+1. build: pass
+2. ctest: 4/4 pass
+3. perf_smoke: pass

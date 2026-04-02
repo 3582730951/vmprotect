@@ -1,0 +1,11 @@
+Agent5 安全审查 v2
+结论：PASS
+
+复核项
+1. 已删除 external->internal 强制改写；当前仅重命名 local linkage 符号。
+2. strip 工具采用白名单 + 参数数组调用，无 shell 注入面。
+3. 支持 `EIPPF_STRIP_FAIL_CLOSED=1`，strip 异常可阻断产物输出。
+4. 任意 O-level 下保护函数仍存在调用路径，功能输出正确。
+
+结论
+- 落地符合计划要求，未发现新的不安全代码路径。
