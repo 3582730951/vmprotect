@@ -81,4 +81,7 @@ Open Risks:
 - 默认信任 `/workspace` 前缀是为了本地集成与 CI fixture；生产使用必须通过显式 trusted prefix / sha256 缩窄。
 
 Push Status:
-- `pending`
+- `pushed`
+- remote: `https://github.com/3582730951/vmprotect.git`
+- branch: `main`
+- commit: `f06e88986114a4e76f597d6288f40745a513b02e`
