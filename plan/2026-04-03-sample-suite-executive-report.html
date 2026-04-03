@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>2026-04-03 样例程序集保护逆向评估执行报告</title>
+  <style>
+    :root {
+      --bg: #eef2f7;
+      --panel: #ffffff;
+      --ink: #18212f;
+      --muted: #5d697b;
+      --line: #d7dfeb;
+      --ok: #127a43;
+      --warn: #9a6700;
+      --bad: #b42318;
+      --accent: #1456d9;
+      --shadow: 0 16px 36px rgba(17, 33, 68, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at top left, #f8fbff 0%, #eef2f7 45%, #e8edf5 100%);
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+    }
+    .wrap {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+    }
+    .hero {
+      padding: 26px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      line-height: 1.15;
+    }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 19px;
+    }
+    p {
+      margin: 0;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    .meta {
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .meta-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px;
+      background: linear-gradient(180deg, #ffffff, #f8fbff);
+    }
+    .meta-card strong {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .meta-card code {
+      color: var(--accent);
+      word-break: break-all;
+      font-size: 13px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 18px;
+    }
+    .panel {
+      padding: 18px;
+      margin-top: 18px;
+    }
+    .kpi {
+      padding: 16px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: linear-gradient(180deg, #ffffff, #f7faff);
+    }
+    .kpi .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .kpi .value {
+      margin-top: 10px;
+      font-size: 30px;
+      font-weight: 700;
+    }
+    .kpi .note {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .value.ok { color: var(--ok); }
+    .value.warn { color: var(--warn); }
+    .value.bad { color: var(--bad); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    code {
+      color: var(--accent);
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .pill.ok {
+      color: var(--ok);
+      background: rgba(18, 122, 67, 0.12);
+    }
+    .pill.warn {
+      color: var(--warn);
+      background: rgba(154, 103, 0, 0.14);
+    }
+    .pill.bad {
+      color: var(--bad);
+      background: rgba(180, 35, 24, 0.12);
+    }
+    ul {
+      margin: 10px 0 0 18px;
+      color: var(--muted);
+      line-height: 1.7;
+      padding: 0;
+    }
+    li + li {
+      margin-top: 4px;
+    }
+    .foot {
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    @media (max-width: 980px) {
+      .meta, .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 680px) {
+      .meta, .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>样例程序集保护逆向评估执行报告</h1>
+      <p>这次评估覆盖当前项目宣称支持的全部样例类型，由 GitHub Actions 完成编译，再调用仓库中的真实保护入口进行一次保护，并从静态逆向视角对原始产物与保护后产物做可见性审计。</p>
+      <div class="meta">
+        <div class="meta-card">
+          <strong>CI Run</strong>
+          <code>23942713781</code>
+        </div>
+        <div class="meta-card">
+          <strong>Commit</strong>
+          <code>e6eee5751cfe93abf8e48332c0413fd29d36c006</code>
+        </div>
+        <div class="meta-card">
+          <strong>Evidence Path</strong>
+          <code>/tmp/sample-suite-evidence-23942713781</code>
+        </div>
+        <div class="meta-card">
+          <strong>Raw HTML Report</strong>
+          <code>/tmp/sample-suite-evidence-23942713781/report.html</code>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>总览</h2>
+      <div class="grid">
+        <div class="kpi">
+          <div class="label">覆盖样例数</div>
+          <div class="value ok">11 / 11</div>
+          <div class="note">Windows `.exe/.dll/.sys`、Linux `ELF/.so/.ko`、Android `.so/.dex/.ko`、iOS Mach-O、`.sh` 全部进入 CI 编译和保护评估。</div>
+        </div>
+        <div class="kpi">
+          <div class="label">Strict Audit 通过</div>
+          <div class="value warn">6 / 11</div>
+          <div class="note">`windows_exe`、`windows_dll`、`linux_elf`、`linux_so`、`android_so`、`shell_script` 没有 strict failure。</div>
+        </div>
+        <div class="kpi">
+          <div class="label">锚点被隐藏</div>
+          <div class="value warn">2 / 11</div>
+          <div class="note">本轮真正把样例锚点字符串从保护后产物中移除的只有 `android_dex` 与 `shell_script`。</div>
+        </div>
+        <div class="kpi">
+          <div class="label">发现高优先级问题</div>
+          <div class="value bad">5 类</div>
+          <div class="note">驱动签名、KO 解析/权限策略、DEX 明文泄漏、iOS 签名真实性等问题仍然存在，说明这些 lane 还不能按“量产级强保护”宣称完成。</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>逆向视角结论</h2>
+      <ul>
+        <li>用户态 `post_link_mutator` 链路已经能稳定处理 `Windows .exe/.dll`、`Linux ELF/.so`、`Android .so`，但本轮静态逆向结果显示：对会把测试锚点编进正文的样例，当前实现并没有普遍清除 lexical anchor。</li>
+        <li>`android_dex` 和 `.sh` 的包裹式保护在静态可见性上最有效：保护后文件类型从 `Dalvik dex` / `shell script` 变成了普通 `data`，且样例锚点在保护后 strings 输出中消失。</li>
+        <li>驱动与内核模块 lane 仍主要停留在“artifact 形态 + lane policy”阶段。`windows_sys` 触发 `signature_missing`；`linux_ko` 和 `android_ko` 同时触发解析失败、导入/符号策略失败以及可写可执行区风险。</li>
+        <li>`ios_macho` 能进入 App Store safe lane 的 artifact 级处理，但这次静态逆向仍能看到测试锚点，且 strict audit 明确报出 `signature_authenticity_missing`。</li>
+        <li>因此，这次样例逆向评估更像一份真实的能力边界图，而不是“所有类型都已经达到第一梯队强度”的证明。</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>样例矩阵</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>样例</th>
+            <th>目标类型</th>
+            <th>保护入口</th>
+            <th>原始锚点</th>
+            <th>保护后锚点</th>
+            <th>Strings 变化</th>
+            <th>Strict 结果</th>
+            <th>主要结论</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>windows_exe</code></td>
+            <td>desktop_native</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill bad">仍可见</span></td>
+            <td>1648 → 1649</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>变异链路正常，但锚点压制不足。</td>
+          </tr>
+          <tr>
+            <td><code>windows_dll</code></td>
+            <td>desktop_native</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill warn">未见</span></td>
+            <td><span class="pill ok">未见</span></td>
+            <td>1149 → 1150</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>静态面没有新增暴露，但样例本身不含锚点。</td>
+          </tr>
+          <tr>
+            <td><code>windows_sys</code></td>
+            <td>windows_driver</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill warn">未见</span></td>
+            <td><span class="pill ok">未见</span></td>
+            <td>6 → 7</td>
+            <td><span class="pill bad">1 failure</span></td>
+            <td>结构形态成立，但缺失驱动签名。</td>
+          </tr>
+          <tr>
+            <td><code>linux_elf</code></td>
+            <td>desktop_native</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill bad">仍可见</span></td>
+            <td>76 → 77</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>可正常保护，但字符串锚点没有被藏起来。</td>
+          </tr>
+          <tr>
+            <td><code>linux_so</code></td>
+            <td>desktop_native</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill warn">未见</span></td>
+            <td><span class="pill ok">未见</span></td>
+            <td>52 → 53</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>静态面正常，但样例本身不含锚点。</td>
+          </tr>
+          <tr>
+            <td><code>linux_ko</code></td>
+            <td>linux_kernel_module</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill bad">仍可见</span></td>
+            <td>26 → 27</td>
+            <td><span class="pill bad">7 failures</span></td>
+            <td>KO lane 还不具备强保护闭环，解析/策略/签名都存在缺口。</td>
+          </tr>
+          <tr>
+            <td><code>android_so</code></td>
+            <td>android_so</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill warn">未见</span></td>
+            <td><span class="pill ok">未见</span></td>
+            <td>65 → 66</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>Android native `.so` 编译和保护链路可用。</td>
+          </tr>
+          <tr>
+            <td><code>android_dex</code></td>
+            <td>android_dex</td>
+            <td><code>dex_toolchain</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill ok">已隐藏</span></td>
+            <td>20 → 11</td>
+            <td><span class="pill bad">2 failures</span></td>
+            <td>静态隐藏效果最好，但仍存在 `bundle_invariant_violation` 与 `dex_plaintext_leak_detected`。</td>
+          </tr>
+          <tr>
+            <td><code>android_ko</code></td>
+            <td>android_kernel_module</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill bad">仍可见</span></td>
+            <td>26 → 27</td>
+            <td><span class="pill bad">7 failures</span></td>
+            <td>与 Linux KO 同类问题，当前只到 artifact-level 评估。</td>
+          </tr>
+          <tr>
+            <td><code>ios_macho</code></td>
+            <td>ios_appstore</td>
+            <td><code>post_link_mutator</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill bad">仍可见</span></td>
+            <td>28 → 29</td>
+            <td><span class="pill bad">1 failure</span></td>
+            <td>App Store safe lane 的 artifact 处理可跑通，但签名真实性和字符串压制都没过关。</td>
+          </tr>
+          <tr>
+            <td><code>shell_script</code></td>
+            <td>shell_ephemeral</td>
+            <td><code>script_guard</code></td>
+            <td><span class="pill ok">可见</span></td>
+            <td><span class="pill ok">已隐藏</span></td>
+            <td>8 → 10</td>
+            <td><span class="pill ok">clean</span></td>
+            <td>静态包裹有效，锚点消失，保护后文件类型变成普通 `data`。</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>关键样例证据</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>样例</th>
+            <th>原始描述</th>
+            <th>保护后描述</th>
+            <th>输入 SHA256</th>
+            <th>输出 SHA256</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>windows_exe</code></td>
+            <td>PE32+ executable (console) x86-64, for MS Windows, 6 sections</td>
+            <td>PE32+ executable (console) x86-64, for MS Windows, 6 sections</td>
+            <td><code>233ee00530b06c1c44e109f7901017ffe263d0e0c78438c4bf40fea73a18bba6</code></td>
+            <td><code>37670ee683b4b67d07a446f27313eaf028da36995e20e2491d75ce4627c325e8</code></td>
+          </tr>
+          <tr>
+            <td><code>linux_ko</code></td>
+            <td>ELF 64-bit LSB relocatable, x86-64, version 1 (SYSV), not stripped</td>
+            <td>ELF 64-bit LSB relocatable, x86-64, version 1 (SYSV), not stripped</td>
+            <td><code>ab35fb9f072d73bb54730ab6baa9a6ea0513d32a99fccc97569c70c64e804163</code></td>
+            <td><code>69a1ee54e2c72e08523c9a7e9d1a15b0de454bee3dc388efcc6282ecf1b3022b</code></td>
+          </tr>
+          <tr>
+            <td><code>android_dex</code></td>
+            <td>Dalvik dex file version 037</td>
+            <td>data</td>
+            <td><code>470c1f1c1aa6ba58caace6b21bf5a8a4e8aa6b850113cb2e8a05b87592dda6cb</code></td>
+            <td><code>f05b52052d06d9856f8a757344361325bd6f297f54585523279b34e271f49c8f</code></td>
+          </tr>
+          <tr>
+            <td><code>ios_macho</code></td>
+            <td>Mach-O 64-bit arm64 executable, flags:&lt;NOUNDEFS|DYLDLINK|TWOLEVEL|PIE&gt;</td>
+            <td>Mach-O 64-bit arm64 executable, flags:&lt;NOUNDEFS|DYLDLINK|TWOLEVEL|PIE&gt;</td>
+            <td><code>294aa5849d6acc76dcf6c2936660c00a571581bb03123474528ced9e5fd9aec9</code></td>
+            <td><code>488924f0b295e4973e1058d221f315f6bbe93b6d201a6bb61f784bab6e0928e3</code></td>
+          </tr>
+          <tr>
+            <td><code>shell_script</code></td>
+            <td>POSIX shell script, ASCII text executable</td>
+            <td>data</td>
+            <td><code>a3f2c57f9b87e079b43a8e31d965f2217dd20b912e4fd0558f3842d7b6845d4e</code></td>
+            <td><code>35bd0e5d7d6b7d15b91b5e4e53aebe21db824c5f79dcc6fcd24974e0513c3480</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="panel">
+      <h2>建议动作</h2>
+      <ul>
+        <li>优先补强 `post_link_mutator` 的 lexical anchor suppression，否则 `.exe/.elf/.ko/.Mach-O` 这些 native 形态依然会被样例锚点直定位。</li>
+        <li>`windows_sys`、`linux_ko`、`android_ko` 应进入单独的签名与 kernel policy 收口 phase；当前结果足以说明“能处理 artifact”，不足以说明“可量产部署”。</li>
+        <li>`android_dex` 已证明包裹后静态面能收缩，但 strict failure 说明它还不能作为 release-ready 结论使用，必须继续处理明文泄漏与 bundle invariant。</li>
+        <li>`ios_macho` 下一阶段必须补 `signature_authenticity` 闭环，并同时处理字符串锚点残留，否则不应对外宣称达到 App Store 发布级强保护。</li>
+      </ul>
+      <div class="foot">本报告是对 CI 证据包的执行层汇总，不替代原始证据。原始审计、manifest、reverse 输出和 HTML 报告都保留在 <code>/tmp/sample-suite-evidence-23942713781</code>。</div>
+    </section>
+  </div>
+</body>
+</html>
