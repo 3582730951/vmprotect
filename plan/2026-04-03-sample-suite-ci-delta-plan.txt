@@ -1,0 +1,331 @@
+# 2026-04-03 sample-suite CI 闭环 Delta 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 本轮只修 sample-suite CI 新暴露的 4 个已坐实根因，不扩新范围：
+  1. Windows workflow 预构建 pass plugin 使用失效的 `LLVM_DIR`。
+  2. macOS workflow 预构建 pass plugin 没把 Homebrew LLVM clang 绑定到 CMake。
+  3. Linux native sample 经过 pass 改写后，链接缺少 `eippf_string_token_*` runtime。
+  4. workflow 与平台脚本重复构建 pass plugin，导致平台逻辑分叉。
+- 本轮目标是恢复 `sample-suite-eval` 的跨平台闭环，并把平台样例构建链收敛成单一事实来源。
+
+## Task Charter
+- Objective
+  - 让 `sample-suite-eval` 在 GitHub Actions 上重新全绿，并保证 Linux/macOS/Windows 样例构建链在 plugin/toolchain/runtime 解析上只有一套真实逻辑。
+- Scope
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/runtime/CMakeLists.txt`
+  - `/workspace/core/tests/sample_suite/sample_manifest.json`
+- Non-Goals
+  - 不修改 `artifact_shape/signed_policy` 审计语义。
+  - 不修改 `post_link_mutator`、`dex_toolchain`、`script_guard` 的实现逻辑。
+  - 不引入新的保护 pass 或新的 runtime lane。
+- Constraints
+  - 必须明确二选一：`sample build scripts` 成为平台 plugin/runtime/sample 构建的单一事实来源；workflow 不再保留独立的平台 plugin 预构建实现。
+  - Linux/macOS 的 CMake configure 必须显式绑定 clang toolchain。
+  - Windows 的 LLVM CMake dir 必须运行时解析并验证，不能再依赖失效硬编码路径。
+  - native sample 的 string-token helper 必须通过最小 runtime 静态库注入，不能靠未解析符号侥幸通过。
+  - 禁止要求修改 `core/wrapper/eippf_cc.py` CLI；runtime 注入必须通过脚本把最小 runtime 静态库路径作为普通链接输入显式追加到编译/链接命令落地。
+- Acceptance Criteria
+  - `sample-suite-eval` 的 4 个 job 全部 `success`：
+    - `build-linux-android`
+    - `build-windows`
+    - `build-macos-ios`
+    - `protect-and-evaluate`
+  - Linux/macOS/Windows 平台 job 不再有独立的 workflow pass-plugin 预构建步骤；平台脚本成为 plugin/runtime/sample 构建唯一实现点。
+  - Linux native sample 链接成功，不再出现 `eippf_string_token_decode` / `eippf_string_token_wipe` unresolved symbols。
+  - Windows/macOS pass plugin 构建成功，不再出现 `find_package(LLVM)` 失败或 `PassPlugin.h` 丢失。
+  - `protect-and-evaluate` 继续生成完整 evidence tree，并上传 artifact。
+- Forbidden Shortcuts
+  - 禁止把 pass 暂时关掉来让样例链接通过。
+  - 禁止把 sample source 回退成“无 anchor”或“不可达 anchor”。
+  - 禁止在 workflow 里复制粘贴第二套平台构建逻辑。
+  - 禁止把 `LLVM_DIR` 再改成另一个未经验证的硬编码绝对路径。
+
+## Architecture Contract
+- 单一事实来源决策
+  - 选择：`sample build scripts` 成为各平台 `plugin + runtime + sample` 构建的单一事实来源。
+  - 理由：
+    - 当前 3 个 CI 根因里，Windows 与 macOS 都来自 workflow 预构建逻辑和脚本逻辑分叉。
+    - Linux/macOS/Windows 的平台差异应只在各自脚本里维护，workflow 只负责安装前置依赖并调用脚本。
+    - `protect-and-evaluate` job 例外：它在 Linux evaluator 上构建 `eippf_post_link_mutator` / `eippf_dex_toolchain` / `eippf_script_guard`，这是评估工具链，不属于平台 sample 产物构建，允许保留。
+- 最小 runtime 注入决策
+  - 新增或抽出最小静态库 target：`eippf_string_token_runtime`
+  - 该 target 只包含 `src/string_token_runtime.cpp`，不链接 `dl`，不带 user-mode 后端，不带 attestation，不带 VM runtime。
+  - 样例构建只注入这个最小库，不注入整包 `eippf_runtime`。
+- native sample auto-link 决策
+  - 当前不扩展 `eippf_cc.py` CLI；runtime 注入通过“脚本把最小 runtime 静态库路径作为正常 linker 输入显式附加到 wrapper 编译命令或最终链接命令”落地。
+  - 所有平台脚本 configure plugin/runtime build dir 时统一传：
+    - `-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=<out>/runtime_libs`
+  - 最小 runtime 静态库输出路径固定为：
+    - Linux/macOS: `<out>/runtime_libs/libeippf_string_token_runtime.a`
+    - Windows: `<out>/runtime_libs/eippf_string_token_runtime.lib`
+  - user-mode 样例：
+    - `linux_elf`
+    - `linux_so`
+    - `android_so`
+    - `windows_exe`
+    - `windows_dll`
+    - `ios_macho`
+  - kernel/driver 样例：
+    - `linux_ko`
+    - `android_ko`
+    - `windows_sys`
+  - 对于 user-mode，脚本调用 wrapper 时在编译/链接命令尾部显式追加最小 runtime 静态库路径：
+    - Linux/macOS/Android Clang 风格：
+      - `python3 eippf_cc.py --pass-plugin <plugin> -- <src...> -o <out> <runtime-lib>`
+    - Windows clang-cl 风格：
+      - `python eippf_cc.py --pass-plugin <plugin> -- /nologo ... <src> /link /OUT:<out> <runtime-lib>`
+  - 对于 kernel/driver，脚本的最终链接命令必须显式带上最小 runtime 静态库：
+    - Linux/Android: `ld -r ... <runtime-lib>`
+    - Windows: `link/lld-link ... <runtime-lib>`
+- toolchain 绑定决策
+  - Linux/macOS 脚本在 CMake configure pass/runtime build dir 时，必须显式传：
+    - `-DCMAKE_C_COMPILER=<HOST_CLANG>`
+    - `-DCMAKE_CXX_COMPILER=<HOST_CLANGXX>`
+  - Windows 脚本在 CMake configure 时，必须显式传：
+    - `-DCMAKE_C_COMPILER=<clang-cl>`
+    - `-DCMAKE_CXX_COMPILER=<clang-cl>`
+    - `-DLLVM_DIR=<validated-llvm-cmake-dir>`
+- Windows LLVM 解析决策
+  - `build_windows.ps1` 的 LLVM dir 解析顺序固定为：
+    1. 若环境变量 `LLVM_DIR` 存在且目录内包含 `LLVMConfig.cmake`，使用它。
+    2. 否则若 `llvm-config.exe` 可执行，使用 `llvm-config --cmakedir`，并验证 `LLVMConfig.cmake`。
+    3. 否则从检测到的 `clang-cl` 根目录派生 `../lib/cmake/llvm`，并验证 `LLVMConfig.cmake`。
+    4. 三者都失败则明确 fail，打印已尝试路径。
+  - Windows 判废标准固定为：
+    - 只允许 `clang-cl` 作为 C/CXX 编译器。
+    - 只允许上述受控 `LLVM_DIR` 解析顺序。
+    - `find_package(LLVM)` 成功但 `eippf_protection_suite_pass` build 失败，直接 fail-closed；禁止回退 `cl.exe`。
+    - 脚本必须打印最终采用的：
+      - `clang-cl` 路径
+      - `LLVM_DIR`
+      - `runtime lib` 路径
+  - workflow 不再单独设置未经验证的 `LLVM_DIR` 硬编码路径供 plugin 预构建使用。
+
+## Parallel Tracks
+- Track A / Workflow 单一事实来源收口
+  - Owner: `Engineer-A`
+  - Files
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 必做改动
+    - 删除以下具体 workflow step 名称：
+      - `Build Protection Suite Pass Plugin (Linux)`
+      - `Build Protection Suite Pass Plugin (Windows)`
+      - `Build Protection Suite Pass Plugin (macOS)`
+    - 保留各平台依赖安装步骤。
+    - 各平台 build job 只调用对应平台脚本构建 sample artifact。
+    - `protect-and-evaluate` job 保留评估工具构建：
+      - `eippf_post_link_mutator`
+      - `eippf_dex_toolchain`
+      - `eippf_script_guard`
+    - `Validate Evidence Layout` 继续要求 `signed_policy`。
+  - 禁止事项
+    - 禁止在 workflow 里复制脚本内部的 CMake configure/build 逻辑。
+    - 禁止把 platform sample build 再拆成“workflow 一套、脚本一套”。
+  - 完成标准
+    - workflow 里平台 sample build 逻辑只剩脚本调用。
+    - 重新触发的 `sample-suite-eval` 不再在“Build Protection Suite Pass Plugin (Windows/macOS)”类步骤失败，因为这些步骤已消失。
+  - CI 验证命令
+    - `gh run view <run-id> --json jobs`
+
+- Track B / 最小 string-token runtime 与 Linux/macOS auto-link 收口
+  - Owner: `Engineer-B`
+  - Files
+    - `/workspace/core/runtime/CMakeLists.txt`
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 必做改动
+    - 在 `core/runtime/CMakeLists.txt` 新增最小静态库 target：`eippf_string_token_runtime`
+      - 源文件只包含 `src/string_token_runtime.cpp`
+      - include 只带 runtime 头
+      - 继承 common compile options
+      - 不链接 `dl`
+      - 不带其他 runtime 源文件
+      - 输出目录固定到 `<out>/runtime_libs`
+    - Linux/macOS 脚本建立独立 toolchain build dir，并显式用 `HOST_CLANG/HOST_CLANGXX` configure：
+      - `-DCMAKE_C_COMPILER=<HOST_CLANG>`
+      - `-DCMAKE_CXX_COMPILER=<HOST_CLANGXX>`
+      - `-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=<output-root>/runtime_libs`
+    - 脚本统一构建两个 target：
+      - `eippf_protection_suite_pass`
+      - `eippf_string_token_runtime`
+    - 固定并验证最小 runtime 静态库路径：
+      - Linux/macOS: `<out>/runtime_libs/libeippf_string_token_runtime.a`
+    - 所有 user-mode wrapper 调用在链接命令尾部显式追加最小 runtime 静态库路径，不允许要求 wrapper 支持新参数。
+    - Linux/Android 的 `ld -r` kernel module 链接命令显式带上最小 runtime 静态库。
+  - 禁止事项
+    - 禁止给 sample 链接整包 `eippf_runtime`。
+    - 禁止用 `gcc/g++` 或 `/usr/bin/clang` 代替选定的 `HOST_CLANG/HOST_CLANGXX`。
+  - 完成标准
+    - Linux native sample 不再有 `eippf_string_token_*` unresolved symbols。
+    - macOS pass plugin 构建阶段不再因 `PassPlugin.h` 丢失失败。
+  - 本地验证命令
+    - `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `cmake -S /workspace/core -B /workspace/build_ci_delta_runtime -G Ninja -DLLVM_DIR=<valid-llvm-cmake-dir> -DCMAKE_C_COMPILER=<clang> -DCMAKE_CXX_COMPILER=<clang++>`
+    - `cmake --build /workspace/build_ci_delta_runtime -j --target eippf_protection_suite_pass eippf_string_token_runtime`
+  - CI 验证命令
+    - `gh run view <run-id> --job <linux-job-id> --log-failed`
+    - `gh run view <run-id> --job <macos-job-id> --log-failed`
+
+- Track C / Windows LLVM 解析与 sample build 收口
+  - Owner: `Engineer-C`
+  - Files
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+    - `/workspace/core/runtime/CMakeLists.txt`
+  - 必做改动
+    - `build_windows.ps1` 实现受控的 LLVM 解析顺序：
+      - 先验证 `LLVM_DIR`
+      - 再试 `llvm-config.exe --cmakedir`
+      - 再试 `clang-cl` 相对路径派生
+      - 全部失败则打印尝试路径并 fail
+    - CMake configure 显式传 `clang-cl` 作为唯一 C/CXX 编译器。
+    - 为 Windows build dir 设置 `-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=<output-root>\\runtime_libs`。
+    - 脚本构建两个 target：
+      - `eippf_protection_suite_pass`
+      - `eippf_string_token_runtime`
+    - 固定并验证最小 runtime 静态库路径：
+      - Windows: `<out>\\runtime_libs\\eippf_string_token_runtime.lib`
+    - `windows_exe/windows_dll` 的 wrapper 调用必须在 `/link ...` 段显式带上 `<resolved-lib>`，不允许要求 wrapper 支持新参数。
+    - `windows_sys` 最终 `/driver` 链接命令必须显式带上最小 runtime 静态库。
+    - 脚本必须打印最终采用的：
+      - `clang-cl` 路径
+      - `LLVM_DIR`
+      - `runtime lib` 路径
+  - 禁止事项
+    - 禁止继续依赖 `C:\\Program Files\\LLVM\\lib\\cmake\\llvm` 这种未经验证的硬编码路径。
+    - 禁止环境变量无效时仍继续 configure。
+    - 禁止 `find_package(LLVM)` 成功后因 plugin build 失败而回退 `cl.exe` 或其他编译器。
+  - 完成标准
+    - Windows script 在 GitHub runner 上能解析出有效 LLVM CMake dir。
+    - Windows sample build job 能生成 pass plugin 和样例输出。
+  - 本地验证命令
+    - `pwsh -NoProfile -Command \"$null = [System.Management.Automation.Language.Parser]::ParseFile('/workspace/core/tools/sample_suite/build_windows.ps1',[ref]$null,[ref]$null); 'pwsh-parse-ok'\"`
+  - CI 验证命令
+    - `gh run view <run-id> --job <windows-job-id> --log-failed`
+
+- Track D / Full-chain CI 验收收口
+  - Owner: `Engineer-D`
+  - Files
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - `/workspace/core/tests/sample_suite/sample_manifest.json`
+  - 必做改动
+    - 冻结 full-chain 输入树契约：
+      - 三个平台脚本必须继续产出与 `core/tests/sample_suite/sample_manifest.json` 一致的目录形状。
+      - `protect-and-evaluate` 只消费 manifest 中列出的相对路径。
+      - `pass_plugins/` 和 `runtime_libs/` 不是 manifest 输入。
+    - 校验 workflow 产物命名、artifact download 路径、`protect-and-evaluate` 输入树与 `sample_manifest.json` 契约一致。
+    - 确保 `protect-and-evaluate` job 能消费三个平台 build job 的 artifact，而不依赖 workflow 内被删掉的中间 plugin 构建产物。
+    - 保持 evidence upload 路径和目录契约不变。
+  - 禁止事项
+    - 禁止绕过 `protect-and-evaluate`。
+    - 禁止修改 sample id 或减少样例数量来规避 CI。
+  - 完成标准
+    - `sample-suite-eval` 整个 workflow `success`
+    - 4 个 job 全部完成且结论为 `success`
+  - CI 验证命令
+    - `gh run view <run-id> --json status,conclusion,jobs`
+    - `gh run download <run-id> -n sample-suite-evidence -D <out-dir>`
+
+## File Ownership
+- PM
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-plan.txt`
+  - 审核、任务分发、集成验收、CI 跟踪
+- Engineer-A
+  - Track A 文件
+- Engineer-B
+  - Track B 文件
+- Engineer-C
+  - Track C 文件
+- Engineer-D
+  - Track D 文件
+- Reviewer
+  - 不修改实现文件，只读审查计划和 CI 证据
+
+## Dependencies
+- Track A 可先开始。
+- Track B 与 Track C 可并行。
+- Track D 依赖 Track A/B/C 合并后再执行。
+- Merge 顺序：
+  1. Track B
+  2. Track C
+  3. Track A
+  4. Track D
+  5. PM 推送并触发 CI
+
+## Quality Gates
+- G1 / 计划与实现边界
+  - workflow 不再持有独立的平台 plugin 预构建逻辑
+  - 脚本成为平台 sample 构建唯一事实来源
+- G2 / 语法与本地构建
+  - `bash -n build_linux_android.sh`
+  - `bash -n build_macos_ios.sh`
+  - `pwsh` 语法装载 `build_windows.ps1`
+  - `cmake --build <build> --target eippf_protection_suite_pass eippf_string_token_runtime`
+- G3 / 平台 job
+  - `build-linux-android` success
+  - `build-windows` success
+  - `build-macos-ios` success
+- G4 / 全链闭环
+  - `protect-and-evaluate` success
+  - evidence artifact 上传成功
+- G5 / 无回退
+  - 日志中不允许出现 raw compiler fallback
+  - 日志中不允许出现 unresolved `eippf_string_token_*`
+  - 日志中不允许出现 `find_package(LLVM)` 失败或 `PassPlugin.h not found`
+
+## Merge Order
+1. 最小 runtime 与脚本 toolchain/runtime 注入
+2. Windows LLVM 解析
+3. workflow 单一事实来源收口
+4. full-chain CI 验收
+
+## Open Risks
+- Windows GitHub runner 上 `llvm-config.exe` 可能不存在，因此脚本必须保留多级回退并输出尝试路径。
+- kernel/driver sample 把最小 string-token runtime 静态库显式带入最终链接后，若链接器行为与本地不同，可能需要补充链接顺序约束。
+- macOS hosted runner 的 Homebrew LLVM 版本可能变化，因此脚本不能靠版本号路径，必须靠 `LLVM_DIR` 或 `llvm-config` / `brew --prefix llvm` 动态解析。
+
+## State Snapshot
+- 已通过的本地门：
+  - `artifact_audit_strict_test`
+  - `string_protection_pass_test`
+  - `sample_suite_report_contract_test`
+  - `ctest -R post_link_mutator`
+- 当前失败的远端门：
+  - `sample-suite-eval` run `23948537173`
+  - `build-windows`: `find_package(LLVM)` 失败
+  - `build-linux-android`: unresolved `eippf_string_token_*`
+  - `build-macos-ios`: `llvm/Passes/PassPlugin.h` not found
+  - `protect-and-evaluate`: 因前置 job 失败被 skipped
+
+## Agent Task Cards
+- Agent 1 / PM
+  - 不改实现代码。
+  - 先三审这份 delta 计划，通过后再发编码任务。
+  - 合并顺序严格按 `Track B -> Track C -> Track A -> Track D`。
+  - 最终只接受：
+    - 本地语法/构建证据
+    - GitHub Actions run 成功证据
+- Agent 2 / Engineer-B
+  - 只做 Track B。
+  - 先把 `eippf_string_token_runtime` 建出来，再改 Linux/macOS 脚本。
+  - 脚本必须显式绑定 clang toolchain 并把最小 runtime 注入 wrapper/final link。
+- Agent 3 / Engineer-C
+  - 只做 Track C。
+  - 只修 Windows 脚本的 LLVM 解析与 CMake compiler binding。
+  - 不得回退到无效硬编码路径。
+- Agent 4 / Engineer-A
+  - 只做 Track A。
+  - workflow 删掉平台 plugin 预构建重复逻辑，保留依赖安装和脚本调用。
+- Agent 5 / Engineer-D
+  - 只做 Track D。
+  - 只在 A/B/C 合并后验证 artifact flow 和 full-chain。

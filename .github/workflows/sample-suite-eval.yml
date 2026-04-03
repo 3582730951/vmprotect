@@ -82,24 +82,6 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;26.3.11579264"
 
-      - name: Build Protection Suite Pass Plugin (Linux)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins"
-          cmake -S core -B build_sample_suite_linux_plugin -G Ninja \
-            -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
-            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins" \
-            -DEIPPF_BUILD_TESTS=OFF \
-            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
-            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
-            -DEIPPF_BUILD_SCRIPT_GUARD=OFF \
-            -DEIPPF_BUILD_IP_WEAVER=OFF \
-            -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
-            -DEIPPF_BUILD_TOOLING=OFF
-          cmake --build build_sample_suite_linux_plugin -j 4 --target eippf_protection_suite_pass
-          test -f "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.so"
-
       - name: Build Linux Android Samples
         shell: bash
         run: |
@@ -136,26 +118,6 @@ jobs:
           "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Build Protection Suite Pass Plugin (Windows)
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          New-Item -ItemType Directory -Force -Path "$PWD\sample_suite_inputs\pass_plugins" | Out-Null
-          cmake -S core -B build_sample_suite_windows_plugin `
-            -DLLVM_DIR="$env:LLVM_DIR" `
-            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PWD\sample_suite_inputs\pass_plugins" `
-            -DEIPPF_BUILD_TESTS=OFF `
-            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF `
-            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF `
-            -DEIPPF_BUILD_SCRIPT_GUARD=OFF `
-            -DEIPPF_BUILD_IP_WEAVER=OFF `
-            -DEIPPF_BUILD_IP_WEAVER_IR=OFF `
-            -DEIPPF_BUILD_TOOLING=OFF
-          cmake --build build_sample_suite_windows_plugin --target eippf_protection_suite_pass --config Release
-          if (!(Test-Path "$PWD\sample_suite_inputs\pass_plugins\eippf_protection_suite_pass.dll")) {
-            throw "[FAIL] pass plugin build output missing: $PWD\sample_suite_inputs\pass_plugins\eippf_protection_suite_pass.dll"
-          }
-
       - name: Build Windows Samples
         shell: powershell
         run: |
@@ -186,24 +148,6 @@ jobs:
           echo "LLVM_DIR=${LLVM_PREFIX}/lib/cmake/llvm" >> "${GITHUB_ENV}"
           echo "EIPPF_CLANG=${LLVM_PREFIX}/bin/clang" >> "${GITHUB_ENV}"
           echo "EIPPF_CLANGXX=${LLVM_PREFIX}/bin/clang++" >> "${GITHUB_ENV}"
-
-      - name: Build Protection Suite Pass Plugin (macOS)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins"
-          cmake -S core -B build_sample_suite_macos_plugin -G Ninja \
-            -DLLVM_DIR="${LLVM_DIR}" \
-            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins" \
-            -DEIPPF_BUILD_TESTS=OFF \
-            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
-            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
-            -DEIPPF_BUILD_SCRIPT_GUARD=OFF \
-            -DEIPPF_BUILD_IP_WEAVER=OFF \
-            -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
-            -DEIPPF_BUILD_TOOLING=OFF
-          cmake --build build_sample_suite_macos_plugin -j 4 --target eippf_protection_suite_pass
-          test -f "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dylib"
 
       - name: Build iOS Mach-O Sample
         shell: bash

@@ -45,6 +45,24 @@ endif()
 
 eippf_apply_common_compile_options(eippf_runtime)
 
+add_library(eippf_string_token_runtime STATIC
+  src/string_token_runtime.cpp
+)
+
+target_include_directories(eippf_string_token_runtime
+  PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+)
+
+if(TARGET eippf_contracts)
+  target_link_libraries(eippf_string_token_runtime PUBLIC eippf_contracts)
+endif()
+
+eippf_apply_common_compile_options(eippf_string_token_runtime)
+
 add_library(eippf_vm_rt STATIC
   src/backend_policy.cpp
   src/secure_ir_engine.cpp

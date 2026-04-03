@@ -90,8 +90,10 @@ ANDROID_DEX_DIR="${OUT_ROOT}/android_dex"
 ANDROID_KO_DIR="${OUT_ROOT}/android_ko"
 SHELL_DIR="${OUT_ROOT}/shell_script"
 PASS_PLUGIN_DIR="${OUT_ROOT}/pass_plugins"
-PASS_BUILD_DIR="${OUT_ROOT}/_pass_plugin_build_linux_android"
+RUNTIME_LIB_DIR="${OUT_ROOT}/runtime_libs"
+RUNTIME_BUILD_DIR="${OUT_ROOT}/_runtime_build_linux_android"
 PASS_PLUGIN_PATH="${PASS_PLUGIN_DIR}/eippf_protection_suite_pass.so"
+RUNTIME_LIB_PATH="${RUNTIME_LIB_DIR}/libeippf_string_token_runtime.a"
 
 mkdir -p \
   "${LINUX_ELF_DIR}" \
@@ -102,11 +104,15 @@ mkdir -p \
   "${ANDROID_KO_DIR}" \
   "${SHELL_DIR}" \
   "${PASS_PLUGIN_DIR}" \
-  "${PASS_BUILD_DIR}"
+  "${RUNTIME_LIB_DIR}" \
+  "${RUNTIME_BUILD_DIR}"
 
-cmake -S "${REPO_ROOT}/core" -B "${PASS_BUILD_DIR}" -G Ninja \
+cmake -S "${REPO_ROOT}/core" -B "${RUNTIME_BUILD_DIR}" -G Ninja \
   "-DLLVM_DIR=${LLVM_CMAKE_DIR}" \
+  "-DCMAKE_C_COMPILER=${HOST_CLANG}" \
+  "-DCMAKE_CXX_COMPILER=${HOST_CLANGXX}" \
   "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${PASS_PLUGIN_DIR}" \
+  "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=${RUNTIME_LIB_DIR}" \
   -DEIPPF_BUILD_TESTS=OFF \
   -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
   -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
@@ -114,10 +120,14 @@ cmake -S "${REPO_ROOT}/core" -B "${PASS_BUILD_DIR}" -G Ninja \
   -DEIPPF_BUILD_IP_WEAVER=OFF \
   -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
   -DEIPPF_BUILD_TOOLING=OFF
-cmake --build "${PASS_BUILD_DIR}" -j --target eippf_protection_suite_pass
+cmake --build "${RUNTIME_BUILD_DIR}" -j --target eippf_protection_suite_pass eippf_string_token_runtime
 
 if [[ ! -f "${PASS_PLUGIN_PATH}" ]]; then
   echo "[FAIL] pass plugin build output missing: ${PASS_PLUGIN_PATH}" >&2
+  exit 2
+fi
+if [[ ! -f "${RUNTIME_LIB_PATH}" ]]; then
+  echo "[FAIL] runtime lib build output missing: ${RUNTIME_LIB_PATH}" >&2
   exit 2
 fi
 
@@ -129,17 +139,19 @@ run_wrapper_cc() {
 
 run_wrapper_cc -O2 -Wall -Wextra \
   "${SRC_ROOT}/linux/linux_elf_main.c" \
-  -o "${LINUX_ELF_DIR}/sample_linux_elf"
+  -o "${LINUX_ELF_DIR}/sample_linux_elf" \
+  "${RUNTIME_LIB_PATH}"
 
 run_wrapper_cc -O2 -Wall -Wextra -fPIC -shared \
   "${SRC_ROOT}/linux/linux_so.c" \
   -Wl,-soname,libsample_linux.so \
-  -o "${LINUX_SO_DIR}/libsample_linux.so"
+  -o "${LINUX_SO_DIR}/libsample_linux.so" \
+  "${RUNTIME_LIB_PATH}"
 
 run_wrapper_cc -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -c \
   "${SRC_ROOT}/kernel/linux_module.c" \
   -o "${LINUX_KO_DIR}/linux_module.o"
-ld -r -o "${LINUX_KO_DIR}/sample_linux_module.ko" "${LINUX_KO_DIR}/linux_module.o"
+ld -r -o "${LINUX_KO_DIR}/sample_linux_module.ko" "${LINUX_KO_DIR}/linux_module.o" "${RUNTIME_LIB_PATH}"
 rm -f "${LINUX_KO_DIR}/linux_module.o"
 
 run_wrapper_cc --target=aarch64-linux-android24 --sysroot="${ANDROID_SYSROOT}" \
@@ -158,7 +170,7 @@ rm -rf "${ANDROID_DEX_DIR}/classes"
 run_wrapper_cc -O2 -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -c \
   "${SRC_ROOT}/kernel/android_module.c" \
   -o "${ANDROID_KO_DIR}/android_module.o"
-ld -r -o "${ANDROID_KO_DIR}/sample_android_module.ko" "${ANDROID_KO_DIR}/android_module.o"
+ld -r -o "${ANDROID_KO_DIR}/sample_android_module.ko" "${ANDROID_KO_DIR}/android_module.o" "${RUNTIME_LIB_PATH}"
 rm -f "${ANDROID_KO_DIR}/android_module.o"
 
 cp "${SRC_ROOT}/shell/sample_eval.sh" "${SHELL_DIR}/sample_eval.sh"

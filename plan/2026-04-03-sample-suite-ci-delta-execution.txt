@@ -1,0 +1,103 @@
+# 2026-04-03 sample-suite CI Delta 执行记录
+
+## 基线
+- 触发提交: `5f107fb52d50f8d8006ef9242c8b84d173c76485`
+- 失败 run: `23948537173`
+- 失败 workflow: `sample-suite-eval`
+
+## 已确认根因
+- Windows
+  - workflow 独立预构建 plugin 使用失效的 `LLVM_DIR=C:\Program Files\LLVM\lib\cmake\llvm`
+  - `find_package(LLVM CONFIG)` 失败
+- macOS
+  - workflow 独立预构建 plugin 未把 Homebrew LLVM clang 绑定到 CMake
+  - 实际使用 `/usr/bin/c++`
+  - 编译报 `llvm/Passes/PassPlugin.h` not found
+- Linux
+  - native sample 经过 pass 改写后，链接期缺少：
+    - `eippf_string_token_decode`
+    - `eippf_string_token_wipe`
+- 结构问题
+  - workflow 与平台脚本各自维护一套 plugin 构建逻辑，导致单一事实来源破坏
+
+## 计划文件
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-plan.txt`
+
+## 三审结论
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+## 三审通过后的硬约束
+- 不修改 `eippf_cc.py` CLI
+- runtime 注入只能由脚本把静态库路径作为普通 linker 输入显式追加
+- runtime lib 输出路径固定：
+  - Linux/macOS: `<out>/runtime_libs/libeippf_string_token_runtime.a`
+  - Windows: `<out>/runtime_libs/eippf_string_token_runtime.lib`
+- workflow 必须删除 3 个重复 step：
+  - `Build Protection Suite Pass Plugin (Linux)`
+  - `Build Protection Suite Pass Plugin (Windows)`
+  - `Build Protection Suite Pass Plugin (macOS)`
+- `sample_manifest.json` 输入树契约冻结：
+  - `protect-and-evaluate` 只消费 manifest 中列出的相对路径
+  - `pass_plugins/` 和 `runtime_libs/` 不进入 manifest 输入
+
+## 当前工程分发
+- Engineer-A
+  - 轨道: `workflow 单一事实来源 + full-chain contract`
+  - 文件:
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - `/workspace/core/tests/sample_suite/sample_manifest.json`
+- Engineer-B
+  - 轨道: `Linux/macOS runtime+toolchain`
+  - 文件:
+    - `/workspace/core/runtime/CMakeLists.txt`
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Engineer-C
+  - 轨道: `Windows LLVM+runtime`
+  - 文件:
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## PM 边界
+- PM 不写实现代码。
+- PM 只负责计划、审核协调、任务分发、集成构建、CI 跟踪与最终验收。
+
+## 工程轨回报
+- Engineer-A
+  - 结果: `PASS`
+  - 变更:
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - `/workspace/core/tests/sample_suite/sample_manifest.json` 保持不变
+  - 验证:
+    - workflow 已删除 3 个重复 plugin step
+    - workflow 保留 `Build Linux Android Samples` / `Build Windows Samples` / `Build iOS Mach-O Sample`
+    - `Validate Evidence Layout` 仍检查 `signed_policy`
+- Engineer-B
+  - 结果: `PASS`
+  - 变更:
+    - `/workspace/core/runtime/CMakeLists.txt`
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 验证:
+    - `bash -n build_linux_android.sh`
+    - `bash -n build_macos_ios.sh`
+    - `cmake -S /workspace/core -B /workspace/build_ci_delta_runtime -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm -DCMAKE_C_COMPILER=$(command -v clang-18 || command -v clang) -DCMAKE_CXX_COMPILER=$(command -v clang++-18 || command -v clang++)`
+    - `cmake --build /workspace/build_ci_delta_runtime -j --target eippf_protection_suite_pass eippf_string_token_runtime`
+- Engineer-C
+  - 结果: `PASS`
+  - 变更:
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 验证:
+    - 本机无 `pwsh`，仅保留 CI Windows runner 验证
+
+## PM 集成验收
+- `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `cmake -S /workspace/core -B /workspace/build_ci_delta_runtime -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm -DCMAKE_C_COMPILER=$(command -v clang-18 || command -v clang) -DCMAKE_CXX_COMPILER=$(command -v clang++-18 || command -v clang++)`
+- `cmake --build /workspace/build_ci_delta_runtime -j --target eippf_protection_suite_pass eippf_string_token_runtime`
+- `rg -n "Build Protection Suite Pass Plugin \\(Linux\\)|Build Protection Suite Pass Plugin \\(Windows\\)|Build Protection Suite Pass Plugin \\(macOS\\)|Build Linux Android Samples|Build Windows Samples|Build iOS Mach-O Sample|Validate Evidence Layout|signed_policy" /workspace/.github/workflows/sample-suite-eval.yml`
+
+## 当前结论
+- CI delta 的本地门通过。
+- 下一步是第二轮推送并重新触发 `sample-suite-eval`。

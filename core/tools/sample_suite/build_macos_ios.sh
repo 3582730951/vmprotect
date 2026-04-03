@@ -14,8 +14,10 @@ WRAPPER="${REPO_ROOT}/core/wrapper/eippf_cc.py"
 
 IOS_DIR="${OUT_ROOT}/ios_macho"
 PASS_PLUGIN_DIR="${OUT_ROOT}/pass_plugins"
-PASS_BUILD_DIR="${OUT_ROOT}/_pass_plugin_build_macos_ios"
+RUNTIME_LIB_DIR="${OUT_ROOT}/runtime_libs"
+RUNTIME_BUILD_DIR="${OUT_ROOT}/_runtime_build_macos_ios"
 PASS_PLUGIN_PATH="${PASS_PLUGIN_DIR}/eippf_protection_suite_pass.dylib"
+RUNTIME_LIB_PATH="${RUNTIME_LIB_DIR}/libeippf_string_token_runtime.a"
 
 for tool in cmake ninja python3 xcrun; do
   if ! command -v "${tool}" >/dev/null 2>&1; then
@@ -75,11 +77,14 @@ if [[ -z "${HOST_CLANGXX}" ]]; then
   fi
 fi
 
-mkdir -p "${IOS_DIR}" "${PASS_PLUGIN_DIR}" "${PASS_BUILD_DIR}"
+mkdir -p "${IOS_DIR}" "${PASS_PLUGIN_DIR}" "${RUNTIME_LIB_DIR}" "${RUNTIME_BUILD_DIR}"
 
-cmake -S "${REPO_ROOT}/core" -B "${PASS_BUILD_DIR}" -G Ninja \
+cmake -S "${REPO_ROOT}/core" -B "${RUNTIME_BUILD_DIR}" -G Ninja \
   "-DLLVM_DIR=${LLVM_CMAKE_DIR}" \
+  "-DCMAKE_C_COMPILER=${HOST_CLANG}" \
+  "-DCMAKE_CXX_COMPILER=${HOST_CLANGXX}" \
   "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${PASS_PLUGIN_DIR}" \
+  "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=${RUNTIME_LIB_DIR}" \
   -DEIPPF_BUILD_TESTS=OFF \
   -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
   -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
@@ -87,10 +92,14 @@ cmake -S "${REPO_ROOT}/core" -B "${PASS_BUILD_DIR}" -G Ninja \
   -DEIPPF_BUILD_IP_WEAVER=OFF \
   -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
   -DEIPPF_BUILD_TOOLING=OFF
-cmake --build "${PASS_BUILD_DIR}" -j --target eippf_protection_suite_pass
+cmake --build "${RUNTIME_BUILD_DIR}" -j --target eippf_protection_suite_pass eippf_string_token_runtime
 
 if [[ ! -f "${PASS_PLUGIN_PATH}" ]]; then
   echo "[FAIL] pass plugin build output missing: ${PASS_PLUGIN_PATH}" >&2
+  exit 2
+fi
+if [[ ! -f "${RUNTIME_LIB_PATH}" ]]; then
+  echo "[FAIL] runtime lib build output missing: ${RUNTIME_LIB_PATH}" >&2
   exit 2
 fi
 
@@ -103,4 +112,5 @@ python3 "${WRAPPER}" --pass-plugin "${PASS_PLUGIN_PATH}" -- \
   -O2 \
   -fvisibility=hidden \
   "${SRC_FILE}" \
-  -o "${IOS_DIR}/sample_ios_macho"
+  -o "${IOS_DIR}/sample_ios_macho" \
+  "${RUNTIME_LIB_PATH}"
