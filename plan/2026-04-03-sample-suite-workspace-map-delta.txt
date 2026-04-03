@@ -1,0 +1,46 @@
+# 2026-04-03 Sample Suite Workspace Mapping Delta
+
+Execution Mode:
+- `real-multi-agent`
+
+Task Summary:
+- 修复 `sample-suite-eval` 中 `build-linux-android` job 的 `/workspace` 映射失败。
+
+Problem Statement:
+- 失败 workflow: `sample-suite-eval`
+- 失败 run: `23942609363`
+- 失败 job: `build-linux-android`
+- 根因:
+  - `Map Workspace To /workspace` step 仍保留历史目录假设。
+  - 当前 Linux/Android 样例编译脚本通过脚本相对路径即可定位 repo 根目录，不需要 `/workspace` 符号链接。
+
+Scope:
+- 仅允许修改 [sample-suite-eval.yml](/workspace/.github/workflows/sample-suite-eval.yml)
+- 不修改编译脚本
+- 不修改样例源码
+- 不修改保护与报告脚本
+
+Acceptance Criteria:
+- `build-linux-android` 不再执行 `/workspace` 映射步骤。
+- `Build Linux Android Samples` 直接从 `${GITHUB_WORKSPACE}` 调用脚本，并能够进入实际编译。
+- 若后续还有新 blocker，必须是新的独立问题，不得重复当前 `/workspace` 映射根因。
+
+Implementation Card:
+- Owner: `Engineer B`
+- Files:
+  - `.github/workflows/sample-suite-eval.yml`
+- Required Change:
+  - 删除 `Map Workspace To /workspace` step。
+  - `Build Linux Android Samples` step 改为：
+    - 对 `${GITHUB_WORKSPACE}/core/tools/sample_suite/build_linux_android.sh` 做 `chmod +x`
+    - 直接调用该路径
+  - 其他 job 不动。
+  - 其他 Linux/Android step 不动。
+
+Validation:
+- 推送后观察新的 `sample-suite-eval` run。
+- 若 `build-linux-android` 能进入真实编译并上传 artifact，则此 delta `PASS`。
+
+State Snapshot:
+- `sdkmanager --licenses` pipefail blocker 已修复。
+- 当前 blocker 是 workflow 中残留的 `/workspace` 假设。

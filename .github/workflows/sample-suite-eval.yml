@@ -58,22 +58,12 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;26.3.11579264"
 
-      - name: Map Workspace To /workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -e /workspace ]; then
-            sudo rm -rf /workspace
-          fi
-          sudo ln -s "${GITHUB_WORKSPACE}" /workspace
-          test -x /workspace/core/tools/sample_suite/build_linux_android.sh
-
       - name: Build Linux Android Samples
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x /workspace/core/tools/sample_suite/build_linux_android.sh
-          /workspace/core/tools/sample_suite/build_linux_android.sh \
+          chmod +x "${GITHUB_WORKSPACE}/core/tools/sample_suite/build_linux_android.sh"
+          "${GITHUB_WORKSPACE}/core/tools/sample_suite/build_linux_android.sh" \
             "${GITHUB_WORKSPACE}/sample_suite_inputs"
 
       - name: Upload Linux Android Samples
