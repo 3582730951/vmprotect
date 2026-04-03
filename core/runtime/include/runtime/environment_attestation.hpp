@@ -24,6 +24,7 @@
 #endif
 
 #include "runtime/constexpr_obfuscated_string.hpp"
+#include "runtime/android_so_policy.hpp"
 #include "runtime/dynamic_api_resolver.hpp"
 
 namespace eippf::runtime {
@@ -98,6 +99,11 @@ class EnvironmentAttestation final {
     }
 
     return false;
+  }
+
+  [[nodiscard]] static AndroidSoPolicyResult evaluate_android_so_baseline(
+      const AndroidSoPolicyInput& input) noexcept {
+    return evaluate_android_so_policy(input);
   }
 
  private:

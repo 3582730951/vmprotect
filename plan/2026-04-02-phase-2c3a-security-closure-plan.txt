@@ -1,0 +1,118 @@
+# 2026-04-02 Phase 2C.3a / security closure delta plan
+
+依附关系:
+- 本文件依附于 [2026-04-02-phase-2c3-blocker-repair-plan.txt](/workspace/plan/2026-04-02-phase-2c3-blocker-repair-plan.txt)。
+- 本文件只增补 `2C.3` 的安全闭口，不替代 `2C.3`。
+
+Task Charter:
+- Objective:
+  - 只补 `artifact_detector` 对 `.dex/.sh` 的输入后缀伪装闭口，以及与之对应的负向测试与验收口。
+- Scope:
+  - 不新增新的实现文件所有权。
+  - 只细化 `2C.3` 中 `artifact_detector` 和 `smoke` 相关任务卡与质量门。
+- Non-Goals:
+  - 不重写 `2C.3`。
+  - 不修改 `manifest_writer` 真相源定义。
+  - 不放宽 `.dex/.sh` 的识别规则。
+- Constraints:
+  - PM 仍不接管实现代码。
+  - `Core repair track` 仍只允许：
+    - `core/post_link_mutator/src/artifact_detector.cpp`
+    - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（仅在确有接口需要时）
+  - `Test repair track` 仍只允许：
+    - `core/tests/post_link_mutator/CMakeLists.txt`
+    - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+
+Architecture Contract Delta:
+- 在 `2C.3` 的“魔数优先 + 输入后缀闭口”基础上，`.dex/.sh` 再增加最小内容校验，规则写死如下：
+  - `.dex`
+    - 仅当输入文件前 8 字节满足以下最小模式时，才允许识别为 `ArtifactKind::kDex`：
+      - 字节 `0..3` 必须是 `dex\n`
+      - 字节 `4..6` 必须是 ASCII 数字
+      - 字节 `7` 必须是 `\0`
+  - `.sh`
+    - 仅当输入文件以 shebang `#!` 开头时，才允许识别为 `ArtifactKind::kShellBundle`
+- 明确禁止：
+  - 不能把 `.sh` 放宽为“任意文本都算 shell”
+  - 不能把 `.dex` 放宽为“任意 `.dex` 后缀都算 dex”
+  - 随机二进制即使改名为 `*.dex` 或 `*.sh`，若不满足上述最小内容校验，必须返回 `ArtifactKind::kUnknown`
+  - 返回 `ArtifactKind::kUnknown` 后必须继续走既有 fail-closed 路径，不能降格为 warning
+
+Decision Log Delta:
+- `DL-2C3A-01`
+  - 决定：`.dex` 识别必须同时满足输入后缀和最小 DEX header 模式
+  - 原因：仅凭输入后缀仍可被随机二进制伪装绕过
+- `DL-2C3A-02`
+  - 决定：`.sh` 识别必须同时满足输入后缀和 shebang `#!`
+  - 原因：不能把任意文本或随机字节视为 shell bundle
+- `DL-2C3A-03`
+  - 决定：`G6 / Fail-Closed Negative` 从 2 条升级为 4 条负例全覆盖
+  - 原因：原 `2C.3` 只覆盖 output-suffix 伪装，未覆盖 input-suffix fake 伪装
+- `DL-2C3A-04`
+  - 决定：`G5 / AC-2 Stability` 的 5 次复跑命令模板写死
+  - 原因：消除验证口径解释空间
+
+State Snapshot Delta:
+- `2C.3` 已经封住了 output-suffix `.dex/.sh` 的一层误识别，但仍未封住 input-suffix fake `.dex/.sh`。
+- `2C.3a` 的唯一新增目标，是把 `.dex/.sh` 识别从“输入后缀”收紧为“输入后缀 + 最小内容校验”。
+- 当前不新增任何新的实现文件或测试文件。
+
+File Ownership Delta:
+- 不变。
+- `Core repair track` 仍只允许：
+  - `core/post_link_mutator/src/artifact_detector.cpp`
+  - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（仅在确有接口需要时）
+- `Test repair track` 仍只允许：
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+
+Quality Gates Delta:
+- `G6 / Fail-Closed Negative` 升级为 4 条负例全部必须失败：
+  - `input=.bin` + `output=.sh`
+  - `input=.bin` + `output=.dex`
+  - `input=fake.sh`（随机字节，不以 `#!` 开头）
+  - `input=fake.dex`（随机字节，不含合法 DEX 最小 header）
+- `G5 / AC-2 Stability` 命令模板写死为：
+  - `for i in 1 2 3 4 5; do ctest --test-dir /workspace/build_phase25_c --output-on-failure -R '^post_link_mutator_exit_code_trailer_contract_test$' || exit 1; done`
+- `G3 / Primary Test Regex` 继续至少覆盖：
+  - `post_link_mutator_smoke_test`
+  - `post_link_mutator_exit_code_trailer_contract_test`
+  - `post_link_mutator_derived_target_kind_contract_test`
+  - `post_link_mutator_hardened_pipeline_contract_test`
+  - `post_link_mutator_fault_isolation_contract_test`
+  - `post_link_mutator_target_classifier_test`
+
+PM Task Card Delta / Core repair track:
+- 在 `2C.3` 的 Core task card 第 4-5 步之间插入以下强制步骤：
+  1. 当 `input_path.extension()==.dex` 时，不得立即返回 `kDex`。
+  2. 必须先读取输入文件前 8 字节，并精确校验：
+     - `0..3 == "dex\\n"`
+     - `4..6` 为 ASCII 数字
+     - `7 == '\\0'`
+  3. 仅当以上全部满足时，才允许返回 `ArtifactKind::kDex`；否则返回 `ArtifactKind::kUnknown`。
+  4. 当 `input_path.extension()==.sh` 时，不得立即返回 `kShellBundle`。
+  5. 必须先读取输入文件前 2 字节，并精确校验 `#!`。
+  6. 仅当 `#!` 命中时，才允许返回 `ArtifactKind::kShellBundle`；否则返回 `ArtifactKind::kUnknown`。
+  7. 不允许引入“文本可读”“脚本像 shell”“内容像 dex”之类开放性启发式判断。
+
+PM Task Card Delta / Test repair track:
+- 在 `2C.3` 的 Test task card 第 3 步后新增以下强制步骤：
+  1. 在 `post_link_mutator_smoke_test.cpp` 中新增两条 input-suffix fake 负向用例：
+     - `fake.sh`：随机字节，不以 `#!` 开头，必须失败
+     - `fake.dex`：随机字节，不含合法 DEX 最小 header，必须失败
+  2. 保留 `2C.3` 已要求的两条 output-suffix 负向用例：
+     - `input .bin + output .sh`
+     - `input .bin + output .dex`
+  3. 四条负例必须都走真实 mutator CLI 路径，不允许只测 helper。
+
+Dependencies Delta:
+- 不变。
+- `Core repair track` 先落实最小内容校验规则。
+- `Test repair track` 以该规则为唯一真相源补 4 条负例。
+

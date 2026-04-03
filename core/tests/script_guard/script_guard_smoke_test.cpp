@@ -9,6 +9,7 @@
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <sys/stat.h>
 #include <sys/wait.h>
 #endif
 
@@ -54,6 +55,22 @@ bool write_text(const std::filesystem::path& path, std::string_view text) {
   }
   out << text;
   return static_cast<bool>(out);
+}
+
+bool write_executable_script(const std::filesystem::path& path, std::string_view content) {
+  if (!write_text(path, content)) {
+    return false;
+  }
+  std::error_code ec;
+  std::filesystem::permissions(
+      path,
+      std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+          std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
+          std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+          std::filesystem::perms::others_exec,
+      std::filesystem::perm_options::replace,
+      ec);
+  return !ec;
 }
 
 [[nodiscard]] std::vector<std::uint8_t> read_bytes(const std::filesystem::path& path) {
@@ -135,12 +152,54 @@ bool write_text(const std::filesystem::path& path, std::string_view text) {
   return out;
 }
 
+bool create_fifo_endpoint(const std::filesystem::path& path) {
+#if defined(__unix__) || defined(__APPLE__)
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  if (::mkfifo(path.c_str(), 0600) != 0) {
+    return false;
+  }
+  return true;
+#else
+  (void)path;
+  return false;
+#endif
+}
+
+[[nodiscard]] std::string wrap_command_with_fifo_provider(const std::string& command,
+                                                          const std::filesystem::path& provider_path,
+                                                          std::string_view provider_payload) {
+  std::string wrapped = "( { cat > ";
+  wrapped += quote_arg(provider_path.string());
+  wrapped += " <<'__EIPPF_PROVIDER_EOF__'\n";
+  wrapped += std::string(provider_payload);
+  if (provider_payload.empty() || provider_payload.back() != '\n') {
+    wrapped += '\n';
+  }
+  wrapped += "__EIPPF_PROVIDER_EOF__\n";
+  wrapped += "} & writer_pid=$!; ";
+  wrapped += command;
+  wrapped += "; command_status=$?; ";
+  wrapped += "wait \"$writer_pid\" 2>/dev/null || true; ";
+  wrapped += "exit \"$command_status\"; )";
+  return wrapped;
+}
+
 bool expect_status(std::string_view label, const std::string& command, int expected_status) {
   const int status = normalize_status(std::system(command.c_str()));
   if (status == expected_status) {
     return true;
   }
   std::cerr << "[FAIL] " << label << " returned " << status << ", expected " << expected_status << '\n';
+  return false;
+}
+
+bool expect_nonzero_status(std::string_view label, const std::string& command) {
+  const int status = normalize_status(std::system(command.c_str()));
+  if (status != 0) {
+    return true;
+  }
+  std::cerr << "[FAIL] " << label << " returned 0, expected non-zero\n";
   return false;
 }
 
@@ -169,23 +228,45 @@ int main() {
   const std::filesystem::path malformed_provider_path = temp_dir / "script.malformed_provider";
   const std::filesystem::path mismatch_provider_path = temp_dir / "script.mismatch_provider";
   const std::filesystem::path missing_provider_path = temp_dir / "script.missing_provider";
+  const std::filesystem::path stderr_provider_path = temp_dir / "script.stderr_provider.sh";
   const std::string script = "#!/bin/sh\necho SECRET_ANCHOR\n";
+  constexpr std::string_view kStderrSecretMarker = "PROVIDER_STDERR_SECRET_MARKER";
 
   if (!write_text(input_path, script)) {
     std::cerr << "[FAIL] cannot write script input\n";
     return 1;
   }
-  if (!write_text(key_provider_path, provider_text("ok", "script-smoke", "93")) ||
-      !write_text(rejected_provider_path, provider_text("deny", "script-smoke", "93")) ||
-      !write_text(malformed_provider_path,
-                  "protocol=wrong\nstatus=ok\nkey_id=script-smoke\nkey_u8=93\n") ||
-      !write_text(mismatch_provider_path, provider_text("ok", "other-key", "93"))) {
+  if (!create_fifo_endpoint(key_provider_path) ||
+      !create_fifo_endpoint(rejected_provider_path) ||
+      !create_fifo_endpoint(malformed_provider_path) ||
+      !create_fifo_endpoint(mismatch_provider_path)) {
     std::cerr << "[FAIL] cannot write key provider fixtures\n";
     return 1;
   }
 
+  const std::string ok_payload = provider_text("ok", "script-smoke", "93");
+  const std::string rejected_payload = provider_text("deny", "script-smoke", "93");
+  const std::string malformed_payload =
+      "protocol=wrong\nstatus=ok\nkey_id=script-smoke\nkey_u8=93\n";
+  const std::string mismatch_payload = provider_text("ok", "other-key", "93");
+  std::string stderr_provider_script;
+  stderr_provider_script.reserve(ok_payload.size() + 144u);
+  stderr_provider_script += "#!/bin/sh\n";
+  stderr_provider_script += "cat <<'__EIPPF_PROVIDER_EOF__'\n";
+  stderr_provider_script += ok_payload;
+  stderr_provider_script += "__EIPPF_PROVIDER_EOF__\n";
+  stderr_provider_script += "printf '%s%s\\n' 'PROVIDER_STDERR_SECRET_' 'MARKER' >&2\n";
+
+  if (!write_executable_script(stderr_provider_path, stderr_provider_script)) {
+    std::cerr << "[FAIL] cannot write stderr provider executable fixture\n";
+    return 1;
+  }
+
   if (!expect_status("happy path",
-                     build_command(input_path, bundle_path, manifest_path, key_provider_path, "script-smoke"),
+                     wrap_command_with_fifo_provider(
+                         build_command(input_path, bundle_path, manifest_path, key_provider_path, "script-smoke"),
+                         key_provider_path,
+                         ok_payload),
                      0)) {
     return 1;
   }
@@ -202,8 +283,16 @@ int main() {
     std::cerr << "[FAIL] bundle header mismatch\n";
     return 1;
   }
+  if (bundle.size() < 6u || bundle[4] != 3u || bundle[5] != 0u) {
+    std::cerr << "[FAIL] bundle must be v3 with external key marker\n";
+    return 1;
+  }
   if (contains_bytes(bundle, "SECRET_ANCHOR")) {
     std::cerr << "[FAIL] encrypted bundle must not expose plaintext anchor\n";
+    return 1;
+  }
+  if (contains_bytes(bundle, script)) {
+    std::cerr << "[FAIL] encrypted bundle must not expose plaintext script\n";
     return 1;
   }
 
@@ -212,8 +301,40 @@ int main() {
     std::cerr << "[FAIL] manifest kind mismatch\n";
     return 1;
   }
-  if (manifest.find("\"execution_model\":\"ephemeral_decrypt_execute\"") == std::string::npos) {
+  if (manifest.find("\"runtime_lane\":\"shell_launcher\"") == std::string::npos) {
+    std::cerr << "[FAIL] manifest runtime lane mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"mutation_profile\":\"shell_bundle\"") == std::string::npos) {
+    std::cerr << "[FAIL] manifest mutation profile mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"signature_policy\":\"required_verifier\"") == std::string::npos) {
+    std::cerr << "[FAIL] manifest signature policy mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"execution_model\":\"pipe_stdin_exec\"") == std::string::npos) {
     std::cerr << "[FAIL] manifest execution model mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"trace_env_scrubbed\":true") == std::string::npos) {
+    std::cerr << "[FAIL] manifest trace env scrubbed mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"source_policy\":\"self_contained_only\"") == std::string::npos) {
+    std::cerr << "[FAIL] manifest source policy mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"unsafe_shell_features\":[]") == std::string::npos) {
+    std::cerr << "[FAIL] manifest unsafe shell features mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"key_provider_endpoint_kind\":\"fifo\"") == std::string::npos) {
+    std::cerr << "[FAIL] manifest key provider endpoint mismatch\n";
+    return 1;
+  }
+  if (manifest.find("\"key_provider_static_file\":false") == std::string::npos) {
+    std::cerr << "[FAIL] manifest key provider static file mismatch\n";
     return 1;
   }
   if (manifest.find("\"key_provider_protocol\":\"eippf.external_key.v1\"") == std::string::npos) {
@@ -229,7 +350,9 @@ int main() {
     return 1;
   }
   if (manifest.find("encryption_key") != std::string::npos ||
-      manifest.find("input_hash_fnv1a64") != std::string::npos) {
+      manifest.find("input_hash_fnv1a64") != std::string::npos ||
+      manifest.find(script) != std::string::npos ||
+      manifest.find("SECRET_ANCHOR") != std::string::npos) {
     std::cerr << "[FAIL] manifest must not leak key or plaintext fingerprint\n";
     return 1;
   }
@@ -263,11 +386,14 @@ int main() {
   const std::filesystem::path rejected_bundle_path = temp_dir / "rejected.eippf";
   const std::filesystem::path rejected_manifest_out = temp_dir / "rejected.manifest.json";
   if (!expect_status("rejected provider",
-                     build_command(input_path,
-                                   rejected_bundle_path,
-                                   rejected_manifest_out,
-                                   rejected_provider_path,
-                                   "script-smoke"),
+                     wrap_command_with_fifo_provider(
+                         build_command(input_path,
+                                       rejected_bundle_path,
+                                       rejected_manifest_out,
+                                       rejected_provider_path,
+                                       "script-smoke"),
+                         rejected_provider_path,
+                         rejected_payload),
                      9) ||
       !expect_absent("rejected provider bundle", rejected_bundle_path) ||
       !expect_absent("rejected provider manifest", rejected_manifest_out)) {
@@ -277,11 +403,14 @@ int main() {
   const std::filesystem::path malformed_bundle_path = temp_dir / "malformed.eippf";
   const std::filesystem::path malformed_manifest_out = temp_dir / "malformed.manifest.json";
   if (!expect_status("malformed provider",
-                     build_command(input_path,
-                                   malformed_bundle_path,
-                                   malformed_manifest_out,
-                                   malformed_provider_path,
-                                   "script-smoke"),
+                     wrap_command_with_fifo_provider(
+                         build_command(input_path,
+                                       malformed_bundle_path,
+                                       malformed_manifest_out,
+                                       malformed_provider_path,
+                                       "script-smoke"),
+                         malformed_provider_path,
+                         malformed_payload),
                      8) ||
       !expect_absent("malformed provider bundle", malformed_bundle_path) ||
       !expect_absent("malformed provider manifest", malformed_manifest_out)) {
@@ -291,14 +420,40 @@ int main() {
   const std::filesystem::path mismatch_bundle_path = temp_dir / "mismatch.eippf";
   const std::filesystem::path mismatch_manifest_out = temp_dir / "mismatch.manifest.json";
   if (!expect_status("key id mismatch",
-                     build_command(input_path,
-                                   mismatch_bundle_path,
-                                   mismatch_manifest_out,
-                                   mismatch_provider_path,
-                                   "script-smoke"),
+                     wrap_command_with_fifo_provider(
+                         build_command(input_path,
+                                       mismatch_bundle_path,
+                                       mismatch_manifest_out,
+                                       mismatch_provider_path,
+                                       "script-smoke"),
+                         mismatch_provider_path,
+                         mismatch_payload),
                      10) ||
       !expect_absent("mismatch provider bundle", mismatch_bundle_path) ||
       !expect_absent("mismatch provider manifest", mismatch_manifest_out)) {
+    return 1;
+  }
+
+  const std::filesystem::path stderr_bundle_path = temp_dir / "stderr_leak.eippf";
+  const std::filesystem::path stderr_manifest_out = temp_dir / "stderr_leak.manifest.json";
+  const std::filesystem::path stderr_capture_path = temp_dir / "stderr_leak.capture.log";
+  const std::string stderr_command =
+      build_command(input_path, stderr_bundle_path, stderr_manifest_out, stderr_provider_path, "script-smoke") +
+      " > " + quote_arg(stderr_capture_path.string()) + " 2>&1";
+  if (!expect_nonzero_status("stderr protocol violation",
+                             stderr_command) ||
+      !expect_absent("stderr protocol violation bundle", stderr_bundle_path) ||
+      !expect_absent("stderr protocol violation manifest", stderr_manifest_out)) {
+    return 1;
+  }
+  const std::string stderr_capture = read_text_file(stderr_capture_path);
+  if (stderr_capture.find(std::string(kStderrSecretMarker)) != std::string::npos) {
+    std::cerr << "[FAIL] stderr secret marker leaked to parent-visible output\n";
+    return 1;
+  }
+  if (manifest.find(std::string(kStderrSecretMarker)) != std::string::npos ||
+      contains_bytes(bundle, kStderrSecretMarker)) {
+    std::cerr << "[FAIL] stderr secret marker leaked into bundle/manifest artifacts\n";
     return 1;
   }
 

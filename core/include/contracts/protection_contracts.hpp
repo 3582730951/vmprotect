@@ -27,6 +27,34 @@ enum class RuntimeBackendKind : std::uint8_t {
   kShellLauncher = 6u,
 };
 
+enum class RuntimeLaneKind : std::uint8_t {
+  kUnknown = 0u,
+  kDesktopUserMode = 1u,
+  kKernelSafe = 2u,
+  kIosSafe = 3u,
+  kDexLoaderVm = 4u,
+  kShellLauncher = 5u,
+};
+
+enum class MutationProfileKind : std::uint8_t {
+  kUnknown = 0u,
+  kPeUserMode = 1u,
+  kElfUserMode = 2u,
+  kAndroidSo = 3u,
+  kKernelModule = 4u,
+  kIosMachO = 5u,
+  kDexBundle = 6u,
+  kShellBundle = 7u,
+};
+
+enum class SignaturePolicyKind : std::uint8_t {
+  kUnknown = 0u,
+  kNone = 1u,
+  kOptionalVerifier = 2u,
+  kRequiredVerifier = 3u,
+  kSignAfterMutate = 4u,
+};
+
 enum class ArtifactKind : std::uint8_t {
   kUnknown = 0u,
   kPe = 1u,
@@ -49,15 +77,22 @@ struct ProtectionManifestV2 final {
   std::uint32_t schema_version = 2u;
   ProtectionTargetKind target_kind = ProtectionTargetKind::kUnknown;
   RuntimeBackendKind backend_kind = RuntimeBackendKind::kUnknown;
+  RuntimeLaneKind runtime_lane = RuntimeLaneKind::kUnknown;
+  MutationProfileKind mutation_profile = MutationProfileKind::kUnknown;
+  SignaturePolicyKind signature_policy = SignaturePolicyKind::kUnknown;
   ArtifactKind artifact_kind = ArtifactKind::kUnknown;
   bool allow_jit = false;
   bool allow_runtime_executable_pages = false;
   bool allow_persistent_plaintext = false;
   bool require_fail_closed = true;
   std::uint32_t plaintext_ttl_ms = 0u;
+  std::uint32_t string_policy_version = 0u;
+  std::uint32_t loader_format_version = 0u;
   std::string signing_profile;
   std::string attestation_profile;
   std::string audit_policy;
+  std::string kernel_compat_profile;
+  std::string ios_compliance_profile;
 };
 
 struct ArtifactAuditReportV1 final {
@@ -109,7 +144,10 @@ struct StrikeLedgerEntry final {
 }
 
 [[nodiscard]] inline bool target_forbids_jit(ProtectionTargetKind target) noexcept {
-  return target == ProtectionTargetKind::kIosAppStore || is_kernel_target(target);
+  return target == ProtectionTargetKind::kUnknown ||
+         target == ProtectionTargetKind::kIosAppStore ||
+         target == ProtectionTargetKind::kAndroidDex ||
+         target == ProtectionTargetKind::kShellEphemeral || is_kernel_target(target);
 }
 
 [[nodiscard]] inline bool target_allows_jit(ProtectionTargetKind target) noexcept {
@@ -152,6 +190,97 @@ struct StrikeLedgerEntry final {
       return RuntimeBackendKind::kUnknown;
   }
   return RuntimeBackendKind::kUnknown;
+}
+
+[[nodiscard]] inline RuntimeLaneKind runtime_lane_for_target(ProtectionTargetKind target) noexcept {
+  switch (target) {
+    case ProtectionTargetKind::kDesktopNative:
+    case ProtectionTargetKind::kAndroidSo:
+      return RuntimeLaneKind::kDesktopUserMode;
+    case ProtectionTargetKind::kIosAppStore:
+      return RuntimeLaneKind::kIosSafe;
+    case ProtectionTargetKind::kWindowsDriver:
+    case ProtectionTargetKind::kLinuxKernelModule:
+    case ProtectionTargetKind::kAndroidKernelModule:
+      return RuntimeLaneKind::kKernelSafe;
+    case ProtectionTargetKind::kAndroidDex:
+      return RuntimeLaneKind::kDexLoaderVm;
+    case ProtectionTargetKind::kShellEphemeral:
+      return RuntimeLaneKind::kShellLauncher;
+    case ProtectionTargetKind::kUnknown:
+      return RuntimeLaneKind::kUnknown;
+  }
+  return RuntimeLaneKind::kUnknown;
+}
+
+[[nodiscard]] inline MutationProfileKind mutation_profile_for_target(
+    ProtectionTargetKind target) noexcept {
+  switch (target) {
+    case ProtectionTargetKind::kDesktopNative:
+      return MutationProfileKind::kUnknown;
+    case ProtectionTargetKind::kAndroidSo:
+      return MutationProfileKind::kAndroidSo;
+    case ProtectionTargetKind::kIosAppStore:
+      return MutationProfileKind::kIosMachO;
+    case ProtectionTargetKind::kWindowsDriver:
+    case ProtectionTargetKind::kLinuxKernelModule:
+    case ProtectionTargetKind::kAndroidKernelModule:
+      return MutationProfileKind::kKernelModule;
+    case ProtectionTargetKind::kAndroidDex:
+      return MutationProfileKind::kDexBundle;
+    case ProtectionTargetKind::kShellEphemeral:
+      return MutationProfileKind::kShellBundle;
+    case ProtectionTargetKind::kUnknown:
+      return MutationProfileKind::kUnknown;
+  }
+  return MutationProfileKind::kUnknown;
+}
+
+[[nodiscard]] inline MutationProfileKind mutation_profile_for_target_artifact(
+    ProtectionTargetKind target, ArtifactKind artifact) noexcept {
+  if (target == ProtectionTargetKind::kDesktopNative) {
+    switch (artifact) {
+      case ArtifactKind::kPe:
+        return MutationProfileKind::kPeUserMode;
+      case ArtifactKind::kElf:
+        return MutationProfileKind::kElfUserMode;
+      case ArtifactKind::kUnknown:
+      case ArtifactKind::kMachO:
+      case ArtifactKind::kDex:
+      case ArtifactKind::kShellBundle:
+      case ArtifactKind::kWindowsDriverSys:
+      case ArtifactKind::kLinuxKernelModuleKo:
+        return MutationProfileKind::kUnknown;
+    }
+    return MutationProfileKind::kUnknown;
+  }
+  return mutation_profile_for_target(target);
+}
+
+[[nodiscard]] inline SignaturePolicyKind signature_policy_for_target(
+    ProtectionTargetKind target) noexcept {
+  switch (target) {
+    case ProtectionTargetKind::kDesktopNative:
+    case ProtectionTargetKind::kAndroidSo:
+      return SignaturePolicyKind::kOptionalVerifier;
+    case ProtectionTargetKind::kIosAppStore:
+      return SignaturePolicyKind::kRequiredVerifier;
+    case ProtectionTargetKind::kWindowsDriver:
+    case ProtectionTargetKind::kLinuxKernelModule:
+    case ProtectionTargetKind::kAndroidKernelModule:
+      return SignaturePolicyKind::kSignAfterMutate;
+    case ProtectionTargetKind::kAndroidDex:
+    case ProtectionTargetKind::kShellEphemeral:
+      return SignaturePolicyKind::kNone;
+    case ProtectionTargetKind::kUnknown:
+      return SignaturePolicyKind::kUnknown;
+  }
+  return SignaturePolicyKind::kUnknown;
+}
+
+[[nodiscard]] inline bool target_requires_sign_after_mutate(
+    ProtectionTargetKind target) noexcept {
+  return signature_policy_for_target(target) == SignaturePolicyKind::kSignAfterMutate;
 }
 
 [[nodiscard]] inline bool manifest_requires_runtime_page_control(
@@ -233,6 +362,62 @@ struct StrikeLedgerEntry final {
     case RuntimeBackendKind::kShellLauncher:
       return "shell_launcher";
     case RuntimeBackendKind::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char* to_string(RuntimeLaneKind lane) noexcept {
+  switch (lane) {
+    case RuntimeLaneKind::kDesktopUserMode:
+      return "desktop_user_mode";
+    case RuntimeLaneKind::kKernelSafe:
+      return "kernel_safe";
+    case RuntimeLaneKind::kIosSafe:
+      return "ios_safe";
+    case RuntimeLaneKind::kDexLoaderVm:
+      return "dex_loader_vm";
+    case RuntimeLaneKind::kShellLauncher:
+      return "shell_launcher";
+    case RuntimeLaneKind::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char* to_string(MutationProfileKind profile) noexcept {
+  switch (profile) {
+    case MutationProfileKind::kPeUserMode:
+      return "pe_user_mode";
+    case MutationProfileKind::kElfUserMode:
+      return "elf_user_mode";
+    case MutationProfileKind::kAndroidSo:
+      return "android_so";
+    case MutationProfileKind::kKernelModule:
+      return "kernel_module";
+    case MutationProfileKind::kIosMachO:
+      return "ios_macho";
+    case MutationProfileKind::kDexBundle:
+      return "dex_bundle";
+    case MutationProfileKind::kShellBundle:
+      return "shell_bundle";
+    case MutationProfileKind::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] inline const char* to_string(SignaturePolicyKind policy) noexcept {
+  switch (policy) {
+    case SignaturePolicyKind::kNone:
+      return "none";
+    case SignaturePolicyKind::kOptionalVerifier:
+      return "optional_verifier";
+    case SignaturePolicyKind::kRequiredVerifier:
+      return "required_verifier";
+    case SignaturePolicyKind::kSignAfterMutate:
+      return "sign_after_mutate";
+    case SignaturePolicyKind::kUnknown:
       return "unknown";
   }
   return "unknown";

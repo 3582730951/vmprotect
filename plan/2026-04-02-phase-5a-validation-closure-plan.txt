@@ -1,0 +1,167 @@
+# 2026-04-02 Phase 5a Validation Closure Delta 计划
+
+文件名: `/workspace/plan/2026-04-02-phase-5a-validation-closure-plan.txt`
+
+**Execution Mode**
+- `constrained-single-agent`
+
+**Assurance Level**
+- `standard`
+
+**Task Charter**
+- Objective: 以最小 delta 关闭 Phase 5 `.sh launcher` 的 Validation BLOCK，仅补齐验证门，不改架构边界、不扩 scope。
+- Scope: `launcher manifest` 校验面补齐、`unsafe-shell` redlight 覆盖补齐、`executable provider stderr` 泄漏封堵、`artifact_audit_strict_test` 对 shell strict gate 的真实断言闭口。
+- Non-Goals: 不改 `bundle v3` 格式，不新增 provider endpoint kind，不新增 manifest schema 字段，不扩到 Phase 6，不回写 `2026-04-02-phase-5-execution.txt`。
+- Acceptance Criteria: `launcher` 对其实际消费的 manifest 契约字段具备负向覆盖；`unsafe-shell` 至少覆盖 `set -o xtrace`、行首 `. `、`$0`、`${BASH_SOURCE`；`executable_adapter` 不得把 provider `stderr` 透传到父进程，出现 `stderr` 输出时必须 `fail-closed`；`artifact_audit_strict_test` 必须对真实 shell fixture 执行 audit，并断言 success 案例 `strict_failures=[]`、failure 案例分别命中 `shell_gate_failed`、`shell_unsafe_feature_present`、`shell_plaintext_leak_indicator`。
+- Constraints: 只能做最小修补；不得改变 `shell_ephemeral -> shell_launcher -> pipe_stdin_exec` 边界；不得放宽 fail-closed；不得把 Phase 5a 变成 Phase 5 重做。
+- Forbidden Shortcuts: 不允许只补文档不补测试；不允许只写 fixture 不实际执行 audit；不允许用“任一非零即算通过”替代精确 token 断言；不允许通过吞掉所有 provider 错误来伪造 stderr 封堵。
+- Sources Of Truth: `/workspace/plan/2026-04-02-phase-5-shell-launcher-plan.txt`、`/workspace/plan/2026-04-02-phase-5-execution.txt`、`/workspace/core/tests/tools/artifact_audit_strict_test.cpp`、`/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`、`/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`、`/workspace/core/tests/script_guard/script_launcher_success_test.cpp`、`/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`、`/workspace/core/script_guard/src/launcher.cpp`、`/workspace/core/script_guard/src/external_key_provider.cpp`。
+
+**Main PM**
+- `Agent 1 (Planner)`
+
+**Agent Roster**
+- `Agent 1 (Planner)`: 只负责 Phase 5a delta 计划、冻结门、验收口径。
+- `Agent 2 (Engineer)`: 只负责本计划列出的最小代码与测试补丁。
+- `Agent 3 (Security Reviewer)`: 只负责独立复核 fail-closed、stderr 泄漏封堵、strict audit 证据。
+
+**Delegation Map**
+- `Agent 1 (Planner)`: 固定范围、固定验收字段、固定冻结条件。
+- `Agent 2 (Engineer)`: 仅修改 File Ownership 中列出的文件；若需要改未列文件，直接停下升级。
+- `Agent 3 (Security Reviewer)`: 对变更集与验证日志做独立审查，不参与实现。
+- 角色执行方式: 本地按 `Planner -> Engineer -> Security Reviewer` 顺序串行，不宣称真实并行多代理。
+
+**Architecture Contract Summary**
+- 不改变 `target_kind=shell_ephemeral`、`backend_kind=shell_launcher`、`runtime_lane=shell_launcher`、`mutation_profile=shell_bundle`。
+- 不改变 `execution_model=pipe_stdin_exec`、`allow_persistent_plaintext=false`、`require_fail_closed=true`、`key_material_embedded=false`、provider endpoint allowlist。
+- `launcher` 只补齐其已消费 manifest 字段的验证覆盖，不新增消费字段。
+- `executable_adapter` 仍然是合法 endpoint，但协议载荷只允许经 `stdout` 返回；`stderr` 视为禁止面，不得泄漏到父进程。
+- `artifact_audit --strict` 的 shell gate 逻辑不扩展，只把现有 shell fixture 变成真实执行和真实断言。
+
+**Delta Scope**
+- In Scope: `launcher.cpp` manifest 契约负向覆盖、`external_key_provider.cpp` 对 executable provider `stderr` 的 fail-closed 封堵、`script_launcher_security_edge_test.cpp` 的 G2 redlight 补齐、`artifact_audit_strict_test.cpp` 的 shell strict gate 真实 audit 断言。
+- Out Of Scope: `Phase 5` 架构重构、执行记录回写、perf 基线重置、provider 新协议、shell feature taxonomy 扩展、Android/iOS 后续阶段。
+
+**Parallel Tracks**
+- Track A: `launcher manifest` 校验面闭口。
+- Track B: `unsafe-shell` 与 `executable provider stderr` 闭口。
+- Track C: `artifact_audit_strict_test` shell strict gate 闭口。
+- Track D: 安全复核与冻结判断。
+
+**File Ownership**
+- `/workspace/plan/2026-04-02-phase-5a-validation-closure-plan.txt` -> `Agent 1 (Planner)`
+- `/workspace/core/script_guard/src/launcher.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/script_guard/src/external_key_provider.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/tests/script_guard/script_launcher_success_test.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp` -> `Agent 2 (Engineer)`
+- `/workspace/core/tests/tools/artifact_audit_strict_test.cpp` -> `Agent 2 (Engineer)`
+- 变更集审查与冻结意见 -> `Agent 3 (Security Reviewer)`
+
+**Dependencies**
+- `Task Card 1` 完成后，`Task Card 4` 的 launcher 负向矩阵才能稳定验收。
+- `Task Card 2` 与 `Task Card 3` 可独立实施，但必须在 `Task Card 5` 前全部完成。
+- `Task Card 5` 必须基于聚合后的测试日志和 shell strict audit 报告出结论。
+
+**Regression Perimeter**
+- Root Cause: 现有 Phase 5 测试对 shell lane 的关键验证门只做了部分覆盖，`launcher` manifest 负向矩阵不全，`unsafe-shell` G2 redlight 不全，`executable_adapter` 子进程继承 `stderr` 形成泄漏面，`artifact_audit_strict_test` 写了 shell fixture 但没有对其执行真实 strict audit 断言。
+- Changed Path: `launcher` manifest 校验路径、`external_key_provider` executable provider 读取路径、shell 测试集、strict audit 测试。
+- Adjacent Paths: `script_guard` manifest 生成、provider endpoint 分类、`artifact_audit.py` shell gate 报告字段、现有 FIFO happy path。
+- Unchanged Guarantees: 不改变 `bundle v3`、不改变 manifest schema、不中断 FIFO 和 Unix socket endpoint 的既有语义、不放宽 strict audit gate、不放宽 no-persistent-plaintext。
+- Second-Order Risks: 过严的 `stderr` 封堵可能误伤带诊断输出的合法 adapter；manifest 负向矩阵若用脆弱字符串替换可能引入假阳性；shell strict audit failure 归因若 fixture 被 denylist 污染会混淆 token 断言。
+- Regression Matrix: `script_guard_smoke_test` 保持 bundler 基线；`script_launcher_success_test` 保持 happy path 与 `stderr` 封堵后可用性；`script_launcher_failure_test` 覆盖 manifest 契约负向矩阵；`script_launcher_security_edge_test` 覆盖 G2 redlight；`artifact_audit_strict_test` 覆盖 shell strict success/failure token；`shell_launcher_perf_smoke_test` 与 `perf_smoke` 只做守门，不做基线改写。
+
+**Task Cards**
+
+**Task Card 1: Launcher Manifest 校验面补齐**
+- Owner: `Agent 2 (Engineer)`
+- Files: `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`
+- Change: 以现有 good manifest 为基线，按“单字段单变异”方式补齐 `launcher.cpp` 已消费字段的负向矩阵，不新增 schema，不扩展到 launcher 未消费字段。
+- Required Cases: `target_kind`、`backend_kind`、`runtime_lane`、`mutation_profile`、`signature_policy`、`execution_model`、`interpreter_tag`、`source_policy`、`allow_jit=true`、`allow_runtime_executable_pages=true`、`allow_persistent_plaintext=true`、`require_fail_closed=false`、`trace_env_scrubbed=false`、`key_material_embedded=true`、`key_provider_static_file=true`、`plaintext_output=true`、`no_persistent_plaintext_goal=false`、`key_provider_endpoint_kind=invalid`。
+- Reuse Cases: 保留现有 `key_id` 缺失、`key_id mismatch`、`bundle version mismatch`、provider malformed/rejected/missing 的既有断言。
+- Done When: 每个契约变异都触发 launcher 非零退出，且不产生“字段未测”的空洞。
+
+**Task Card 2: Unsafe-Shell Redlight 覆盖补齐**
+- Owner: `Agent 2 (Engineer)`
+- Files: `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`
+- Change: 在现有 `set -x` 与 `source` 基础上，补齐计划 G2 redlight 缺失的四类脚本 fixture，并明确断言 bundler 在生成 bundle/manifest 前即拒绝。
+- Required Cases: `set -o xtrace`、行首 `. ./other.sh`、`$0`、`${BASH_SOURCE}` 或 `${BASH_SOURCE[0]}`。
+- Guardrail: 保留现有 safe script 成功路径与 env scrub 断言，避免 redlight 扩散成误拦截。
+- Done When: G2 列出的 redlight 全部有独立 fixture 和独立失败断言。
+
+**Task Card 3: Executable Provider `stderr` 泄漏封堵**
+- Owner: `Agent 2 (Engineer)`
+- Files: `/workspace/core/script_guard/src/external_key_provider.cpp`、`/workspace/core/tests/script_guard/script_launcher_success_test.cpp`、`/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+- Change: 对 `read_provider_response_from_executable()` 增加独立 `stderr` 处理，不再让 provider child 继承父进程 `stderr`。最小策略为“捕获并阻断，不转发”；若 provider `stderr` 非空，则判定该 provider 违规并 `fail-closed`。
+- Security Rule: provider 协议只允许通过 `stdout` 返回；`stderr` 中任意字节都不能出现在父进程 `stdout`、`stderr`、bundle、manifest、测试输出文件或临时副产物中。
+- Success Probe: 增加一个安静的 `executable_adapter` happy path，证明封堵后合法 adapter 仍可工作。
+- Failure Probe: 增加一个会在 `stderr` 打出 secret marker 但 `stdout` 返回合法协议的 adapter fixture，断言 bundler/launcher 失败，且 marker 不出现在任何父可见输出中。
+- Done When: `executable_adapter` 既有合法成功路径仍可通，带 `stderr` 的 adapter 被 fail-closed 且无泄漏。
+
+**Task Card 4: Shell Strict Audit 真实断言闭口**
+- Owner: `Agent 2 (Engineer)`
+- Files: `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- Change: 对已写出的 `shell_bundle_artifact` 和四类 shell manifest 执行真实 `run_audit(... --manifest ... --strict)`，不再停留在 fixture 写入阶段。
+- Required Assertions: success manifest 返回 `0` 且报告包含 `\"strict_failures\": []`；bad-gate manifest 返回非零且报告包含 `shell_gate_failed`；unsafe manifest 返回非零且报告包含 `shell_unsafe_feature_present`；leak manifest 返回非零且报告包含 `shell_plaintext_leak_indicator`。
+- Attribution Rule: shell success fixture 必须保持 denylist-clean，避免 strict failure 被无关规则抢占；若 leak fixture 同时命中 `shell_gate_failed`，可作为附加断言，但不能替代 `shell_plaintext_leak_indicator` 的专门断言。
+- Done When: shell strict gate 的 success/failure token 都来自真实 audit 执行，而不是字符串静态拼装。
+
+**Task Card 5: Security Review 与冻结判断**
+- Owner: `Agent 3 (Security Reviewer)`
+- Files: 上述变更集与验证日志
+- Change: 复核 manifest 负向矩阵是否覆盖 `launcher.cpp` 实际消费面；复核 `stderr` 封堵是否为“阻断+不转发”；复核 shell strict audit 是否为真实执行且 token 归因准确。
+- Done When: 给出 `PASS` 或 `BLOCK`，且结论只基于本 Phase 5a 范围，不借机扩到 Phase 6 或执行记录回写。
+
+**Model Routing**
+- `Agent 1 (Planner)` -> `main_agent` -> 计划与冻结口径
+- `Agent 2 (Engineer)` -> `main_agent` -> 最小实现与测试补口
+- `Agent 3 (Security Reviewer)` -> `main_agent` -> 安全审查检查点
+- 说明: 本地运行不具备真实多代理委派，以上为受限单代理顺序检查点，不宣称并行独立执行。
+
+**Context Packages**
+- 可依赖: 现有 Phase 5 计划契约、现有测试文件、`launcher.cpp` manifest 消费字段、`external_key_provider.cpp` executable provider 读取实现、`artifact_audit.py` 现有 shell strict token。
+- 不可依赖: 未批准的新 manifest 字段、新 provider 协议、对 `artifact_audit.py` shell gate 语义的扩张解释、Phase 6/7 的需求借位。
+
+**Quality Gates**
+- Delta Containment Gate: 变更必须收束在 File Ownership 清单内；任何新增文件或新增模块默认视为超 scope。
+- Evidence Gate: 不能只补 fixture，必须有真实命令执行和精确 token 断言。
+- Fail-Closed Gate: `stderr` 封堵必须以阻断泄漏为先，不能把 provider 非法行为静默转成功。
+- Review Independence Gate: `Agent 3` 的结论必须基于测试输出和代码路径，不复述 `Agent 2` 自证。
+
+**Validation Commands**
+- `cmake -S /workspace/core -B /workspace/build_phase5a -G Ninja`
+- `cmake --build /workspace/build_phase5a -j`
+- `ctest --test-dir /workspace/build_phase5a --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test'`
+- `ctest --test-dir /workspace/build_phase5a --output-on-failure -R 'shell_launcher_perf_smoke_test'`
+- `cmake --build /workspace/build_phase5a --target perf_smoke`
+
+**Freeze 条件**
+- 只允许修改本计划 `File Ownership` 中列出的文件。
+- `launcher` manifest 契约矩阵必须覆盖其当前实际消费字段，且所有新增负向用例真实失败。
+- `unsafe-shell` 必须显式覆盖 `set -o xtrace`、行首 `. `、`$0`、`${BASH_SOURCE`，且每项都有独立 redlight 断言。
+- `executable_adapter` 的 `stderr` secret marker 不能出现在父进程 `stdout`、`stderr`、bundle、manifest、输出文件、临时目录扫描结果中。
+- `artifact_audit_strict_test` 必须对 shell fixture 真实执行 strict audit，并精确命中 `strict_failures=[]`、`shell_gate_failed`、`shell_unsafe_feature_present`、`shell_plaintext_leak_indicator`。
+- focused ctest 与 `perf_smoke` 全部通过；若 `perf_smoke` 失败，Phase 5a 直接 `BLOCK`。
+- 本 Phase 5a 不回写 `/workspace/plan/2026-04-02-phase-5-execution.txt`；如需回写，必须单独开新 delta。
+
+**Assurance Scorecard**
+- architecture completeness: `5/5`
+- evidence coverage: `5/5`
+- blast radius coverage: `4/5`
+- PM boundary integrity: `5/5`
+- review independence: `4/5`
+- context integrity: `5/5`
+- delegation integrity: `N/A` under `constrained-single-agent`
+- gate result: `PLAN PASS / IMPLEMENTATION NOT STARTED`
+
+**Open Risks**
+- 一些现有 `executable_adapter` 若带无害诊断输出，Phase 5a 会将其视为违规并 fail-closed；这是有意收紧，不做兼容保留。
+- manifest 负向矩阵若用字符串替换实现，容易因字段顺序变化导致脆弱测试；必须从已生成 good manifest 做最小单点变异。
+- shell strict audit 若继续复用带多重违规的 leak fixture，可能出现 token 归因重叠；必须以专门断言锁定目标 token。
+
+**State Snapshot**
+- current truth: Phase 5 主干功能已存在，但 Validation Reviewer 指出的四个验证闭口仍未被最小、真实、可复现地封死。
+- accepted decisions: Phase 5a 只做验证闭口，不碰架构，不碰 Phase 6，不碰执行记录回写。
+- blockers: `launcher manifest` 负向矩阵不全，`unsafe-shell` G2 缺口，`executable_adapter stderr` 泄漏面，shell strict audit 未真实断言。
+- next actions: 按 `Task Card 1 -> Task Card 2 -> Task Card 3 -> Task Card 4 -> Task Card 5` 顺序执行并据 `Freeze 条件` 决定 `PASS/BLOCK`。

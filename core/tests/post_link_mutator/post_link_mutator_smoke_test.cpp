@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -19,10 +21,26 @@
 
 namespace {
 
+constexpr std::string_view kMutationTrailerMagic = "EIPPFMT1";
+
 struct ExpectedManifest final {
   std::string artifact_kind;
   std::string target_kind;
   std::string backend_kind;
+  std::string runtime_lane;
+  std::string mutation_profile;
+  std::string signature_policy;
+  std::string kernel_compat_profile;
+  std::string signing_profile;
+  std::string attestation_profile;
+  bool sign_after_mutate_required = false;
+  bool allow_jit = false;
+  bool allow_runtime_executable_pages = false;
+  bool allow_persistent_plaintext = false;
+  bool require_fail_closed = true;
+  bool hvci_profile = false;
+  bool vermagic_profile = false;
+  bool gki_kmi_profile = false;
 };
 
 [[nodiscard]] std::string quote_arg(const std::string& value) {
@@ -104,6 +122,18 @@ bool expect_manifest_fields(const std::filesystem::path& manifest_path,
                             std::string_view target_kind_source,
                             const ExpectedManifest& expected) {
   const std::string manifest = read_text_file(manifest_path);
+  const std::string sign_after_mutate_required =
+      expected.sign_after_mutate_required ? "true" : "false";
+  const std::string allow_jit = expected.allow_jit ? "true" : "false";
+  const std::string allow_runtime_executable_pages =
+      expected.allow_runtime_executable_pages ? "true" : "false";
+  const std::string allow_persistent_plaintext =
+      expected.allow_persistent_plaintext ? "true" : "false";
+  const std::string require_fail_closed = expected.require_fail_closed ? "true" : "false";
+  const std::string hvci_profile = expected.hvci_profile ? "true" : "false";
+  const std::string vermagic_profile = expected.vermagic_profile ? "true" : "false";
+  const std::string gki_kmi_profile = expected.gki_kmi_profile ? "true" : "false";
+
   return expect(manifest.find("\"schema_version\": 2") != std::string::npos,
                 "manifest schema version mismatch") &&
          expect(manifest.find("\"mutation_status\": \"mutated_with_trailer_v1\"") != std::string::npos,
@@ -122,7 +152,63 @@ bool expect_manifest_fields(const std::filesystem::path& manifest_path,
                 "manifest target kind mismatch") &&
          expect(manifest.find("\"backend_kind\": \"" + expected.backend_kind + "\"") !=
                     std::string::npos,
-                "manifest backend kind mismatch");
+                "manifest backend kind mismatch") &&
+         expect(manifest.find("\"runtime_lane\": \"" + expected.runtime_lane + "\"") !=
+                    std::string::npos,
+                "manifest runtime lane mismatch") &&
+         expect(manifest.find("\"mutation_profile\": \"" + expected.mutation_profile + "\"") !=
+                    std::string::npos,
+                "manifest mutation profile mismatch") &&
+         expect(manifest.find("\"signature_policy\": \"" + expected.signature_policy + "\"") !=
+                    std::string::npos,
+                "manifest signature policy mismatch") &&
+         expect(manifest.find("\"kernel_compat_profile\": \"" + expected.kernel_compat_profile + "\"") !=
+                    std::string::npos,
+                "manifest kernel compat profile mismatch") &&
+         expect(manifest.find("\"signing_profile\": \"" + expected.signing_profile + "\"") !=
+                    std::string::npos,
+                "manifest signing profile mismatch") &&
+         expect(manifest.find("\"attestation_profile\": \"" + expected.attestation_profile + "\"") !=
+                    std::string::npos,
+                "manifest attestation profile mismatch") &&
+         expect(manifest.find("\"sign_after_mutate_required\": " + sign_after_mutate_required) !=
+                    std::string::npos,
+                "manifest sign-after-mutate mismatch") &&
+         expect(manifest.find("\"allow_jit\": " + allow_jit) != std::string::npos,
+                "manifest allow_jit mismatch") &&
+         expect(manifest.find("\"allow_runtime_executable_pages\": " + allow_runtime_executable_pages) !=
+                    std::string::npos,
+                "manifest allow_runtime_executable_pages mismatch") &&
+         expect(manifest.find("\"allow_persistent_plaintext\": " + allow_persistent_plaintext) !=
+                    std::string::npos,
+                "manifest allow_persistent_plaintext mismatch") &&
+         expect(manifest.find("\"require_fail_closed\": " + require_fail_closed) !=
+                    std::string::npos,
+                "manifest require_fail_closed mismatch") &&
+         expect(manifest.find("\"hvci_profile\": " + hvci_profile) != std::string::npos,
+                "manifest hvci_profile mismatch") &&
+         expect(manifest.find("\"vermagic_profile\": " + vermagic_profile) != std::string::npos,
+                "manifest vermagic_profile mismatch") &&
+         expect(manifest.find("\"gki_kmi_profile\": " + gki_kmi_profile) != std::string::npos,
+                "manifest gki_kmi_profile mismatch");
+}
+
+bool expect_trailer_magic_and_version(const std::vector<std::uint8_t>& original,
+                                      const std::vector<std::uint8_t>& mutated) {
+  const auto trailer_begin = mutated.begin() + static_cast<std::ptrdiff_t>(original.size());
+  const auto magic_begin = std::search(trailer_begin,
+                                       mutated.end(),
+                                       kMutationTrailerMagic.begin(),
+                                       kMutationTrailerMagic.end());
+  if (!expect(magic_begin != mutated.end(), "mutation trailer magic missing from appended bytes")) {
+    return false;
+  }
+  const auto version_it =
+      magic_begin + static_cast<std::ptrdiff_t>(kMutationTrailerMagic.size());
+  if (!expect(version_it != mutated.end(), "mutation trailer version byte missing")) {
+    return false;
+  }
+  return expect(*version_it == 1u, "mutation trailer version mismatch");
 }
 
 int run_success_case(const std::filesystem::path& temp_dir,
@@ -164,6 +250,9 @@ int run_success_case(const std::filesystem::path& temp_dir,
   if (!expect(got != input_content, "mutated output must differ from input")) {
     return 1;
   }
+  if (!expect_trailer_magic_and_version(input_content, got)) {
+    return 1;
+  }
 
   if (!expect_manifest_fields(manifest, target_label, "explicit_cli", expected)) {
     return 1;
@@ -193,6 +282,64 @@ int run_failure_case(const std::filesystem::path& temp_dir,
   if (!expect(status != 0, "invalid target/artifact pairing should fail closed")) {
     return 1;
   }
+  return 0;
+}
+
+int run_fail_closed_spoof_cases(const std::filesystem::path& temp_dir,
+                                const std::vector<std::uint8_t>& random_bytes) {
+  struct SpoofCase final {
+    const char* label;
+    const char* input_name;
+    const char* output_name;
+    const char* target_label;
+    const char* target_kind;
+  };
+
+  const std::array<SpoofCase, 4u> cases{{
+      {"spoof_output_shell",
+       "spoof_output_shell.bin",
+       "spoof_output_shell.sh",
+       "bootstrap.sh",
+       "shell_ephemeral"},
+      {"spoof_output_dex",
+       "spoof_output_dex.bin",
+       "spoof_output_dex.dex",
+       "classes.dex",
+       "android_dex"},
+      {"spoof_input_shell",
+       "fake_input_shell.sh",
+       "fake_input_shell.out",
+       "bootstrap.sh",
+       "shell_ephemeral"},
+      {"spoof_input_dex",
+       "fake_input_dex.dex",
+       "fake_input_dex.out",
+       "classes.dex",
+       "android_dex"},
+  }};
+
+  for (const SpoofCase& test_case : cases) {
+    const std::filesystem::path input = temp_dir / test_case.input_name;
+    const std::filesystem::path output = temp_dir / test_case.output_name;
+    const std::filesystem::path manifest =
+        temp_dir / (std::string(test_case.label) + ".manifest.json");
+    if (!write_bytes(input, random_bytes)) {
+      std::cerr << "[FAIL] cannot write spoof input for case " << test_case.label << '\n';
+      return 1;
+    }
+
+    const std::string command =
+        std::string(EIPPF_POST_LINK_MUTATOR_BIN) + " --input " + quote_arg(input.string()) +
+        " --output " + quote_arg(output.string()) + " --manifest " + quote_arg(manifest.string()) +
+        " --target " + quote_arg(test_case.target_label) + " --target-kind " +
+        quote_arg(test_case.target_kind);
+    const int status = normalize_status(std::system(command.c_str()));
+    if (!expect(status != 0, "spoofed dex/shell path must fail closed")) {
+      std::cerr << "[INFO] spoof_case=" << test_case.label << " status=" << status << '\n';
+      return 1;
+    }
+  }
+
   return 0;
 }
 
@@ -229,7 +376,23 @@ int main() {
           "desktop_pe",
           "target_pe",
           pe,
-          ExpectedManifest{"pe", "desktop_native", "desktop_jit"},
+          ExpectedManifest{"pe",
+                           "desktop_native",
+                           "desktop_jit",
+                           "desktop_user_mode",
+                           "pe_user_mode",
+                           "optional_verifier",
+                           "",
+                           "unsigned_dev_or_sign_after_mutation",
+                           "default",
+                           false,
+                           true,
+                           true,
+                           false,
+                           true,
+                           false,
+                           false,
+                           false},
           false) != 0) {
     return 1;
   }
@@ -238,7 +401,23 @@ int main() {
           "desktop_elf",
           "target_elf",
           elf,
-          ExpectedManifest{"elf", "desktop_native", "desktop_jit"},
+          ExpectedManifest{"elf",
+                           "desktop_native",
+                           "desktop_jit",
+                           "desktop_user_mode",
+                           "elf_user_mode",
+                           "optional_verifier",
+                           "",
+                           "unsigned_dev_or_sign_after_mutation",
+                           "default",
+                           false,
+                           true,
+                           true,
+                           false,
+                           true,
+                           false,
+                           false,
+                           false},
           false) != 0) {
     return 1;
   }
@@ -247,7 +426,23 @@ int main() {
           "ios_macho",
           "ios_target_macho",
           macho,
-          ExpectedManifest{"macho", "ios_appstore", "ios_safe_aot"},
+          ExpectedManifest{"macho",
+                           "ios_appstore",
+                           "ios_safe_aot",
+                           "ios_safe",
+                           "ios_macho",
+                           "required_verifier",
+                           "",
+                           "ios_codesign_after_mutation",
+                           "ios_safe",
+                           false,
+                           false,
+                           false,
+                           false,
+                           true,
+                           false,
+                           false,
+                           false},
           false) != 0) {
     return 1;
   }
@@ -256,7 +451,23 @@ int main() {
           "windows_driver",
           "windows_driver_sys",
           pe,
-          ExpectedManifest{"windows_driver_sys", "windows_driver", "kernel_safe_aot"},
+          ExpectedManifest{"windows_driver_sys",
+                           "windows_driver",
+                           "kernel_safe_aot",
+                           "kernel_safe",
+                           "kernel_module",
+                           "sign_after_mutate",
+                           "hvci_profile",
+                           "windows_driver_sign_after_mutation",
+                           "kernel_safe",
+                           true,
+                           false,
+                           false,
+                           false,
+                           true,
+                           true,
+                           false,
+                           false},
           false) != 0) {
     return 1;
   }
@@ -265,7 +476,48 @@ int main() {
           "linux_ko",
           "linux_kernel_module.ko",
           elf,
-          ExpectedManifest{"linux_kernel_module_ko", "linux_kernel_module", "kernel_safe_aot"},
+          ExpectedManifest{"linux_kernel_module_ko",
+                           "linux_kernel_module",
+                           "kernel_safe_aot",
+                           "kernel_safe",
+                           "kernel_module",
+                           "sign_after_mutate",
+                           "vermagic_profile",
+                           "kernel_module_sign_after_mutation",
+                           "kernel_safe",
+                           true,
+                           false,
+                           false,
+                           false,
+                           true,
+                           false,
+                           true,
+                           false},
+          true) != 0) {
+    return 1;
+  }
+  if (run_success_case(
+          temp_dir,
+          "android_ko",
+          "android_kernel_module.ko",
+          elf,
+          ExpectedManifest{"linux_kernel_module_ko",
+                           "android_kernel_module",
+                           "kernel_safe_aot",
+                           "kernel_safe",
+                           "kernel_module",
+                           "sign_after_mutate",
+                           "gki_kmi_profile",
+                           "kernel_module_sign_after_mutation",
+                           "kernel_safe",
+                           true,
+                           false,
+                           false,
+                           false,
+                           true,
+                           false,
+                           false,
+                           true},
           true) != 0) {
     return 1;
   }
@@ -273,6 +525,9 @@ int main() {
     return 1;
   }
   if (run_failure_case(temp_dir, "elf_as_driver", "windows_driver", elf) != 0) {
+    return 1;
+  }
+  if (run_fail_closed_spoof_cases(temp_dir, unknown) != 0) {
     return 1;
   }
 

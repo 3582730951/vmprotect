@@ -73,7 +73,7 @@ eippf_harden_target(secure_ir_engine_test
 
 add_test(NAME runtime_secure_ir_engine_test COMMAND secure_ir_engine_test)
 
-foreach(_safe_backend IN ITEMS ios_appstore windows_driver)
+foreach(_safe_backend IN ITEMS ios_appstore windows_driver linux_kernel_module android_kernel_module android_dex shell_ephemeral unknown)
   add_executable(secure_ir_engine_${_safe_backend}_safe_test
     runtime/ir/secure_ir_engine_safe_backend_test.cpp
   )
@@ -87,26 +87,55 @@ foreach(_safe_backend IN ITEMS ios_appstore windows_driver)
     "${CMAKE_SOURCE_DIR}/runtime/include"
   )
 
+  set(_runtime_target_kind "")
+  set(_apply_harden_target TRUE)
   if(_safe_backend STREQUAL "ios_appstore")
     target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
       EIPPF_EXPECT_IOS_APPSTORE=1
     )
     set(_runtime_target_kind ios_appstore)
-  else()
+  elseif(_safe_backend STREQUAL "windows_driver")
     target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
       EIPPF_EXPECT_WINDOWS_DRIVER=1
     )
     set(_runtime_target_kind windows_driver)
+  elseif(_safe_backend STREQUAL "linux_kernel_module")
+    target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_LINUX_KERNEL_MODULE=1
+    )
+    set(_runtime_target_kind linux_kernel_module)
+  elseif(_safe_backend STREQUAL "android_kernel_module")
+    target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_ANDROID_KERNEL_MODULE=1
+    )
+    set(_runtime_target_kind android_kernel_module)
+  elseif(_safe_backend STREQUAL "android_dex")
+    target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_ANDROID_DEX=1
+    )
+    set(_runtime_target_kind android_dex)
+  elseif(_safe_backend STREQUAL "shell_ephemeral")
+    target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_SHELL_EPHEMERAL=1
+    )
+    set(_runtime_target_kind shell_ephemeral)
+  else()
+    target_compile_definitions(secure_ir_engine_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_UNKNOWN_TARGET=1
+    )
+    set(_apply_harden_target FALSE)
   endif()
 
   eippf_apply_common_compile_options(secure_ir_engine_${_safe_backend}_safe_test)
 
-  eippf_harden_target(secure_ir_engine_${_safe_backend}_safe_test
-    NO_WRAPPER
-    NO_MUTATION
-    NO_PASS_PLUGIN
-    TARGET_KIND ${_runtime_target_kind}
-  )
+  if(_apply_harden_target)
+    eippf_harden_target(secure_ir_engine_${_safe_backend}_safe_test
+      NO_WRAPPER
+      NO_MUTATION
+      NO_PASS_PLUGIN
+      TARGET_KIND ${_runtime_target_kind}
+    )
+  endif()
 
   add_test(
     NAME runtime_secure_ir_engine_${_safe_backend}_safe_test
@@ -172,7 +201,7 @@ eippf_harden_target(memory_hal_test
 
 add_test(NAME runtime_memory_hal_test COMMAND memory_hal_test)
 
-foreach(_safe_backend IN ITEMS ios_appstore windows_driver)
+foreach(_safe_backend IN ITEMS ios_appstore windows_driver linux_kernel_module android_kernel_module android_dex shell_ephemeral unknown)
   add_executable(memory_hal_${_safe_backend}_safe_test
     runtime/hal/memory_hal_safe_backend_test.cpp
   )
@@ -186,26 +215,55 @@ foreach(_safe_backend IN ITEMS ios_appstore windows_driver)
     "${CMAKE_SOURCE_DIR}/runtime/include"
   )
 
+  set(_runtime_target_kind "")
+  set(_apply_harden_target TRUE)
   if(_safe_backend STREQUAL "ios_appstore")
     target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
       EIPPF_EXPECT_IOS_APPSTORE=1
     )
     set(_runtime_target_kind ios_appstore)
-  else()
+  elseif(_safe_backend STREQUAL "windows_driver")
     target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
       EIPPF_EXPECT_WINDOWS_DRIVER=1
     )
     set(_runtime_target_kind windows_driver)
+  elseif(_safe_backend STREQUAL "linux_kernel_module")
+    target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_LINUX_KERNEL_MODULE=1
+    )
+    set(_runtime_target_kind linux_kernel_module)
+  elseif(_safe_backend STREQUAL "android_kernel_module")
+    target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_ANDROID_KERNEL_MODULE=1
+    )
+    set(_runtime_target_kind android_kernel_module)
+  elseif(_safe_backend STREQUAL "android_dex")
+    target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_ANDROID_DEX=1
+    )
+    set(_runtime_target_kind android_dex)
+  elseif(_safe_backend STREQUAL "shell_ephemeral")
+    target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_SHELL_EPHEMERAL=1
+    )
+    set(_runtime_target_kind shell_ephemeral)
+  else()
+    target_compile_definitions(memory_hal_${_safe_backend}_safe_test PRIVATE
+      EIPPF_EXPECT_UNKNOWN_TARGET=1
+    )
+    set(_apply_harden_target FALSE)
   endif()
 
   eippf_apply_common_compile_options(memory_hal_${_safe_backend}_safe_test)
 
-  eippf_harden_target(memory_hal_${_safe_backend}_safe_test
-    NO_WRAPPER
-    NO_MUTATION
-    NO_PASS_PLUGIN
-    TARGET_KIND ${_runtime_target_kind}
-  )
+  if(_apply_harden_target)
+    eippf_harden_target(memory_hal_${_safe_backend}_safe_test
+      NO_WRAPPER
+      NO_MUTATION
+      NO_PASS_PLUGIN
+      TARGET_KIND ${_runtime_target_kind}
+    )
+  endif()
 
   add_test(
     NAME runtime_memory_hal_${_safe_backend}_safe_test
@@ -324,10 +382,17 @@ endif()
 
 eippf_maybe_add_test_subdir(contracts)
 eippf_maybe_add_test_subdir(runtime/backend)
+eippf_maybe_add_test_subdir(passes)
+eippf_maybe_add_test_subdir(runtime/security)
 eippf_maybe_add_test_subdir(post_link_mutator)
 eippf_maybe_add_test_subdir(dex_toolchain)
 eippf_maybe_add_test_subdir(script_guard)
 eippf_maybe_add_test_subdir(tools)
+eippf_maybe_add_test_subdir(lane_ios_safe)
+eippf_maybe_add_test_subdir(lane_windows_driver)
+eippf_maybe_add_test_subdir(lane_linux_kernel)
+eippf_maybe_add_test_subdir(lane_android_kernel)
+eippf_maybe_add_test_subdir(perf)
 
 if(TARGET protection_contracts_test)
   list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:protection_contracts_test>)
@@ -342,8 +407,14 @@ endif()
 foreach(_safe_perf_target IN ITEMS
   secure_ir_engine_ios_appstore_safe_test
   secure_ir_engine_windows_driver_safe_test
+  secure_ir_engine_android_dex_safe_test
+  secure_ir_engine_shell_ephemeral_safe_test
+  secure_ir_engine_unknown_safe_test
   memory_hal_ios_appstore_safe_test
   memory_hal_windows_driver_safe_test
+  memory_hal_android_dex_safe_test
+  memory_hal_shell_ephemeral_safe_test
+  memory_hal_unknown_safe_test
   hardened_target_ios_runtime_kind_test
   hardened_target_windows_driver_runtime_kind_test
   hardened_target_ios_secure_ir_engine_test
@@ -365,9 +436,24 @@ if(TARGET dex_toolchain_smoke_test)
   list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS dex_toolchain_smoke_test)
 endif()
 
+if(TARGET dex_loader_perf_smoke_test)
+  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:dex_loader_perf_smoke_test>)
+  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS dex_loader_perf_smoke_test)
+endif()
+
+if(TARGET ios_safe_perf_smoke_test)
+  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:ios_safe_perf_smoke_test>)
+  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS ios_safe_perf_smoke_test)
+endif()
+
 if(TARGET script_guard_smoke_test)
   list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:script_guard_smoke_test>)
   list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS script_guard_smoke_test)
+endif()
+
+if(TARGET shell_launcher_perf_smoke_test)
+  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:shell_launcher_perf_smoke_test>)
+  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS shell_launcher_perf_smoke_test)
 endif()
 
 if(TARGET artifact_audit_strict_test)

@@ -1,0 +1,124 @@
+# 2026-04-02 Phase 3a / plan closure delta
+
+依附关系:
+- 本文件依附于 [2026-04-02-phase-3-user-mode-mainline-plan.txt](/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt)。
+- 本文件只修补 `Phase 3` 计划的依赖闭环与 freeze gate blocker，不替代整份 `Phase 3` 计划。
+
+Task Charter Delta:
+- Objective:
+  - 只修补 `Phase 3` 计划被 reviewer 打回的 2 个 blocker：
+    - A/B/C 任务卡的本地验证依赖了尚未由 Track D 注册的测试目标
+    - `Phase 3 Freeze Gate` 未将三平台 `<=10%` 预算写成显式冻结条件
+- Scope:
+  - 不改变 `Phase 3` 总 scope。
+  - 不扩到 `.sys/.ko/.dex/.sh/iOS`。
+  - 不新增新的工程轨。
+- Non-Goals:
+  - 不重写 `Phase 3` 详细计划。
+  - 不改变 `Track A/B/C/D` 的总体职责分工。
+  - 不降低任何安全门或性能门。
+
+Architecture Contract Delta:
+- `Track A/B/C` 的最小本地验证从“先构建测试目标”改为“只构建各自拥有的生产目标”：
+  - `Track A`
+    - 只构建 `eippf_string_protection_pass` 与 `eippf_runtime`
+  - `Track B`
+    - 只构建 `eippf_post_link_mutator` 与 `eippf_post_link_mutator_core`
+  - `Track C`
+    - 只构建 `eippf_runtime`
+- `Track D` 继续负责：
+  - 新增测试目标的统一注册
+  - `tests/perf/evidence` 的统一构建
+  - 跨轨 `ctest` / `perf` / 证据整合
+- `Phase 3` 的本地闭环调整为：
+  - `A/B/C` 先完成生产路径与最小构建自检
+  - `D` 在 `A/B/C` 合并后统一注册测试并执行跨轨验证
+- `Track C` 的 failure 示例固定显式包含：
+  - `JNI`
+  - `lexical`
+  - `hook`
+  - `anti-debug`
+
+Decision Log Delta:
+- `DL-P3A-01`
+  - 决定：`Track A/B/C` 的最小本地验证不再依赖 `Track D` 后置注册的测试目标
+  - 原因：当前单写者边界下，这种依赖导致 task card 不可执行
+- `DL-P3A-02`
+  - 决定：`Phase 3 Freeze Gate` 必须显式要求 `Windows .exe/.dll`、`Linux ELF/.so`、`Android .so` 三平台样本 `user_mode_perf_smoke_test <= 10%`
+  - 原因：`perf_smoke 通过` 不等价于三平台样本预算达标
+- `DL-P3A-03`
+  - 决定：`Track C` 失败示例补入 `anti-debug` 显式负例
+  - 原因：避免实现阶段将 Android `.so` 的 `anti-debug` 退化为口头目标
+
+State Snapshot Delta:
+- `Phase 2C` 已冻结，不回退。
+- `Phase 3` 计划方向正确，但存在两个编排 blocker：
+  - 本地验证命令依赖错误
+  - freeze gate 未显式写出三平台 `<=10%`
+- `Phase 3a` 只关闭这两个 blocker，不改变 `Phase 3` 的目标、轨道和文件白名单。
+
+Dependencies Delta:
+- `Track A/B/C`
+  - 不再依赖 `Track D` 的测试注册即可完成最小本地构建自检。
+  - 仍依赖 `Track A` 的 string / lexical policy 作为最终跨轨统一真相源，但不阻塞其生产目标构建。
+- `Track D`
+  - 继续后置执行。
+  - 依赖 `Track A/B/C` 的生产改动落地后，统一注册并构建测试目标，再执行 `ctest/perf/evidence`。
+
+Merge Order Delta:
+- `M1`: Track A / 生产路径实现 + 本地生产构建自检
+- `M2`: Track B / 生产路径实现 + 本地生产构建自检
+- `M3`: Track C / 生产路径实现 + 本地生产构建自检
+- `M4`: Track D / 测试注册 + 跨轨 tests/perf/evidence
+- `M5`: PM integration
+- `M6`: Phase 3 final reviews
+
+Quality Gates Delta:
+- `Track A` 本地最小构建命令固定为：
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - `cmake --build /workspace/build_phase3 -j --target eippf_string_protection_pass eippf_runtime`
+- `Track B` 本地最小构建命令固定为：
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - `cmake --build /workspace/build_phase3 -j --target eippf_post_link_mutator eippf_post_link_mutator_core`
+- `Track C` 本地最小构建命令固定为：
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - `cmake --build /workspace/build_phase3 -j --target eippf_runtime`
+- `Track D` 统一验证命令固定为：
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - `cmake --build /workspace/build_phase3 -j`
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|post_link_mutator_user_mode_contract_test|artifact_audit_user_mode_test|android_so_policy_test|android_so_pipeline_smoke_test|user_mode_pipeline_test'`
+  - `cmake --build /workspace/build_phase3 --target perf_smoke`
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'user_mode_perf_smoke_test'`
+
+Freeze Gate Delta:
+- 在原 `Phase 3 Freeze Gate` 基础上新增硬条件：
+  - `Windows .exe/.dll` 样本 `user_mode_perf_smoke_test` 结果必须 `<=10%`
+  - `Linux ELF/.so` 样本 `user_mode_perf_smoke_test` 结果必须 `<=10%`
+  - `Android .so` 样本 `user_mode_perf_smoke_test` 结果必须 `<=10%`
+- `perf_smoke` 通过仅表示进入冻结审查资格，不等价于三平台样本预算已达标。
+- 若任一平台样本超过 `10%`，`Phase 3` 不得冻结。
+
+PM Task Card Delta:
+- `Track A`
+  - 将原 task card 第 6 步替换为：
+    - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+    - `cmake --build /workspace/build_phase3 -j --target eippf_string_protection_pass eippf_runtime`
+  - 不再要求先构建 `string_protection_pass_test` / `string_token_runtime_test`
+- `Track B`
+  - 将原 task card 第 5 步替换为：
+    - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+    - `cmake --build /workspace/build_phase3 -j --target eippf_post_link_mutator eippf_post_link_mutator_core`
+  - 不再要求先构建 `post_link_mutator_user_mode_contract_test` / `artifact_audit_user_mode_test`
+- `Track C`
+  - 将原 task card 第 5 步替换为：
+    - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+    - `cmake --build /workspace/build_phase3 -j --target eippf_runtime`
+  - failure 示例固定扩展为：
+    - `JNI` 违规失败
+    - `lexical` 违规失败
+    - `hook` 违规失败
+    - `anti-debug` 违规失败
+  - 不再要求先构建 `android_so_policy_test` / `android_so_pipeline_smoke_test`
+- `Track D`
+  - 继续保留原任务卡的测试注册、`ctest`、`perf`、证据整合职责
+  - 其统一验证结果才是 `Phase 3` 的正式测试/性能主证据

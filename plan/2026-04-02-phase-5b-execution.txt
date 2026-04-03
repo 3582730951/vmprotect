@@ -1,0 +1,92 @@
+# 2026-04-02 Phase 5b/5c `.sh launcher` 安全闭环执行记录
+
+状态:
+- `Phase 5` 主干已完成实现与首次集成验证，但未冻结。
+- `Phase 5a`：Architecture `PASS` / Validation `PASS` / Security `BLOCK`
+- `Phase 5b`：三审通过，进入实现
+- `Phase 5c`：三审通过，验证命令闭环已修正
+- 当前已完成:
+  - `Engineer-A` / launcher runtime full-contract validation + runtime unsafe-shell recheck
+  - `Engineer-B` / launcher failure + security-edge test matrix
+  - `Engineer-C` / executable provider stderr leak closure + strict audit true execution
+  - `Phase 5` 最终三审冻结
+- `Phase 5` 最终冻结: `PASS`
+
+计划文件:
+- `/workspace/plan/2026-04-02-phase-5-shell-launcher-plan.txt`
+- `/workspace/plan/2026-04-02-phase-5a-validation-closure-plan.txt`
+- `/workspace/plan/2026-04-02-phase-5b-security-closure-plan.txt`
+- `/workspace/plan/2026-04-02-phase-5c-validation-command-closure-plan.txt`
+
+当前单写者分配:
+- `Engineer-A`
+  - `/workspace/core/script_guard/include/script_guard/launcher.hpp`
+  - `/workspace/core/script_guard/src/launcher.cpp`
+- `Engineer-B`
+  - `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`
+- `Engineer-C`
+  - `/workspace/core/script_guard/src/external_key_provider.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_success_test.cpp`
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+
+工程交付摘要:
+- `Engineer-A`
+  - `/workspace/core/script_guard/include/script_guard/launcher.hpp`
+  - `/workspace/core/script_guard/src/launcher.cpp`
+  - 落地内容:
+    - `ManifestContract` 补齐 `schema_version`、`kind`、`artifact_kind`、`plaintext_ttl_ms`、`loader_format_version`、`key_provider_protocol`、`launcher_host`、`unsafe_shell_features`
+    - launcher runtime 现在对 Phase 5 frozen manifest 字段做 exact-value 校验
+    - decrypt 后、exec 前增加 shared scanner 的 runtime unsafe-shell recheck
+- `Engineer-B`
+  - `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`
+  - 落地内容:
+    - launcher failure test 增加 frozen manifest 单字段变异负向矩阵
+    - security-edge test 增加 tampered bundle / tampered manifest 的 runtime unsafe-shell 绕过失败断言
+- `Engineer-C`
+  - `/workspace/core/script_guard/src/external_key_provider.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_success_test.cpp`
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - 落地内容:
+    - executable provider 改为独立捕获 `stderr`，非空即 fail-closed，且不向父可见输出泄漏
+    - smoke / success 测试补齐 executable provider success 与 stderr secret-marker failure
+    - `artifact_audit_strict_test` 对 shell fixtures 真实执行 strict audit，并精确断言 `strict_failures=[]` / `shell_gate_failed` / `shell_unsafe_feature_present` / `shell_plaintext_leak_indicator`
+
+冻结前必须满足:
+- `launcher manifest full-contract validation`
+- `runtime unsafe-shell recheck/fail-closed`
+- `stderr leak closure`
+- `shell strict audit true execution`
+- `shell_launcher_perf_smoke_test` 与 `perf_smoke` 分离验证
+
+Phase 5c 验证命令:
+- `cmake -S /workspace/core -B /workspace/build_phase5c -G Ninja`
+- `cmake --build /workspace/build_phase5c -j`
+- `ctest --test-dir /workspace/build_phase5c --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test'`
+- `ctest --test-dir /workspace/build_phase5c --output-on-failure -R '^shell_launcher_perf_smoke_test$'`
+- `cmake --build /workspace/build_phase5c --target perf_smoke`
+
+验证结果:
+- configure: `PASS`
+- full build: `PASS`
+- focused ctest: `5/5 PASS`
+  - `script_guard_smoke_test`
+  - `script_launcher_success_test`
+  - `script_launcher_failure_test`
+  - `script_launcher_security_edge_test`
+  - `artifact_audit_strict_test`
+- `shell_launcher_perf_smoke_test`: `PASS`
+- `perf_smoke`: `PASS`
+  - `startup_overhead_ms=7.55`
+  - `overall_overhead_percent=0.23`
+
+最终三审:
+- Architecture Reviewer: `PASS`
+  - 结论: 仍然是 shell lane 内的最小 delta，没有越到 Phase 6，也没有重开架构边界。
+- Security Reviewer: `PASS`
+  - 结论: `manifest full-contract`、`runtime unsafe-shell recheck`、`stderr leak closure`、`strict audit true execution` 全部闭环，且保持 fail-closed。
+- Validation Reviewer: `PASS`
+  - 结论: `focused ctest`、`shell_launcher_perf_smoke_test`、`perf_smoke` 与 execution log 一致，命令闭环已按 Phase 5c 修正。

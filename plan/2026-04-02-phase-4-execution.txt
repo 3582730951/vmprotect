@@ -1,0 +1,212 @@
+# 2026-04-02 Phase 4 / driver kernel-safe 执行记录
+
+状态:
+- `Phase 4` 已冻结
+- 当前已完成并冻结:
+  - 计划三审通过（architecture / security / validation）
+  - provenance preflight 基线冻结
+  - `Track A`
+  - `Track B`
+  - `Track C`
+  - `Track D`
+  - `Track E`
+  - `Phase 4` 最终集成验证
+  - `Phase 4` provenance 后验
+- `Phase 4` 最终三审
+- 尚未开始:
+  - 无
+
+三审结论（当前计划最终版）:
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+关键计划修订:
+1. 将 kernel hard-gate 字段写入 manifest / audit 真相源。
+2. 将 dirty worktree provenance 从宽松 hash 修订为:
+   - `allowed_writes`
+   - `scope_out_dirty_pre/post`
+   - `new_scope_out_dirty`
+3. 进一步修订为 directory-safe pre/post TSV:
+   - 文件 -> `sha256`
+   - 目录 -> `DIR`
+   - 缺失 -> `MISSING`
+4. 再进一步修订为 scope 外 dirty 目录递归展开 inventory:
+   - `phase4_scope_out_dirty_pre_expanded.txt`
+   - `phase4_scope_out_dirty_post_expanded.txt`
+   - `phase4_new_scope_out_dirty_expanded.txt`
+
+Preflight 基线:
+- `allowed=30`
+- `pre_dirty=99`
+- `out_of_scope_pre=87`
+- `watch=117`
+- `expanded_pre=101`
+
+Preflight 产物:
+- `/tmp/phase4_allowed_writes.txt`
+- `/tmp/phase4_dirty_files_pre.txt`
+- `/tmp/phase4_scope_out_dirty_pre.txt`
+- `/tmp/phase4_task_local_watchlist.txt`
+- `/tmp/phase4_task_local_pre.tsv`
+- `/tmp/phase4_scope_out_dirty_pre_expanded.txt`
+- `/tmp/phase4_kernel_hash_pre.txt`
+
+Track 执行状态:
+- `Track A / Kernel Manifest Closure`
+  - 状态: `DONE`
+  - 文件:
+    - `core/post_link_mutator/src/mutator_app.cpp`
+    - `core/post_link_mutator/src/manifest_writer.cpp`
+  - 结果:
+    - manifest 新增 `runtime_lane`
+    - manifest 新增 `mutation_profile`
+    - manifest 新增 `signature_policy`
+    - manifest 新增 `kernel_compat_profile`
+    - manifest JSON 新增 `sign_after_mutate_required`
+    - manifest JSON 新增 `hvci_profile`
+    - manifest JSON 新增 `vermagic_profile`
+    - manifest JSON 新增 `gki_kmi_profile`
+
+- `Track B / Kernel Strict Audit Closure`
+  - 状态: `DONE`
+  - 文件:
+    - `core/tools/artifact_audit.py`
+  - 结果:
+    - `load_manifest_metadata()` 读取 kernel lane 字段
+    - top-level report 回填 kernel lane 字段
+    - strict failures 新增:
+      - `kernel_gate_failed`
+      - `vermagic_mismatch`
+      - `gki_kmi_mismatch`
+
+- `Track C / Runtime Hard-Gate Evidence Closure`
+  - 状态: `DONE`
+  - 文件:
+    - `core/tests/CMakeLists.txt`
+    - `core/tests/tools/CMakeLists.txt`
+    - `core/tests/runtime/backend/backend_policy_test.cpp`
+    - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+  - 中途烟测:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test|runtime_memory_hal_linux_kernel_module_safe_test|runtime_memory_hal_android_kernel_module_safe_test|runtime_secure_ir_engine_linux_kernel_module_safe_test|runtime_secure_ir_engine_android_kernel_module_safe_test|hardened_target_linux_kernel_module_runtime_kind_test|hardened_target_android_kernel_module_runtime_kind_test|hardened_target_linux_kernel_module_secure_ir_engine_test|hardened_target_android_kernel_module_secure_ir_engine_test'`
+    - 结果: `10/10 passed`
+
+- `Track D / Lane Closure`
+  - 状态: `DONE`
+  - 文件写集:
+    - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+    - `core/tests/CMakeLists.txt`
+    - `core/tests/lane_windows_driver/*`
+    - `core/tests/lane_linux_kernel/*`
+    - `core/tests/lane_android_kernel/*`
+  - PM 复现:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'post_link_mutator_smoke_test|artifact_audit_strict_test|windows_driver_success_test|windows_driver_failure_test|windows_driver_security_edge_test|linux_kernel_module_success_test|linux_kernel_module_failure_test|linux_kernel_module_security_edge_test|android_kernel_module_success_test|android_kernel_module_failure_test|android_kernel_module_security_edge_test'`
+    - 结果: `11/11 passed`
+
+- `Track E / Perf Closure`
+  - 状态: `DONE`
+  - PM 代码侧复现:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_perf_smoke_test|linux_kernel_module_perf_smoke_test|android_kernel_module_perf_smoke_test'`
+    - 结果: `3/3 passed`
+
+代码侧最终验收现状:
+- 已通过:
+  - `cmake -S /workspace/core -B /workspace/build_phase4 -G Ninja`
+  - `cmake --build /workspace/build_phase4 -j`
+  - runtime hard-gate `15/15 passed`
+  - mutator/audit/lane `11/11 passed`
+  - kernel perf `3/3 passed`
+  - `cmake --build /workspace/build_phase4 --target perf_smoke`
+- 当前结论:
+  - 代码侧 acceptance 已全部通过
+  - 当前只剩最终三审签发 freeze
+
+最新 provenance 后验实测:
+- `/tmp/phase4_task_local_changed_paths.txt`
+  - `29`
+- `/tmp/phase4_task_local_out_of_scope_changes.txt`
+  - `1`
+  - 命中:
+    - `plan/2026-04-02-phase-4-driver-kernel-safe-plan.txt`
+- `/tmp/phase4_task_local_out_of_scope_unapproved.txt`
+  - `0`
+- `/tmp/phase4_new_scope_out_dirty.txt`
+  - `4`
+  - 命中:
+    - `core/tests/lane_windows_driver/`
+    - `core/tests/lane_linux_kernel/`
+    - `core/tests/lane_android_kernel/`
+    - `plan/2026-04-02-phase-4-execution.txt`
+- `/tmp/phase4_new_scope_out_dirty_unapproved.txt`
+  - `0`
+- `/tmp/phase4_new_scope_out_dirty_expanded.txt`
+  - `19`
+- `/tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+  - `0`
+- `/tmp/phase4_kernel_hash_changed_paths.txt`
+  - `28`
+  - 命中:
+    - `core/post_link_mutator/src/manifest_writer.cpp`
+    - `core/post_link_mutator/src/mutator_app.cpp`
+    - `core/tests/CMakeLists.txt`
+    - `core/tests/lane_android_kernel/CMakeLists.txt`
+    - `core/tests/lane_android_kernel/android_kernel_module_failure_test.cpp`
+    - `core/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp`
+    - `core/tests/lane_android_kernel/android_kernel_module_success_test.cpp`
+    - `core/tests/lane_linux_kernel/CMakeLists.txt`
+    - `core/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp`
+    - `core/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp`
+    - `core/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp`
+    - `core/tests/lane_windows_driver/CMakeLists.txt`
+    - `core/tests/lane_windows_driver/windows_driver_failure_test.cpp`
+    - `core/tests/lane_windows_driver/windows_driver_security_edge_test.cpp`
+    - `core/tests/lane_windows_driver/windows_driver_success_test.cpp`
+    - `core/tests/perf/CMakeLists.txt`
+    - `core/tests/perf/android_kernel_module_perf_smoke_test.cpp`
+    - `core/tests/perf/linux_kernel_module_perf_smoke_test.cpp`
+    - `core/tests/perf/windows_driver_perf_smoke_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `core/tests/runtime/backend/backend_policy_test.cpp`
+    - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `core/tests/tools/CMakeLists.txt`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+    - `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+    - `core/tools/artifact_audit.py`
+
+后验结论:
+- planner artifact allowlist 生效后，3 个 `_unapproved` gate 全部为 `0`
+- `task_local_out_of_scope_changes` 中的唯一 raw 命中是 planner 计划文件，本轮已被 `allowed_planner_writes` 精确减除
+- `core_hash_changed_paths` 只落在 `Phase 4` 计划允许写入文件集合
+- provenance gate 已通过，不再是阻塞项
+
+当前集成状态:
+- 已通过 configure/build 烟测:
+  - `cmake -S /workspace/core -B /workspace/build_phase4 -G Ninja`
+  - `cmake --build /workspace/build_phase4 -j --target eippf_post_link_mutator artifact_audit_strict_test backend_policy_test runtime_backend_extraction_contract_test secure_ir_engine_linux_kernel_module_safe_test secure_ir_engine_android_kernel_module_safe_test memory_hal_linux_kernel_module_safe_test memory_hal_android_kernel_module_safe_test hardened_target_linux_kernel_module_runtime_kind_test hardened_target_android_kernel_module_runtime_kind_test hardened_target_linux_kernel_module_secure_ir_engine_test hardened_target_android_kernel_module_secure_ir_engine_test`
+
+当前未完成项:
+1. 无
+
+最终三审结论（freeze）:
+- Architecture Reviewer: `PASS`
+  - 代码侧验收全绿，`Phase 4` scope 内的 manifest/audit/runtime/lane/perf 证据齐全。
+  - `G7` 顶层口径已与 `Card 0/6/7` 对齐，hard-fail 只看 3 个 `_unapproved` 文件。
+  - planner artifact 白名单最小且精确，没有放宽到 scope 外 `core/*` 文件。
+- Security Reviewer: `PASS`
+  - 最新后验满足修正后的 `G7`：3 个 `_unapproved` gate 全为 `0`。
+  - kernel 安全门未被削弱，no-JIT/no-runtime-codegen 与 strict verifier redlight 保持不变。
+  - raw planner 命中只吸收到 2 个显式 planner artifacts，没有洗白 scope 外代码。
+- Validation Reviewer: `PASS`
+  - 验收命令全绿且结果已落盘：runtime gate `15/15`，mutator/audit/lane `11/11`，perf `3/3`。
+  - expanded inventory 仍在执行，允许新增目录不会掩盖目录内未批准新文件。
+  - 当前 mechanical gate 可重复执行，不会把未批准路径伪装成通过。
+
+Freeze 结论:
+- `Phase 4 / Windows .sys + Linux .ko + Android .ko` 通过最终三审并冻结。
+- 下一阶段切换到 `Phase 5 / .sh launcher`。

@@ -1,0 +1,458 @@
+# 2026-04-02 Phase 3e / string pass compile closure plan
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`。
+- 本文件只关闭 `string_protection_pass_test` 的单文件 compile blocker，不扩展到其他 LLVM 兼容问题或其他测试问题。
+
+Execution Mode:
+- `real-multi-agent`
+- 当前环境有真实 subagents；本计划按真实多代理流程送审。
+- PM / `main_agent` 持有编排权与 task card 下发权。
+- Architect / `Architect agent` 负责产出本最小 delta 技术计划；后续由独立 reviewer 审核，Engineer 仅在计划通过后执行。
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 只修补 `string_protection_pass_test` 当前暴露出的测试源码编译 blocker。
+  - 在不回退 `Phase 3d` 测试注册修补的前提下，使：
+    - `string_protection_pass_test` target 可构建
+    - `ctest -N` 继续可见
+    - 指定 `ctest -R` 可执行
+    - 现有 pass targets 不回退
+- Scope:
+  - 允许修改范围仅限：
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - 允许验证范围仅限：
+    - `/workspace/core/tests/passes/CMakeLists.txt`
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/passes/CMakeLists.txt`
+    - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+    - `/workspace/build_phase3` 下的 configure/build/ctest 结果
+  - 修补范围严格限制为这个 compile blocker 及其直接回归面：
+    - `string_protection_pass_test`
+    - `build_fixture(...)` 中 `getInBoundsGetElementPtr(...)` 的二义性调用
+    - 3d 已恢复的 test registration 不回退
+- Non-Goals:
+  - 不扩到 `ip_weaver_ir_opcode_mapper_test` 或其他 LLVM 兼容问题。
+  - 不修改任何生产代码或生产 `CMakeLists.txt`。
+  - 不再修改 `/workspace/core/tests/passes/CMakeLists.txt`。
+  - 不修改其他测试文件。
+  - 不重写 `string_protection_pass_test` 的测试语义、断言、marker 检查或 pass 行为。
+- Acceptance Criteria:
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test` 成功。
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"` 命中。
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'` 成功。
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass` 成功。
+  - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake` 成功，证明 3d 注册仍在。
+  - PM 必须执行内容哈希基线审计：
+    - 发卡前记录一次：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_pre.txt`
+    - Engineer 完工后再次记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_post.txt`
+    - reviewer 必须执行固定比较命令：
+      - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_pre.txt | sort) <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+    - 通过条件：该比较命令输出只允许 `core/tests/passes/string_protection_pass_test.cpp`
+  - PM 还必须保留全仓 `git diff --name-only` 前后基线作为辅助证据：
+    - 发卡前记录一次：`git -C /workspace diff --name-only`
+    - Engineer 完工后再次记录：`git -C /workspace diff --name-only`
+  - 工程提交必须附带文件级 diff 证据：
+    - `git -C /workspace diff -- core/tests/passes/string_protection_pass_test.cpp`
+    - reviewer 必须确认该文件 diff 符合固定代码形状
+- Constraints:
+  - PM 不改代码。
+  - 编码前必须先过 3 reviewer 审核。
+  - 编码 agent 不自行设计方案，只按本计划白名单与固定代码形状执行。
+  - `Phase 3d` 的注册修补视为已批准基线，不允许回退或重做。
+- Forbidden Shortcuts:
+  - 禁止再次修改 `/workspace/core/tests/passes/CMakeLists.txt`。
+  - 禁止修改 `/workspace/core/tests/CMakeLists.txt`。
+  - 禁止修改 `/workspace/core/passes/CMakeLists.txt`。
+  - 禁止修改任何生产 pass 源文件或其他测试源文件。
+  - 禁止把问题扩大成“LLVM 版本兼容重构”。
+- Sources Of Truth:
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+  - 真实复现命令：
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+
+Main PM:
+- `main_agent`
+- 职责：持有编排权、冻结范围、发起独立审核、在三审通过后下发编码任务。
+
+Agent Roster:
+- PM / `main_agent`
+  - 职责：持有编排权、控制送审顺序、汇总 reviewer 结论、决定是否向 Engineer 发卡。
+- Architect / `Architect agent`
+  - 职责：产出本 compile blocker 的最小 delta 技术计划，澄清边界、单写者 ownership 与 acceptance。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 职责：独立审核单文件修补边界、固定代码形状和 diff 白名单是否自洽。
+- Security Reviewer / 待分配独立 reviewer
+  - 职责：独立审核没有把测试问题转嫁给生产侧、没有改动 3d CMake 基线、没有扩大 blast radius。
+- Validation Reviewer / 待分配独立 reviewer
+  - 职责：独立审核 target build、test discovery、ctest 执行与 pass-target 非回归证据链是否完整。
+- Engineer
+  - 职责：仅在三审全部 `PASS` 后，按单写者白名单实施修补并执行本地验证。
+
+Delegation Map:
+- PM / `main_agent`
+  - 负责真实多代理编排、发起三审、在三审全通过后签发 Engineer task card。
+- Architect / `Architect agent`
+  - 负责技术方案文本、范围冻结、对 reviewer 问题做计划层澄清。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 独立审核 Task Charter、Architecture Contract、Regression Perimeter 是否保持最小闭口。
+- Security Reviewer / 待分配独立 reviewer
+  - 独立审核方案是否坚持 fail-closed、没有动生产侧、没有回退 3d 注册修补。
+- Validation Reviewer / 待分配独立 reviewer
+  - 独立审核 build/discovery/ctest/pass-target 验收是否完整。
+- Engineer
+  - 仅在三审明确 `PASS` 后执行编码与验证，不参与计划审批。
+- PM takeover:
+  - 明确禁止。
+
+Architecture Contract:
+- Root Contract:
+  - `Phase 3d` 已经把 `string_protection_pass_test` 注册回构建图与测试图；本次 blocker 不再是注册问题。
+  - 当前唯一 blocker 是 `/workspace/core/tests/passes/string_protection_pass_test.cpp` 第 59-60 行对 `llvm::ConstantExpr::getInBoundsGetElementPtr(...)` 的 brace-init indices 调用触发了 LLVM 14 下的二义性重载。
+  - 本次不允许通过改 CMake、改生产 pass、改其他测试来绕过该单点源码编译错误。
+- 固定修法:
+  - 只允许修改 `/workspace/core/tests/passes/string_protection_pass_test.cpp`。
+  - 只允许在该文件做两类改动：
+    - 新增 `#include <array>`
+    - 在 `build_fixture(...)` 局部把二义性的 `{zero, zero}` 改成显式固定形状
+  - 固定代码形状必须如下，不允许 Engineer 自行替换成其他容器或其他 API：
+    1. 保留现有 `llvm::Constant* zero = llvm::ConstantInt::get(i32_ty, 0);`
+    2. 在其后新增：
+       - `const std::array<llvm::Constant*, 2> gep_indices{zero, zero};`
+       - `const llvm::ArrayRef<llvm::Constant*> gep_index_ref(gep_indices);`
+    3. 把原来的：
+       - `llvm::ConstantExpr::getInBoundsGetElementPtr(..., {zero, zero});`
+       替换为：
+       - `llvm::ConstantExpr::getInBoundsGetElementPtr(..., gep_index_ref);`
+  - 不允许修改：
+    - `build_fixture(...)` 的其他语义
+    - `sink` 调用
+    - 测试断言
+    - marker 常量
+    - `run_pass(...)`
+    - 任何其他函数
+- 明确回答 4 个问题:
+  - Q1 / 是否只改 `core/tests/passes/string_protection_pass_test.cpp`
+    - 是。
+    - 原因：当前 compile blocker 只出现在该文件第 59-60 行的二义性调用。
+  - Q2 / 是否需要再改 `core/tests/passes/CMakeLists.txt`
+    - 不需要。
+    - 原因：3d 的注册修补已经在位，`ctest -N` 当前已经能看到 `string_protection_pass_test`，问题不在 CMake。
+  - Q3 / 是否允许改生产 pass 或其他测试
+    - 不允许。
+    - 原因：没有任何证据表明生产 pass 或其他测试参与了本次编译歧义；改它们会扩大 blast radius。
+  - Q4 / 具体修法边界是什么
+    - 边界已固定为：
+      - 只在 `string_protection_pass_test.cpp` 增加 `<array>` 头文件
+      - 只把 brace-init indices 改成显式 `std::array<llvm::Constant*, 2>` + `llvm::ArrayRef<llvm::Constant*>`
+      - 只改 `build_fixture(...)` 的该一处 GEP 调用
+      - 不允许任何同文件内额外重构
+
+Decision Log:
+- `DL-P3E-01`
+  - 决定：本 delta 只修 `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - 原因：真实报错只落在该文件第 59-60 行，且 3d 的测试注册修补已生效。
+- `DL-P3E-02`
+  - 决定：不再修改 `/workspace/core/tests/passes/CMakeLists.txt`
+  - 原因：当前 `ctest -N` 已能列出 `string_protection_pass_test`，说明 test registration blocker 已关闭。
+- `DL-P3E-03`
+  - 决定：不允许修改生产 pass 或其他测试
+  - 原因：当前问题是单文件源码调用二义性，不是行为或接线问题。
+- `DL-P3E-04`
+  - 决定：修法必须固定为 `std::array<llvm::Constant*, 2>` + `llvm::ArrayRef<llvm::Constant*>` 的显式 indices 形式
+  - 原因：这样可直接消除 LLVM 14 下 `ArrayRef<llvm::Constant*>` / `ArrayRef<llvm::Value*>` 双重重载的歧义，且不改变测试语义。
+
+Regression Perimeter:
+- Root Cause:
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp:59-60`
+  - 当前调用：
+    - `llvm::ConstantExpr::getInBoundsGetElementPtr(string_initializer->getType(), fixture.string_global, {zero, zero});`
+  - 在 LLVM 14 下同时匹配：
+    - `ArrayRef<llvm::Constant*>`
+    - `ArrayRef<llvm::Value*>`
+  - 因此编译失败。
+- Changed Path:
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+- Adjacent Paths:
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+- Unchanged Guarantees:
+  - `Phase 3d` 的测试注册修补不回退。
+  - `string_protection_pass_test` 的测试名与 target 名不变。
+  - `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 的生产接线不变。
+  - 测试语义、断言和 pass 行为预期不变。
+- Second-Order Risks:
+  - 若再次改 CMake，会把 compile blocker 错误扩大成 registration blocker。
+  - 若改生产 pass，会把测试编译问题错误扩大成生产改动。
+  - 若 Engineer 自己选择别的修法，reviewer 将无法证明改动仍是最小 delta。
+- Regression Matrix:
+  - Target build:
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+  - Test discovery:
+    - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"`
+  - Generated CTest evidence:
+    - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+  - Test execution:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+  - Pass-target non-regression:
+    - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+  - Content-hash baseline audit:
+    - PM 发卡前记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_pre.txt`
+    - PM 在 Engineer 完工后再次记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_post.txt`
+    - reviewer 执行固定比较命令：
+      - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_pre.txt | sort) <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+    - 输出只允许 `core/tests/passes/string_protection_pass_test.cpp`
+  - Full-repo diff baseline audit:
+    - PM 发卡前记录：`git -C /workspace diff --name-only`
+    - PM 在 Engineer 完工后再次记录：`git -C /workspace diff --name-only`
+  - File-content audit:
+    - `git -C /workspace diff -- core/tests/passes/string_protection_pass_test.cpp`
+    - reviewer 核对该文件 diff 是否符合固定代码形状
+
+Parallel Tracks:
+- Track A / Architecture Review
+  - Owner:
+    - `Architecture Reviewer / 待分配独立 reviewer`
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，只检查单文件边界、固定代码形状和 diff 白名单是否自洽。
+- Track B / Security Review
+  - Owner:
+    - `Security Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Architecture Contract` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认没有把问题转移到 CMake、生产 pass 或其他测试。
+- Track C / Validation Review
+  - Owner:
+    - `Validation Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Acceptance Criteria` 与 `Regression Matrix` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认 build/discovery/ctest/pass-target 证据链充分。
+- Track D / String Pass Compile Closure
+  - Owner:
+    - `Engineer`
+  - Dependencies:
+    - `Architecture Reviewer PASS`
+    - `Security Reviewer PASS`
+    - `Validation Reviewer PASS`
+    - `PM / main_agent` 发卡
+  - Output:
+    - `string_protection_pass_test` 重新可编译并通过指定测试链。
+
+File Ownership:
+- 单写者测试源码文件：
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp` -> `Engineer`
+- 只读验证文件：
+  - `/workspace/core/tests/passes/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/core/tests/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/core/passes/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake` -> `Engineer` 只读
+- 计划文件：
+  - `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt` -> `Architect / Architect agent`
+
+Dependencies:
+- 必须先通过本计划的 3 reviewer 审核，再允许编码。
+- PM 发卡前必须先记录一次 `/workspace/core` 内容哈希基线：
+  - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_pre.txt`
+- PM 发卡前还必须记录一次全仓 diff 基线作为辅助证据：
+  - `git -C /workspace diff --name-only`
+- `Engineer` 执行顺序固定：
+  1. 只读核对：
+     - `core/tests/passes/string_protection_pass_test.cpp`
+     - `core/tests/passes/CMakeLists.txt`
+     - `core/tests/CMakeLists.txt`
+     - `core/passes/CMakeLists.txt`
+  2. 只修改 `core/tests/passes/string_protection_pass_test.cpp`。
+  3. 在该文件中只做固定代码形状改动：
+     - 增加 `<array>`
+     - 增加 `std::array<llvm::Constant*, 2> gep_indices{zero, zero};`
+     - 增加 `llvm::ArrayRef<llvm::Constant*> gep_index_ref(gep_indices);`
+     - 用 `gep_index_ref` 替换原 brace-init indices 实参
+  4. 先做 `string_protection_pass_test` 定向 build。
+  5. 再做 `ctest -N` 可见性验证。
+  6. 再做指定 `ctest -R` 执行验证。
+  7. 最后做 pass-target 非回归验证。
+- Engineer 完工后，PM 必须再次记录一次 `/workspace/core` 内容哈希基线：
+  - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_post.txt`
+- Engineer 完工后，PM 还必须再次记录一次全仓 diff 作为辅助证据：
+  - `git -C /workspace diff --name-only`
+- reviewer 必须执行固定比较命令核对两次内容哈希基线的变化路径：
+  - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_pre.txt | sort) <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+- 通过条件：
+  - 该比较命令输出只允许 `core/tests/passes/string_protection_pass_test.cpp`
+- PM 必须先收齐以下三份独立结论，再允许进入编码：
+  - `Architecture Reviewer PASS`
+  - `Security Reviewer PASS`
+  - `Validation Reviewer PASS`
+
+Model Routing:
+- PM / 编排：
+  - `main_agent`
+  - 原因：当前环境支持真实多代理，PM 只持有编排权，不接管技术方案或实现。
+- Architect / 计划产出：
+  - `Architect agent`
+  - 原因：本轮需要由架构师给出最小 delta 技术方案。
+- Architecture Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认修补点没有从测试源码单点外扩。
+- Security Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认没有把 compile blocker 转嫁给生产或 CMake。
+- Validation Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认 target/build/discovery/ctest/non-regression 证据完整。
+- Engineer / 后续执行：
+  - `独立 engineer`
+  - 原因：计划通过后只做单文件最小修补，禁止 PM 或 reviewer 越权实现。
+
+Context Packages:
+- `Architecture Reviewer` 可依赖：
+  - 本计划
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+  - 真实编译错误文本
+- `Security Reviewer` 可依赖：
+  - 本计划
+  - `Architecture Contract`
+  - `Decision Log`
+  - `Regression Perimeter`
+- `Validation Reviewer` 可依赖：
+  - 本计划
+  - `Acceptance Criteria`
+  - `Regression Matrix`
+  - 当前 build 与 `ctest -N` 证据
+- `Engineer` 可依赖：
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - 本计划规定的命令与验收
+- `Engineer` 不可依赖：
+  - 自行设计其他修法
+  - 自行改 CMake
+  - 自行改生产 pass
+  - 自行改其他测试
+- 三个 reviewer 在编码后可依赖：
+  - `Engineer` 的 diff
+  - 本计划 acceptance 与 regression matrix
+  - 实际 build / ctest 结果
+
+Quality Gates:
+- G1 / Scope Gate:
+  - 只允许 1 个写入点：`/workspace/core/tests/passes/string_protection_pass_test.cpp`
+- G2 / Content Hash Baseline Gate:
+  - PM 发卡前必须记录一次 `/workspace/core` 内容哈希基线：
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_pre.txt`
+  - Engineer 完工后，PM 必须再次记录一次 `/workspace/core` 内容哈希基线：
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3e_core_hash_post.txt`
+  - reviewer 必须执行固定比较命令：
+    - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_pre.txt | sort) <(awk '{print $2\" \"$1}' /tmp/phase3e_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+  - 通过条件：
+    - 该比较命令输出只允许 `core/tests/passes/string_protection_pass_test.cpp`
+- G3 / Full-Repo Baseline Audit Gate:
+  - PM 发卡前必须记录一次全仓 diff 基线：
+    - `git -C /workspace diff --name-only`
+  - Engineer 完工后，PM 必须再次记录一次全仓 diff：
+    - `git -C /workspace diff --name-only`
+  - 该 gate 只作为辅助证据，不得替代 `G2 / Content Hash Baseline Gate`
+- G4 / File Diff Shape Gate:
+  - reviewer 必须核对：
+    - `git -C /workspace diff -- core/tests/passes/string_protection_pass_test.cpp`
+  - reviewer 必须确认该文件 diff 中同时出现：
+    - `#include <array>`
+    - `std::array<llvm::Constant*, 2> gep_indices{zero, zero};`
+    - `llvm::ArrayRef<llvm::Constant*> gep_index_ref(gep_indices);`
+    - `getInBoundsGetElementPtr(..., gep_index_ref)`
+- G5 / Target Build Gate:
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+- G6 / Discovery Gate:
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"`
+- G7 / CTest File Gate:
+  - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+- G8 / Test Execution Gate:
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+- G9 / Pass Non-Regression Gate:
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+- G10 / Review Gate:
+  - `Architecture Reviewer` 必须 `PASS`
+  - `Security Reviewer` 必须 `PASS`
+  - `Validation Reviewer` 必须 `PASS`
+  - `PM / main_agent` 在三审全通过前不得向 `Engineer` 发卡
+
+Assurance Scorecard:
+- architecture completeness:
+  - `PASS`
+- evidence coverage:
+  - `PASS`
+- blast radius coverage:
+  - `PASS`
+- PM boundary integrity:
+  - `PASS`
+- review independence:
+  - `PASS`
+- context integrity:
+  - `PASS`
+- delegation integrity:
+  - `PASS`
+- gate result:
+  - `PLAN READY FOR INDEPENDENT REVIEW`
+
+Open Risks:
+- 风险：
+  - 编码 agent 顺手再改 3d 的 `CMakeLists.txt`
+  - Owner：
+    - `Architecture Reviewer`
+    - `Security Reviewer`
+  - Mitigation：
+    - diff 白名单只允许 `string_protection_pass_test.cpp`
+- 风险：
+  - 编码 agent 采用别的修法，导致 reviewer 无法证明最小 delta
+  - Owner：
+    - `Architecture Reviewer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - `Source Shape Gate` 必须逐项核对
+- 风险：
+  - `string_protection_pass_test` 修好后，现有 pass targets 被误伤
+  - Owner：
+    - `Engineer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - 必跑 `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 非回归构建
+
+State Snapshot:
+- `Phase 3c` 已完成并冻结：
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+- `Phase 3d` 计划已通过并部分落地：
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+- 当前 `core/tests/passes/CMakeLists.txt` 现状：
+  - `string_protection_pass_test` 总是定义
+  - `if(TARGET LLVM) ... elseif(COMMAND llvm_map_components_to_libnames) ... else(FATAL_ERROR)` 已在位
+  - `add_test(NAME string_protection_pass_test ...)` 仍保留
+- 当前新 blocker：
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test` 失败
+  - 真实错误：
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp:59:76: error: call of overloaded ‘getInBoundsGetElementPtr(...)’ is ambiguous`
+  - 对应源码位置：
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp:59-60`
+    - `llvm::ConstantExpr::getInBoundsGetElementPtr(string_initializer->getType(), fixture.string_global, {zero, zero});`
+- 当前已确认事实：
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"` 已命中
+  - `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 仍可构建
+- 下一动作：
+  - 先由 `PM / main_agent` 分发给 `Architecture Reviewer`、`Security Reviewer`、`Validation Reviewer` 独立审核本计划。
+  - 三审全部 `PASS` 后，PM 才向 `Engineer` 下发本计划中的单文件编码任务，不追加自由设计空间。

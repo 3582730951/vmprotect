@@ -1,0 +1,691 @@
+# 2026-04-02 Phase 5 `.sh launcher` 详细计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Charter
+- Objective:
+  - 把当前仓库中的 `core/script_guard/` 从“只会生成加密 bundle 的 skeleton”推进到 `bundle -> launcher -> external key provider -> no-persistent-plaintext -> artifact audit -> perf` 的完整闭环。
+- Scope:
+  - `/workspace/core/script_guard/`
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/script_guard/`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/plan/`
+- Non-Goals:
+  - 不扩展到 `Phase 6 Android .dex`。
+  - 不扩展到 `Phase 7 iOS`。
+  - 不把 `.sh` 保护伪装成与 native VM/JIT 同等级动态对抗。
+  - 不支持需要 `source` 外部脚本、依赖 `$0/BASH_SOURCE` 自省、主动 `set -x` 的脚本进入 release lane。
+- Constraints:
+  - PM 负责设计、切分、验收，工程 agent 不做架构决策。
+  - `.sh` lane 必须 `fail-closed`。
+  - 不允许持久化明文脚本到磁盘。
+  - 不允许嵌入 key material。
+  - 只能依赖当前仓库已有 contract：`shell_ephemeral` / `shell_launcher`。
+- Acceptance Criteria:
+  - 生成 `shell bundle v3`。
+  - 新增独立 `launcher` 可消费 bundle + manifest + external key provider。
+  - 启动链对缺 key、坏 key、坏 bundle、坏 manifest、unsafe shell 特性全部 `fail-closed`。
+  - `artifact_audit --strict` 对 shell lane 有独立 gate。
+  - 至少具备：
+    - 1 条 success test
+    - 1 条 failure test
+    - 1 条 security-edge test
+    - 1 条 perf smoke test
+  - `configure/build/ctest/perf_smoke` 通过。
+  - 启动额外开销 `<=250ms`，重复执行整体开销 `<=10%`。
+
+## Architecture Contract
+### 1. Lane 定义
+- `target_kind` 固定为 `shell_ephemeral`
+- `backend_kind` 固定为 `shell_launcher`
+- `runtime_lane` 固定为 `shell_launcher`
+- `mutation_profile` 固定为 `shell_bundle`
+- `signature_policy` 固定为 `required_verifier`
+- `allow_jit=false`
+- `allow_runtime_executable_pages=false`
+- `allow_persistent_plaintext=false`
+- `require_fail_closed=true`
+- `plaintext_ttl_ms=0`
+
+### 2. `.sh` 威胁模型
+- 静态 grep / 字符串定位
+  - 威胁：
+    - `strings`
+    - `grep`
+    - 教程锚点定位
+    - 关键命令/内部标识搜索
+  - 防护：
+    - bundle 中不允许出现明文脚本 anchor
+    - manifest 不记录明文脚本摘要、原始 key、原始脚本内容
+    - `artifact_audit` 对 denylist string 保持严格扫描
+- `set -x`
+  - 威胁：
+    - 执行期把命令明文打到 stderr/xtrace
+  - 防护：
+    - bundler 在加密前做 plaintext lexical scan
+    - 发现 `set -x` 或 `set -o xtrace` 直接拒绝打包
+    - launcher 运行前清理 `PS4`、`BASH_XTRACEFD`、`SHELLOPTS`
+- `source`
+  - 威胁：
+    - 外部明文脚本依赖破坏 no-persistent-plaintext
+    - 外部 include 链难以审计
+  - 防护：
+    - bundler 发现 `source ` 或行首 `. ` 直接拒绝打包
+    - release lane 只支持 self-contained 单文件 shell script
+- 子 shell
+  - 威胁：
+    - 子 shell 继承环境或消费解密后的脚本输入
+  - 防护：
+    - launcher 不导出 key 到环境变量
+    - launcher 使用匿名 pipe 把明文送入解释器 stdin，不生成明文文件路径
+    - 父进程写完后立即擦除 plaintext buffer 并关闭 pipe
+- 环境变量泄漏
+  - 威胁：
+    - `BASH_ENV`
+    - `ENV`
+    - `PROMPT_COMMAND`
+    - `PS4`
+    - `LD_PRELOAD`
+    - `DYLD_*`
+  - 防护：
+    - launcher 在 child exec 前执行固定 allowlist 环境重建
+    - 严格清理上述变量
+- 临时文件恢复
+  - 威胁：
+    - `/tmp` 残留
+    - shell 临时展开文件
+    - 意外明文 sidecar
+  - 防护：
+    - Phase 5 release lane 只允许 `pipe_stdin_exec`
+    - 不创建 `.plain/.tmp/.sh.dec` 文件
+    - tests 必须扫描 temp dir，确认无明文副产物
+    - `artifact_audit` 必须把 `plaintext_output=false` 作为 shell gate 条件
+- provider 退化为静态 key file
+  - 威胁：
+    - `--key-provider=<path>` 直接指向磁盘上的明文 key file
+    - key material 落到仓库工作目录或脚本 temp dir
+  - 防护：
+    - `--key-provider=<path>` 只允许代表受控 provider 端点：
+      - `executable_adapter`
+      - `fifo`
+      - `unix_socket`
+    - 普通文件 provider、指向普通文件的 symlink provider 一律 `fail-closed`
+    - provider 必须返回协议化 response，原始 key material 不得持久化到仓库工作目录或脚本 temp dir
+    - provider 端点消费后不得在 bundle、manifest、stdout、stderr、env、temp file 中留下原始 key material
+
+### 3. 交付物形态
+- 产物 1：
+  - `eippf_script_guard`
+  - 职责：读取明文 `.sh`，扫描 unsafe 特性，读取 external key provider，输出 `bundle v3 + manifest`
+- 产物 2：
+  - `eippf_script_launcher`
+  - 职责：读取 `bundle + manifest + external key provider`，校验 contract，匿名解密，pipe 注入解释器执行
+- 产物 3：
+  - `artifact_audit --strict`
+  - 职责：验证 shell bundle invariants + manifest contract + no-persistent-plaintext 证据
+
+### 4. `shell bundle v3` 固定格式
+- magic:
+  - `ESHB`
+- format_version:
+  - `3`
+- key_material_marker:
+  - 固定 `0`
+- flags:
+  - bit0 `shebang_present`
+- interpreter_tag:
+  - 允许值仅：
+    - `sh`
+    - `bash`
+    - `dash`
+- key_id_len
+- payload_len
+- key_id bytes
+- encrypted payload bytes
+
+### 5. Manifest 固定字段
+`shell bundle` manifest 必须输出以下字段，字段名不允许改：
+- `schema_version: 2`
+- `kind: "shell_script_bundle"`
+- `target_kind: "shell_ephemeral"`
+- `backend_kind: "shell_launcher"`
+- `runtime_lane: "shell_launcher"`
+- `mutation_profile: "shell_bundle"`
+- `signature_policy: "required_verifier"`
+- `artifact_kind: "shell_bundle"`
+- `allow_jit: false`
+- `allow_runtime_executable_pages: false`
+- `allow_persistent_plaintext: false`
+- `require_fail_closed: true`
+- `plaintext_ttl_ms: 0`
+- `loader_format_version: 3`
+- `key_provider_protocol: "eippf.external_key.v1"`
+- `key_provider_endpoint_kind: "executable_adapter" | "fifo" | "unix_socket"`
+- `key_provider_static_file: false`
+- `key_id: <non-empty>`
+- `key_material_embedded: false`
+- `execution_model: "pipe_stdin_exec"`
+- `launcher_host: "linux_posix"`
+- `interpreter_tag: "sh" | "bash" | "dash"`
+- `trace_env_scrubbed: true`
+- `source_policy: "self_contained_only"`
+- `unsafe_shell_features: []`
+- `plaintext_output: false`
+- `no_persistent_plaintext_goal: true`
+
+### 6. Launcher 消费链
+- 输入：
+  - `--input-bundle=<path>`
+  - `--manifest=<path>`
+  - `--key-provider=<path>`
+  - `--key-id=<id>`
+  - `--` 后面为传给脚本的参数
+- 顺序：
+  1. 读取 manifest
+  2. 读取 bundle header
+  3. 校验 manifest 与 bundle header 的：
+     - `target_kind`
+     - `backend_kind`
+     - `runtime_lane`
+     - `mutation_profile`
+     - `key_id`
+     - `key_material_embedded=false`
+     - `execution_model=pipe_stdin_exec`
+  4. 读取 external key provider
+  5. 解密到内存 buffer
+  6. `fork + pipe + execv`
+  7. child:
+     - 清理环境
+     - `dup2(pipe_read, STDIN_FILENO)`
+     - `execv(interpreter, [interpreter, "-s", "--", user_args...])`
+  8. parent:
+     - 把 plaintext 写入 pipe
+     - 立即擦除 plaintext buffer
+     - 等待 child
+     - 返回 child exit code
+- fail-closed 条件：
+  - manifest 缺字段
+  - bundle header 非 v3
+  - key provider 不可读/格式坏/拒绝/key_id 不匹配
+  - interpreter_tag 不在 allowlist
+  - 检测到 unsafe shell 特性
+  - 任何 pipe/fork/exec 失败
+
+### 7. External Key Provider Contract
+- `--key-provider=<path>` 的 `<path>` 只允许代表以下 3 类 provider 端点之一：
+  - `executable_adapter`
+    - `<path>` 必须是可执行 adapter 路径
+    - 只能直接 `execve/execv` 调用，禁止 shell 拼接、禁止 `/bin/sh -c`
+    - adapter 必须通过 `stdout` 返回 `eippf.external_key.v1` 协议化 response
+  - `fifo`
+    - `<path>` 必须是受控 named pipe
+    - 只允许一次性读取消费协议化 response
+  - `unix_socket`
+    - `<path>` 必须是 Unix domain socket
+    - 通过固定 request/response 协议读取协议化 response
+- 明确禁止：
+  - 普通文件形式的静态 key file
+  - 指向普通文件的 symlink provider
+  - 仓库工作目录中的明文 key 文件
+  - 脚本 temp dir 中的明文 key 文件
+  - bundle/manifest 嵌入原始 key material
+
+## Parallel Tracks
+- Track A / Bundle Contract Closure
+  - 目标：
+    - 把 `core/script_guard/src/main.cpp` 从 monolithic skeleton 改成 bundle producer
+    - 输出 contract-aligned manifest
+    - 升级 `shell bundle v3`
+- Track B / Launcher Runtime Closure
+  - 目标：
+    - 新增 `eippf_script_launcher`
+    - 完成 `bundle -> manifest -> key provider -> pipe_stdin_exec`
+    - 完成环境清理与 fail-closed
+- Track C / Audit + Test + Perf Closure
+  - 目标：
+    - `artifact_audit.py` 增加 shell strict gate
+    - 新增 launcher success/failure/security-edge/perf 测试
+    - 输出 no-persistent-plaintext 证据
+
+## File Ownership
+- PM / Planner
+  - `/workspace/plan/*`
+- Engineer-A / Track A
+  - `/workspace/core/script_guard/CMakeLists.txt`
+  - `/workspace/core/script_guard/src/main.cpp`
+  - `/workspace/core/script_guard/include/script_guard/bundle_format.hpp`
+  - `/workspace/core/script_guard/src/bundle_format.cpp`
+  - `/workspace/core/script_guard/include/script_guard/external_key_provider.hpp`
+  - `/workspace/core/script_guard/src/external_key_provider.cpp`
+  - `/workspace/core/script_guard/include/script_guard/unsafe_shell_scan.hpp`
+  - `/workspace/core/script_guard/src/unsafe_shell_scan.cpp`
+- Engineer-B / Track B
+  - `/workspace/core/script_guard/include/script_guard/launcher.hpp`
+  - `/workspace/core/script_guard/src/launcher.cpp`
+  - `/workspace/core/script_guard/src/launcher_main.cpp`
+- Engineer-C / Track C
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/script_guard/CMakeLists.txt`
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_success_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/perf/shell_launcher_perf_smoke_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+
+## Dependencies
+- `Phase 4` 必须 freeze 后再切 Phase 5。
+- Track C 依赖 Track A 的 manifest/bundle 字段冻结。
+- Track B 依赖 Track A 的 `bundle_format` 和 `external_key_provider` 公共模块先落地。
+- `artifact_audit.py` 的 shell gate 必须在 final validation 前完成。
+- perf test 必须在 success/failure/security-edge 全绿之后运行。
+
+## Regression Perimeter
+- Directly Changed Logic:
+  - `core/script_guard/*`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/script_guard/*`
+  - `core/tests/perf/*`
+- Adjacent Paths:
+  - `/workspace/core/include/contracts/protection_contracts.hpp`
+  - `/workspace/core/runtime/src/backends/shell_launcher_backend.cpp`
+  - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+- Unchanged Guarantees:
+  - `shell_ephemeral` 继续 `no-JIT`
+  - `allow_persistent_plaintext=false`
+  - 不引入 RWX、自修改代码、embedded key
+  - 不扩到 `Phase 6+`
+- Second-Order Risks:
+  - 使用 `pipe_stdin_exec` 会改变依赖 `$0/BASH_SOURCE` 的脚本语义
+  - 只做 lexical scan 会保守拒绝部分脚本
+  - 不同系统 `/bin/sh` 变体行为差异可能导致 launcher 兼容性差异
+  - 如果工程 agent 把 launcher 写回 `main.cpp` 单体，会导致 blast radius 过大
+
+## Quality Gates
+- `G0 / Preflight Gate`
+  - 命令：
+    - `cmake -S /workspace/core -B /workspace/build_phase5 -G Ninja`
+    - `cmake --build /workspace/build_phase5 -j`
+  - 通过条件：
+    - 当前基线可配置、可构建
+- `G1 / Bundle Contract Gate`
+  - 通过条件：
+    - `script_guard_smoke_test` 通过
+    - bundle header 为 `ESHB + version 3`
+    - manifest 必须含本计划列出的全部 shell contract 字段
+    - manifest 必须包含：
+      - `key_provider_endpoint_kind`
+      - `key_provider_static_file:false`
+    - bundle 中不得出现 plaintext anchor
+- `G2 / Unsafe Shell Gate`
+  - 通过条件：
+    - `set -x`
+    - `set -o xtrace`
+    - `source `
+    - 行首 `. `
+    - `$0`
+    - `${BASH_SOURCE`
+    - 命中任一项时 bundler 直接失败，且不生成 bundle/manifest
+- `G3 / Launcher Execution Gate`
+  - 通过条件：
+    - launcher success test 通过
+    - 参数可透传到脚本
+    - launcher 不创建 `.plain/.tmp/.dec` 明文文件
+    - provider failure/malformed/reject/mismatch 全部 fail-closed
+    - `--key-provider=<path>` 若指向普通文件或解析后指向普通文件，bundler 与 launcher 都必须非零退出
+    - 只有以下 provider 端点允许成功路径：
+      - `executable_adapter`
+      - `fifo`
+      - `unix_socket`
+    - 任一静态 key file 被接受即直接 `FAIL`
+- `G4 / Shell Strict Audit Gate`
+  - 通过条件：
+    - `artifact_audit_strict_test` 中 shell success case `strict_failures=[]`
+    - shell failure cases 命中固定 code：
+      - `shell_gate_failed`
+      - `shell_unsafe_feature_present`
+      - `shell_plaintext_leak_indicator`
+    - existing authenticity/verifier failure 仍保持红灯
+- `G5 / No-Persistent-Plaintext Evidence Gate`
+  - 通过条件：
+    - manifest 中：
+      - `allow_persistent_plaintext=false`
+      - `plaintext_output=false`
+      - `key_material_embedded=false`
+      - `key_provider_static_file=false`
+      - `execution_model=pipe_stdin_exec`
+    - temp dir 扫描无明文脚本副产物
+    - 仓库工作目录扫描不得发现原始 key material 文件副产物
+    - 脚本 temp dir 扫描不得发现原始 key material 文件副产物
+    - launcher 进程不通过环境变量传 key
+    - 若测试证明 bundler 或 launcher 接受“磁盘静态 key file”作为 provider，则结论只能是 `FAIL`
+- `G6 / Perf Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase5 --output-on-failure -R 'shell_launcher_perf_smoke_test'`
+    - `cmake --build /workspace/build_phase5 --target perf_smoke`
+  - 通过条件：
+    - 启动额外开销 `<=250ms`
+    - 重复执行整体开销 `<=10%`
+- `G7 / Final Validation Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase5 --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test|shell_launcher_perf_smoke_test'`
+  - 通过条件：
+    - 全部通过
+    - 不允许人工解释放行
+
+## Merge Order
+- `M0`
+  - 冻结 shell manifest 字段、bundle v3 头格式、unsafe feature policy
+- `M1`
+  - 落地 shared helpers：
+    - `bundle_format`
+    - `external_key_provider`
+    - `unsafe_shell_scan`
+- `M2`
+  - bundler 主流程改造成 contract-aligned bundle producer
+- `M3`
+  - 新增 `eippf_script_launcher`
+- `M4`
+  - 增加 shell strict audit
+- `M5`
+  - 增加 success/failure/security-edge tests
+- `M6`
+  - 增加 perf smoke
+- `M7`
+  - final validation + review freeze
+
+## Mechanical Task Cards
+### Card 0 / Agent 1 / Preflight
+- 只做：
+  - 记录当前 `script_guard` lane 基线
+  - 公布 `Changed Path`
+  - 固定构建目录 `/workspace/build_phase5`
+- 不做：
+  - 不写代码
+  - 不修改 `core/script_guard/*`
+
+### Card 1 / Agent 2 / Track A / Bundle Contract Closure
+- 只读打开：
+  - `/workspace/core/script_guard/src/main.cpp`
+  - `/workspace/core/script_guard/CMakeLists.txt`
+- 只允许修改：
+  - `/workspace/core/script_guard/CMakeLists.txt`
+  - `/workspace/core/script_guard/src/main.cpp`
+  - `/workspace/core/script_guard/include/script_guard/bundle_format.hpp`
+  - `/workspace/core/script_guard/src/bundle_format.cpp`
+  - `/workspace/core/script_guard/include/script_guard/external_key_provider.hpp`
+  - `/workspace/core/script_guard/src/external_key_provider.cpp`
+  - `/workspace/core/script_guard/include/script_guard/unsafe_shell_scan.hpp`
+  - `/workspace/core/script_guard/src/unsafe_shell_scan.cpp`
+- 固定动作：
+  - `core/script_guard/CMakeLists.txt` 只允许由 Engineer-A 修改；Card 2 不得触碰该文件
+  - 在 `CMakeLists.txt` 中一次性完成以下 build wiring：
+    - bundler 入口目标继续保留为 `eippf_script_guard`
+    - 预先注册 launcher 目标 `eippf_script_launcher`
+    - 将公共 helper 源文件接入 bundler 与 launcher
+  - 从 `main.cpp` 中抽出公共模块：
+    - `resolve_external_key()`
+    - `scan_unsafe_shell_features()`
+    - `write_bundle_v3()`
+    - `read_bundle_header()` 仅供公共库复用
+  - `main.cpp` 保留为 bundler 入口，不加入 launcher 逻辑
+  - `main.cpp` 继续支持现有 CLI：
+    - `--input-script`
+    - `--output-bundle`
+    - `--manifest`
+    - `--key-provider`
+    - `--key-id`
+  - 在 bundler 中新增固定函数：
+    - `detect_interpreter_tag_from_shebang()`
+    - `build_shell_manifest_v2_json()`
+    - `reject_if_unsafe_shell_features_present()`
+  - 在 `external_key_provider` 中固定新增：
+    - `enum class ProviderEndpointKind { kExecutableAdapter, kFifo, kUnixSocket, kInvalid };`
+    - `classify_provider_endpoint(const std::filesystem::path&)`
+    - `resolve_external_key_from_endpoint(...)`
+    - `read_provider_response_from_executable(...)`
+    - `read_provider_response_from_fifo(...)`
+    - `read_provider_response_from_unix_socket(...)`
+  - `scan_unsafe_shell_features()` 必须返回固定 feature 名：
+    - `xtrace`
+    - `source`
+    - `self_argv0_introspection`
+  - `classify_provider_endpoint()` 必须直接拒绝：
+    - 普通文件
+    - 解析后落到普通文件的 symlink
+    - 仓库工作目录中的静态 key file
+    - 脚本 temp dir 中的静态 key file
+  - executable adapter 路径只能直接执行，禁止 shell 插值
+  - bundler 检测到 feature 后直接失败，不输出 bundle/manifest
+  - manifest 字段必须严格按本计划输出，不允许改名
+  - bundler manifest 必须新增并固定写出：
+    - `key_provider_endpoint_kind`
+    - `key_provider_static_file:false`
+  - bundle header 必须升级到 version `3`
+  - 原有 `resolve_external_key()` 的“读普通文本 key file”路径必须删除，不得保留为 fallback
+
+### Card 2 / Agent 2 / Track B / Launcher Runtime Closure
+- 只读打开：
+  - `/workspace/core/script_guard/include/script_guard/bundle_format.hpp`
+  - `/workspace/core/script_guard/include/script_guard/external_key_provider.hpp`
+- 只允许修改：
+  - `/workspace/core/script_guard/include/script_guard/launcher.hpp`
+  - `/workspace/core/script_guard/src/launcher.cpp`
+  - `/workspace/core/script_guard/src/launcher_main.cpp`
+- 固定动作：
+  - 新增可执行文件：
+    - `eippf_script_launcher`
+  - 不得修改 `/workspace/core/script_guard/CMakeLists.txt`
+  - `launcher_main.cpp` 固定支持 CLI：
+    - `--input-bundle=<path>`
+    - `--manifest=<path>`
+    - `--key-provider=<path>`
+    - `--key-id=<id>`
+    - `--` 后面全部作为脚本参数透传
+  - 固定新增函数：
+    - `parse_launcher_options()`
+    - `load_and_validate_shell_manifest()`
+    - `decrypt_bundle_payload()`
+    - `sanitize_child_environment()`
+    - `exec_interpreter_from_stdin()`
+    - `launch_bundle_via_pipe()`
+  - `sanitize_child_environment()` 只允许保留：
+    - `PATH`
+    - `HOME`
+    - `LANG`
+    - `LC_ALL`
+    - `LC_CTYPE`
+    - `TMPDIR`
+    - `PWD`
+    - `TERM`
+  - `sanitize_child_environment()` 必须删除：
+    - `BASH_ENV`
+    - `ENV`
+    - `PROMPT_COMMAND`
+    - `PS4`
+    - `BASH_XTRACEFD`
+    - `SHELLOPTS`
+    - `LD_PRELOAD`
+    - `LD_LIBRARY_PATH`
+    - `DYLD_INSERT_LIBRARIES`
+    - `DYLD_LIBRARY_PATH`
+  - launcher 只允许 `pipe_stdin_exec`
+  - interpreter 调用固定为：
+    - `sh -s --`
+    - `bash -s --`
+    - `dash -s --`
+  - launcher 只能复用 Track A 提供的 `external_key_provider` 公共模块，不得自建第二套 provider 解析逻辑
+  - launcher 必须按 `ProviderEndpointKind` 只接受：
+    - `kExecutableAdapter`
+    - `kFifo`
+    - `kUnixSocket`
+  - launcher 遇到普通文件 provider、symlink-to-regular-file provider、仓库工作目录静态 key file、temp dir 静态 key file 时必须直接失败
+  - 遇到 unsupported interpreter_tag 直接失败
+  - key material 不允许进 argv，不允许进 env，不允许进 stdout/stderr/temp file
+
+### Card 3 / Agent 2 / Track C / Audit Closure
+- 只读打开：
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- 只允许修改：
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- 固定动作：
+  - 在 `artifact_audit.py` shell lane 增加严格检查，固定新增 failure code：
+    - `shell_gate_failed`
+    - `shell_unsafe_feature_present`
+    - `shell_plaintext_leak_indicator`
+  - `shell_gate_failed` 触发条件固定为任一不满足：
+    - `target_kind == shell_ephemeral`
+    - `backend_kind == shell_launcher`
+    - `runtime_lane == shell_launcher`
+    - `mutation_profile == shell_bundle`
+    - `signature_policy == required_verifier`
+    - `allow_jit == false`
+    - `allow_runtime_executable_pages == false`
+    - `allow_persistent_plaintext == false`
+    - `require_fail_closed == true`
+    - `execution_model == pipe_stdin_exec`
+    - `trace_env_scrubbed == true`
+    - `source_policy == self_contained_only`
+  - `shell_plaintext_leak_indicator` 触发条件固定为任一不满足：
+    - `key_material_embedded == false`
+    - `plaintext_output == false`
+    - `no_persistent_plaintext_goal == true`
+  - `shell_unsafe_feature_present` 触发条件固定为：
+    - `unsafe_shell_features` 非空
+  - `shell_gate_failed` 触发条件新增：
+    - `key_provider_endpoint_kind` 不在：
+      - `executable_adapter`
+      - `fifo`
+      - `unix_socket`
+    - `key_provider_static_file != false`
+
+### Card 4 / Agent 2 / Track C / Script Tests
+- 只读打开：
+  - `/workspace/core/tests/script_guard/CMakeLists.txt`
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+- 只允许修改：
+  - `/workspace/core/tests/script_guard/CMakeLists.txt`
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_success_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_failure_test.cpp`
+  - `/workspace/core/tests/script_guard/script_launcher_security_edge_test.cpp`
+- 固定动作：
+  - `CMakeLists.txt` 新增 3 个 test，名字不允许改：
+    - `script_launcher_success_test`
+    - `script_launcher_failure_test`
+    - `script_launcher_security_edge_test`
+  - `script_guard_smoke_test.cpp` 必须补充断言：
+    - bundle version `3`
+    - manifest 包含：
+      - `runtime_lane`
+      - `mutation_profile`
+      - `signature_policy`
+      - `execution_model`
+      - `trace_env_scrubbed`
+      - `source_policy`
+      - `unsafe_shell_features`
+    - manifest 不能出现：
+      - `encryption_key`
+      - `input_hash_fnv1a64`
+      - 明文脚本文本
+  - `script_launcher_success_test.cpp` 固定测试：
+    - 生成自包含脚本
+    - bundler 成功
+    - launcher 成功
+    - stdout 与参数透传正确
+    - temp dir 中没有 `.plain/.tmp/.dec`
+  - `script_launcher_failure_test.cpp` 固定测试：
+    - 缺 provider
+    - provider malformed
+    - provider rejected
+    - key_id mismatch
+    - manifest 缺必需字段
+    - bundle header version 错误
+    - 全部必须非零退出
+  - `script_launcher_security_edge_test.cpp` 固定测试：
+    - `set -x` 打包失败
+    - `source ./other.sh` 打包失败
+    - 带 `BASH_ENV/ENV/PS4/BASH_XTRACEFD` 的父环境启动后，脚本内部看不到这些变量
+    - bundle 中不出现 plaintext anchor
+
+### Card 5 / Agent 2 / Track C / Perf Closure
+- 只读打开：
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+- 只允许修改：
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/perf/shell_launcher_perf_smoke_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+- 固定动作：
+  - 新增 test 名字固定为：
+    - `shell_launcher_perf_smoke_test`
+  - 测试方法固定：
+    - baseline：直接 `/bin/sh script.sh`
+    - candidate：`eippf_script_launcher --input-bundle ...`
+    - 同一脚本、同一参数、20 次运行
+  - 输出固定包含：
+    - `startup_overhead_ms`
+    - `overall_overhead_percent`
+  - 超预算直接 `FAIL`
+
+### Card 6 / Agent 1 / Validation Run
+- 固定顺序执行：
+  - `cmake -S /workspace/core -B /workspace/build_phase5 -G Ninja`
+  - `cmake --build /workspace/build_phase5 -j`
+  - `ctest --test-dir /workspace/build_phase5 --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test|shell_launcher_perf_smoke_test'`
+  - `cmake --build /workspace/build_phase5 --target perf_smoke`
+- 任一命令失败直接停止
+
+### Card 7 / Agent 3 / Final Review
+- 逐项核对：
+  - `.sh` lane 是否仍然：
+    - `allow_jit=false`
+    - `allow_runtime_executable_pages=false`
+    - `allow_persistent_plaintext=false`
+    - `require_fail_closed=true`
+  - launcher 是否只用 `pipe_stdin_exec`
+  - bundle 是否仍然 `key_material_embedded=false`
+  - audit 是否新增：
+    - `shell_gate_failed`
+    - `shell_unsafe_feature_present`
+    - `shell_plaintext_leak_indicator`
+  - bundler 是否拒绝：
+    - `set -x`
+    - `source`
+    - `$0/BASH_SOURCE` 自省
+  - perf 是否在预算内
+- 任一项不满足，结论只能是 `FAIL`
+
+## Open Risks
+- `pipe_stdin_exec` 与脚本直传路径执行不同，依赖 `$0/BASH_SOURCE` 的脚本必须拒绝，否则会产生语义偏差。
+- BusyBox `sh`、`dash`、`bash` 的细微差异可能导致脚本兼容性不一致；Phase 5 先按 Linux 常见 POSIX shell 收口。
+- lexical scan 是保守策略，可能拒绝一部分本可运行的脚本，但这符合“保护优先、fail-closed”。
+- `required_verifier` 依赖现有外部 verifier 流程；若 verifier 缺失，严格审计必须失败，不能降级。
+
+## State Snapshot
+- 当前 `.sh` 现状：
+  - `/workspace/core/script_guard/src/main.cpp`
+    - 已能读取明文脚本、external key provider，生成加密 bundle 和 manifest
+    - 还没有 launcher
+  - `/workspace/core/tests/script_guard/script_guard_smoke_test.cpp`
+    - 只有 bundle skeleton smoke，不验证执行链
+  - `/workspace/core/runtime/src/backends/shell_launcher_backend.cpp`
+    - 只有 backend descriptor
+  - `/workspace/core/tools/artifact_audit.py`
+    - 只有 shell bundle header invariant 检查，还没有 shell lane strict gate
+- 当前 Phase 5 的真实缺口：
+  - 没有 launcher 消费链
+  - 没有 no-persistent-plaintext 执行证据
+  - 没有环境清理与 xtrace/source fail-closed
+  - 没有 shell lane perf gate

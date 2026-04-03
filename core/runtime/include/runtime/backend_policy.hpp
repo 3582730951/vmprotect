@@ -28,6 +28,20 @@ struct Policy final {
   std::uint32_t plaintext_ttl_ms = 0u;
 };
 
+struct RuntimeBackendDispatch final {
+  contracts::ProtectionTargetKind target = contracts::ProtectionTargetKind::kUnknown;
+  contracts::RuntimeLaneKind lane = contracts::RuntimeLaneKind::kUnknown;
+  contracts::RuntimeBackendKind backend = contracts::RuntimeBackendKind::kUnknown;
+  bool allow_jit = false;
+  bool allow_runtime_executable_pages = false;
+  bool allow_persistent_plaintext = false;
+  bool require_fail_closed = true;
+  bool requires_sign_after_mutate = false;
+};
+
+[[nodiscard]] RuntimeBackendDispatch dispatch_for_target(
+    contracts::ProtectionTargetKind target) noexcept;
+
 [[nodiscard]] Policy default_policy_for_target(
     contracts::ProtectionTargetKind target) noexcept;
 
@@ -40,6 +54,10 @@ struct Policy final {
     contracts::ProtectionTargetKind target) noexcept;
 [[nodiscard]] bool backend_matches_target(contracts::RuntimeBackendKind backend,
                                           contracts::ProtectionTargetKind target) noexcept;
+[[nodiscard]] bool target_kind_supports_desktop_jit(
+    contracts::ProtectionTargetKind target) noexcept;
+[[nodiscard]] bool target_kind_requires_sign_after_mutate(
+    contracts::ProtectionTargetKind target) noexcept;
 
 [[nodiscard]] const char* policy_error_name(PolicyError error) noexcept;
 

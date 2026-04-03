@@ -39,6 +39,33 @@ bool test_target_disables_runtime_dynamic_code() {
               "expected windows driver runtime target")) {
     return false;
   }
+#elif defined(EIPPF_EXPECT_LINUX_KERNEL_MODULE)
+  if (!expect(configured == ProtectionTargetKind::kLinuxKernelModule,
+              "expected linux kernel module runtime target")) {
+    return false;
+  }
+#elif defined(EIPPF_EXPECT_ANDROID_KERNEL_MODULE)
+  if (!expect(configured == ProtectionTargetKind::kAndroidKernelModule,
+              "expected android kernel module runtime target")) {
+    return false;
+  }
+#elif defined(EIPPF_EXPECT_ANDROID_DEX)
+  if (!expect(configured == ProtectionTargetKind::kAndroidDex,
+              "expected android dex runtime target")) {
+    return false;
+  }
+#elif defined(EIPPF_EXPECT_SHELL_EPHEMERAL)
+  if (!expect(configured == ProtectionTargetKind::kShellEphemeral,
+              "expected shell ephemeral runtime target")) {
+    return false;
+  }
+#elif defined(EIPPF_EXPECT_UNKNOWN_TARGET)
+  if (!expect(configured == ProtectionTargetKind::kUnknown,
+              "expected unknown runtime target")) {
+    return false;
+  }
+#else
+  return expect(false, "missing expected runtime target macro");
 #endif
 
   return expect(!eippf::runtime::MemoryHAL::runtime_dynamic_code_allowed(),
@@ -53,6 +80,10 @@ bool test_compile_fails_closed() {
   }
   if (!expect(compiled.error == Engine::ErrorCode::kMemoryProtectFailed,
               "safe backend should surface memory protection failure")) {
+    return false;
+  }
+  if (!expect(compiled.gate_code == Engine::GateCode::kJitRouteForbiddenForTarget,
+              "safe backend should set jit_route_forbidden_for_target gate code")) {
     return false;
   }
   return expect(compiled.error_message_hash != 0u,

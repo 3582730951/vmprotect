@@ -1,0 +1,154 @@
+# 2026-04-02 Phase 3 final freeze execution
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3f-string-pass-link-closure-plan.txt`。
+
+Task Summary:
+- 冻结 `Phase 3` user-mode mainline：
+  - Windows `.exe/.dll`
+  - Linux `ELF/.so`
+  - Android `.so`
+- 本次冻结收口了 4 个执行级 blocker：
+  - `3c` / runtime linkage closure
+  - `3d` / `string_protection_pass_test` registration closure
+  - `3e` / `string_protection_pass_test.cpp` compile closure
+  - `3f` / `string_protection_pass_test` LLVM link closure
+
+Phase 3c:
+- 问题：
+  - `vm_runtime_bridge_vm2_test` 链接 `eippf_vm_rt` 时缺失 backend policy helper 闭口
+- 修补：
+  - `/workspace/core/runtime/CMakeLists.txt`
+  - `eippf_vm_rt` 纳入 `src/backend_policy.cpp`
+- PM 关键证据：
+  - `ninja -C /workspace/build_phase3 -t commands vm_runtime_bridge_vm2_test`
+  - 最终 link line：
+    - `... tests/vm_runtime_bridge_vm2_test  runtime/libeippf_vm_rt.a  -ldl ...`
+  - 未出现：
+    - `libeippf_runtime.a`
+- 结果：
+  - `15/15` 相关安全回归通过
+  - `perf_smoke` 通过
+
+Phase 3d:
+- 问题：
+  - `string_protection_pass_test` 未进入 build/test 图
+- 修补：
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - 测试目标不再被最外层 `if(TARGET LLVM)` 静默包裹
+  - 恢复 `add_executable(...)` 与 `add_test(...)`
+- 结果：
+  - `ctest -N` 可见该测试
+  - 但随后暴露出源码 compile blocker，进入 `3e`
+
+Phase 3e:
+- 问题：
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp:59-60`
+  - `llvm::ConstantExpr::getInBoundsGetElementPtr(..., {zero, zero})`
+  - 在 LLVM 14 下触发二义性重载
+- 修补：
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - 增加 `<array>`
+  - 用：
+    - `std::array<llvm::Constant*, 2> gep_indices{zero, zero};`
+    - `llvm::ArrayRef<llvm::Constant*> gep_index_ref(gep_indices);`
+  - 替换 brace-init indices
+- 结果：
+  - compile blocker 关闭
+  - 但随后暴露出 LLVM fallback link blocker，进入 `3f`
+
+Phase 3f:
+- 问题：
+  - `string_protection_pass_test` fallback link line 仍是：
+    - `-lLLVMCore`
+    - `-lLLVMSupport`
+    - `-lLLVMBitReader`
+    - `-lLLVMBitWriter`
+    - `-lLLVMIRReader`
+    - `-lLLVMPasses`
+    - `-lLLVMAnalysis`
+    - `-lLLVMTransformUtils`
+  - 当前环境无法解析这些 component libs
+- 修补：
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - 保留 `if(TARGET LLVM)` 分支
+  - 在现有 `elseif(COMMAND llvm_map_components_to_libnames)` 分支中，改成：
+    - `find_program(... llvm-config ...)`
+    - `execute_process(... --libdir ...)`
+    - `find_library(... LLVM-14 LLVM ... NO_DEFAULT_PATH REQUIRED)`
+    - `target_link_libraries(... "<monolithic absolute path>")`
+- PM 关键证据：
+  - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+  - 最终 link line：
+    - `... -o tests/passes/string_protection_pass_test -Wl,-rpath,/usr/lib/llvm-14/lib /usr/lib/llvm-14/lib/libLLVM-14.so`
+  - 未出现任何 component `-lLLVM*`
+- 哈希审计：
+  - PM 前后内容哈希比较输出只包含：
+    - `core/tests/passes/CMakeLists.txt`
+
+PM Final Validation:
+- `cmake --build /workspace/build_phase3 -j`
+  - `PASS`
+- `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase3 -N | rg -n 'string_protection_pass_test'`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|post_link_mutator_user_mode_contract_test|artifact_audit_user_mode_test|android_so_policy_test|android_so_pipeline_smoke_test|user_mode_pipeline_test'`
+  - `PASS`
+  - 结果：
+    - `7/7`
+- `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'user_mode_perf_smoke_test'`
+  - `PASS`
+  - 结果：
+    - `1/1`
+- `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass perf_smoke`
+  - `PASS`
+
+Phase 3 Freeze Review:
+- Architecture Reviewer:
+  - `PASS`
+  - 原因：
+    - `3c` 保持 `eippf_vm_rt` 自闭口
+    - `3d/3e/3f` 只在 `tests/passes` 子目录收口，没有外扩到顶层 tests、生产 pass 或 `ip_weaver_ir`
+    - 当前 user-mode mainline 组合关系与阶段边界一致
+- Security Reviewer:
+  - `PASS`
+  - 原因：
+    - 未出现新的 fail-open / JIT 放宽 / safe-target 回退
+    - `vm_runtime_bridge_vm2_test` 仍只消费 `eippf_vm_rt`
+    - `string_protection_pass_test` 已真正进入 build/test 图且 link line 正确
+    - 内容哈希基线足以支持本轮允许写面被遵守
+- Validation Reviewer:
+  - `PASS`
+  - 原因：
+    - full build / user-mode mainline tests / perf / pass-target 非回归证据链完整
+    - 不存在“测试注册了但目标不可链”或“目标可链但主线测试/性能门未覆盖”的假通过
+
+Decision Log:
+- `DL-P3-FREEZE-01`
+  - 决定：
+    - 冻结 `Phase 3`
+  - 原因：
+    - user-mode mainline blocker 已全部收口
+    - PM 独立 build/test/perf 通过
+    - 最终三审全部 `PASS`
+
+State Snapshot:
+- `Phase 3`：
+  - `PASS`
+- 当前已冻结结果：
+  - runtime safe closure
+  - string pass registration / compile / link closure
+  - user-mode artifact audit / Android `.so` policy / user-mode pipeline / perf smoke
+- 下一动作：
+  - 进入 `Phase 4`
+  - 目标：
+    - Windows `.sys`
+    - Linux `.ko`
+    - Android `.ko`

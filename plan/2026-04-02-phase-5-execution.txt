@@ -1,0 +1,140 @@
+# 2026-04-02 Phase 5 `.sh launcher` 执行记录
+
+状态:
+- `Phase 5` 已完成实现与集成验证，但最终冻结被 reviewer blocker 中断
+- 当前已完成并冻结:
+  - `Phase 4` 已冻结
+  - `Phase 5` 详细计划落盘
+  - `Phase 5` 计划三审通过（architecture / security / validation）
+- 当前已完成:
+  - `Track A / Bundle Contract Closure`
+  - `Track B / Launcher Runtime Closure`
+  - `Track C / Audit + Test + Perf Closure`
+  - `Phase 5` 集成构建验证
+- 当前待完成:
+  - `Phase 5b` 安全闭口 delta 计划
+  - `Phase 5b` 实现与复审
+  - `Phase 5` freeze 结论回填
+
+计划文件:
+- `/workspace/plan/2026-04-02-phase-5-shell-launcher-plan.txt`
+
+三审结论（计划阶段）:
+- Architecture Reviewer: `PASS`
+  - `.sh` lane 已明确从 bundler skeleton 推进到 launcher 闭环。
+  - File ownership 单写者清晰，`core/script_guard/CMakeLists.txt` 只归 `Engineer-A`。
+  - task cards 机械化充分，工程 agent 无需自做设计。
+- Security Reviewer: `PASS`
+  - 威胁模型已覆盖 `grep/strings`、`set -x`、`source`、子 shell、环境变量泄漏、临时文件恢复。
+  - external key provider 已收口为 `executable_adapter | fifo | unix_socket`，明确禁止静态磁盘 key file。
+  - no-persistent-plaintext / fail-closed / env scrub / strict audit failure code 已写死。
+- Validation Reviewer: `PASS`
+  - 构建目录、命令、测试名、perf gate 全部固定，可重复执行。
+  - success/failure/security-edge/perf 与 strict audit 闭环完整。
+  - temp dir / 工作目录副产物扫描与静态 key file redlight 已纳入 hard gate。
+
+Track 分配:
+- `Engineer-A`
+  - 文件所有权:
+    - `core/script_guard/CMakeLists.txt`
+    - `core/script_guard/src/main.cpp`
+    - `core/script_guard/include/script_guard/bundle_format.hpp`
+    - `core/script_guard/src/bundle_format.cpp`
+    - `core/script_guard/include/script_guard/external_key_provider.hpp`
+    - `core/script_guard/src/external_key_provider.cpp`
+    - `core/script_guard/include/script_guard/unsafe_shell_scan.hpp`
+    - `core/script_guard/src/unsafe_shell_scan.cpp`
+- `Engineer-B`
+  - 文件所有权:
+    - `core/script_guard/include/script_guard/launcher.hpp`
+    - `core/script_guard/src/launcher.cpp`
+    - `core/script_guard/src/launcher_main.cpp`
+- `Engineer-C`
+  - 文件所有权:
+    - `core/tools/artifact_audit.py`
+    - `core/tests/script_guard/CMakeLists.txt`
+    - `core/tests/script_guard/script_guard_smoke_test.cpp`
+    - `core/tests/script_guard/script_launcher_success_test.cpp`
+    - `core/tests/script_guard/script_launcher_failure_test.cpp`
+    - `core/tests/script_guard/script_launcher_security_edge_test.cpp`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+    - `core/tests/perf/CMakeLists.txt`
+    - `core/tests/perf/shell_launcher_perf_smoke_test.cpp`
+    - `core/tests/CMakeLists.txt`
+
+执行原则:
+- PM 不写实现代码。
+- 工程 agent 只能修改自己被分配的文件。
+- 任一 agent 发现必须修改未分配文件，直接停下并回报 PM，不得自行扩 scope。
+- 集成构建、测试、性能验收由 PM 统一执行。
+
+实现结果:
+- `Engineer-A`
+  - 完成 bundler 主线从静态 key 骨架升级到 `external_key_provider + bundle_format + unsafe_shell_scan` 闭环。
+  - `core/script_guard/src/main.cpp` 现在强制 `--key-provider` + `--key-id`，拒绝静态磁盘 key file。
+  - manifest 中补齐:
+    - `runtime_lane`
+    - `mutation_profile`
+    - `signature_policy`
+    - `key_provider_endpoint_kind`
+    - `key_provider_static_file`
+    - `trace_env_scrubbed`
+    - `source_policy`
+    - `unsafe_shell_features`
+    - `contains_shebang`
+  - 修复点:
+    - 可执行 provider 适配器不再被误判为静态 key file
+    - provider 缺失映射到 `read_failed / exit 7`
+- `Engineer-B`
+  - 完成 launcher 主线与环境清洗闭环。
+  - `sanitize_child_environment()` 现在对 `BASH_ENV`、`ENV`、`PS4`、`BASH_XTRACEFD` 强制置空，并继续剔除 `PROMPT_COMMAND`、`SHELLOPTS`、`LD_*`、`DYLD_*`。
+- `Engineer-C`
+  - 完成 strict audit、shell suite 和 perf fixture 闭环。
+  - success/failure/security-edge/perf 四类测试全部接到允许的 provider endpoint。
+  - FIFO helper 保留被包装命令真实退出码。
+  - perf fixture 升级为确定性算术循环负载，避免 trivial workload 造成误报。
+
+集成验证命令:
+- `cmake -S /workspace/core -B /workspace/build_phase5 -G Ninja`
+- `cmake --build /workspace/build_phase5 -j`
+- `ctest --test-dir /workspace/build_phase5 --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test|shell_launcher_perf_smoke_test'`
+- `cmake --build /workspace/build_phase5 --target perf_smoke`
+
+集成验证结果:
+- configure: `PASS`
+- full build: `PASS`
+- shell-focused ctest: `6/6 PASS`
+- `artifact_audit_strict_test`: `PASS`
+- `script_guard_smoke_test`: `PASS`
+- `script_launcher_success_test`: `PASS`
+- `script_launcher_failure_test`: `PASS`
+- `script_launcher_security_edge_test`: `PASS`
+- `shell_launcher_perf_smoke_test`: `PASS`
+- `perf_smoke`: `PASS`
+  - `startup_overhead_ms=21.78`
+  - `overall_overhead_percent=0.45`
+
+待最终三审确认的关键证据:
+- external key provider 只允许:
+  - `executable_adapter`
+  - `fifo`
+  - `unix_socket`
+- 明确拒绝:
+  - regular-file static key provider
+  - symlink-to-regular-file provider
+  - workspace/temp-dir plaintext key file
+- shell 子进程环境已做 trace/env scrub
+- no-persistent-plaintext / fail-closed / strict audit failure code 均有负向测试覆盖
+
+当前 reviewer 结论:
+- Architecture Reviewer: `PASS`
+  - 现有 `.sh launcher` 主线闭环、provider contract、single-writer 边界成立。
+- Validation Reviewer: `PASS`
+  - `Phase 5a` delta 计划对 strict-audit 与测试矩阵缺口的补口口径明确。
+- Security Reviewer: `BLOCK`
+  - 当前实现仍缺两个安全闭口:
+    - `launcher` 未将计划要求的完整 manifest 契约字段纳入真实校验面。
+    - `launcher` 未对 tampered bundle/manifest 的 `unsafe-shell` 绕过做 runtime 级 fail-closed 复核。
+  - 已另起 `Phase 5b` 计划处理上述 blocker，并继续保留:
+    - `executable provider stderr` 泄漏封堵
+    - shell strict audit 真实执行与精确 token 断言

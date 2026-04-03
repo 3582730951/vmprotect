@@ -31,6 +31,7 @@
 #endif
 
 #include "contracts/protection_contracts.hpp"
+#include "runtime/backend_policy.hpp"
 #include "runtime/constexpr_obfuscated_string.hpp"
 #include "runtime/dynamic_api_resolver.hpp"
 
@@ -68,13 +69,8 @@ struct MemoryHAL final {
 
   [[nodiscard]] static bool runtime_dynamic_code_allowed() noexcept {
     const contracts::ProtectionTargetKind target = configured_target_kind();
-    if (target == contracts::ProtectionTargetKind::kUnknown) {
-      return false;
-    }
-    if (contracts::target_forbids_jit(target)) {
-      return false;
-    }
-    return !target_forbids_runtime_executable_pages(target);
+    return backend::target_kind_supports_desktop_jit(target) &&
+           !backend::target_forbids_runtime_executable_pages(target);
   }
 
   template <std::size_t kMaxSymbolCache, std::size_t kMaxModuleCache>

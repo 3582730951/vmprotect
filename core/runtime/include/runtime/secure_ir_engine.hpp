@@ -36,6 +36,11 @@ class SecureIREngine final {
     kInvalidOpcode = 8u,
   };
 
+  enum class GateCode : std::uint8_t {
+    kNone = 0u,
+    kJitRouteForbiddenForTarget = 1u,
+  };
+
   class ExecutableMemory final {
    public:
     explicit ExecutableMemory(std::size_t requested_size) noexcept;
@@ -65,6 +70,7 @@ class SecureIREngine final {
 
   struct CompileResult final {
     ErrorCode error = ErrorCode::kInvalidOpcode;
+    GateCode gate_code = GateCode::kNone;
     std::uint64_t opcode_trace_hash = 0u;
     std::uint64_t debug_symbol_hash = 0u;
     std::uint64_t error_message_hash = 0u;

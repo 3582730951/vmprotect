@@ -1,0 +1,252 @@
+# 2026-04-02 Phase 2C.3 / blocker repair plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 只修复 `Phase 2C` 在最终三审中暴露的 5 个 blocker，不重写 `2C`，不扩 scope 到 `Phase 3+`。
+- 修复完成标准不是“单次 AC 子集通过”，而是：
+  - 安全 blocker 收敛
+  - smoke / AC-2 / AC-3 / AC-4 / AC-5 / AC-6 同时通过
+  - 双次复跑一致通过
+  - `post_link_mutator_exit_code_trailer_contract_test` 不再出现非确定性 cleanup 崩溃
+
+Task Charter:
+- Objective:
+  - 以最小修改面修复 `Phase 2C` 的架构、安全、验证 blocker，使 `post_link_mutator abstraction split` 达到可冻结状态。
+- Scope:
+  - `core/post_link_mutator/src/artifact_detector.cpp`
+  - `core/post_link_mutator/src/manifest_writer.cpp`
+  - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（仅在 `artifact_detector.cpp` 需要接口变更时允许）
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+- Non-Goals:
+  - 不新增新的 runtime / wrapper / pass / mutator 功能。
+  - 不修改 `target_classifier` 语义。
+  - 不重新设计 `Phase 2C` 的模块拆分。
+  - 不把 `smoke` 回退成弱断言以换取通过。
+- Constraints:
+  - 先审计划，再编码。
+  - PM 不接管实现代码。
+  - 单文件单写者；`core` 与 `tests` 分属不同工程轨。
+- Acceptance Criteria:
+  - 任意随机二进制不能仅靠输出后缀被识别为 `.dex` 或 `.sh`。
+  - `signing_profile` 唯一真相源固定，`smoke`、`AC-4` 与实现一致。
+  - `AC-4` 精确校验 `target_kind_source=explicit_cli` 和 `signing_profile=unsigned_dev_or_sign_after_mutation`。
+  - `AC-5` 精确校验 `main.cpp` 只转发到 `run_mutator(...)`，且不含 `run_mutator_with_test_fault(`。
+  - `AC-2` 双次及重复复跑稳定，不再因 cleanup 抛异常。
+- Forbidden Shortcuts:
+  - 不能放宽 `AC-4/AC-5` 断言。
+  - 不能把 fail-closed 改成 warning。
+  - 不能删除 `smoke` 或移出验收 regex。
+  - 不能让 PM 接管代码。
+
+Architecture Contract Summary:
+- `artifact_detector.cpp` 继续保持“魔数优先”，并收紧后缀回退：
+  - `PE/ELF/Mach-O` 仍先按输入魔数识别。
+  - `.dex/.sh` 只允许按 `input_path` 自身后缀识别。
+  - 禁止按 `output_path` 后缀识别 `.dex/.sh`。
+  - 当输入魔数未知且 `input_path` 也不是 `.dex/.sh` 时，必须返回 `ArtifactKind::kUnknown`。
+- `manifest_writer.cpp` 是 `signing_profile` 的唯一真相源。目标映射固定为：
+  - `windows_driver` -> `windows_driver_sign_after_mutation`
+  - `linux_kernel_module` / `android_kernel_module` -> `kernel_module_sign_after_mutation`
+  - `ios_appstore` -> `ios_codesign_after_mutation`
+  - 其他 -> `unsigned_dev_or_sign_after_mutation`
+- `post_link_mutator_smoke_test.cpp` 不是可放宽回归测试；它必须与 `manifest_writer.cpp` 的真相源精确对齐。
+- `post_link_mutator_hardened_pipeline_contract_test.cpp` 是 `AC-4` 主证据，不允许“字段存在即可”的宽松校验。
+- `post_link_mutator_fault_isolation_contract_test.cpp` 是 `AC-5` 主证据，必须同时验证：
+  - `7/8/9` fault code
+  - 非 fault 路径不返回 `7/8/9`
+  - `main.cpp` 薄入口路由只调用 `run_mutator(argc, argv, std::cout, std::cerr)`
+
+Decision Log:
+- `DL-2C3-01`
+  - 决定：`artifact_detector.cpp` 禁止以 `output_path` 后缀识别 `.dex/.sh`
+  - 原因：安全审复现了随机二进制经输出后缀被误识别为 `shell_bundle/dex` 的 fail-open 面
+- `DL-2C3-02`
+  - 决定：`manifest_writer.cpp` 的 `signing_profile_for_target()` 为唯一真相源
+  - 原因：当前 blocker 是测试/实现分裂，不允许双真相源继续存在
+- `DL-2C3-03`
+  - 决定：`AC-4` 与 `AC-5` 必须按 `2C2` 原任务卡精确回绑
+  - 原因：架构审已确认当前测试没有兑现固定断言
+- `DL-2C3-04`
+  - 决定：`AC-2` 清理逻辑必须改为无异常 cleanup
+  - 原因：验证审已抓到双次复跑中的非确定性 cleanup 崩溃
+
+State Snapshot:
+- 当前 `Phase 2C` 实现本体已完成拆分，但不能冻结。
+- 已知 blocker：
+  - 安全 blocker：`.dex/.sh` 可被输出后缀误识别
+  - smoke blocker：`signing_profile` 测试值与实现值分裂
+  - `AC-4` blocker：断言过宽
+  - `AC-5` blocker：未验证 `main.cpp` 路由
+  - Validation blocker：`AC-2` cleanup 非确定性
+- 当前不需要改动：
+  - `target_classifier.cpp`
+  - `mutator_app.cpp`
+  - `main.cpp`
+  - `derived_target_kind_contract_test.cpp`
+  - `target_classifier_test.cpp`
+
+Parallel Tracks:
+- Track A / Core repair
+  - Owner: `Engineer-Core`
+  - Output:
+    - 收紧 `artifact_detector` fail-closed
+    - 固化 `manifest_writer` 真相源
+  - Must not edit:
+    - `core/tests/**`
+  - Blocking:
+    - 无；可先行
+- Track B / Test repair
+  - Owner: `Engineer-Test`
+  - Output:
+    - `smoke` 与真相源对齐
+    - `AC-2` cleanup 稳定化
+    - `AC-4/AC-5` 断言精确化
+  - Must not edit:
+    - `core/post_link_mutator/**`
+  - Blocking:
+    - 需要依赖 `DL-2C3-02` 的真相源定义；如 `manifest_writer.cpp` 映射未变，可并行实施
+- Track C / PM integration
+  - Owner: `PM`
+  - Output:
+    - build / ctest / repeated ctest evidence
+  - Must not edit:
+    - 实现代码
+
+File Ownership:
+- Core repair track
+  - `core/post_link_mutator/src/artifact_detector.cpp`
+  - `core/post_link_mutator/src/manifest_writer.cpp`
+  - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（仅在需要接口变更时允许）
+- Test repair track
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+
+Dependencies:
+- `Track A` 先定义 `artifact_detector` 与 `signing_profile` 真相源。
+- `Track B` 依赖 `DL-2C3-02`，但若 `manifest_writer.cpp` 当前映射已符合合同，可直接按该映射写测试。
+- `Track C` 必须等 `Track A + Track B` 都完成后开始。
+
+Regression Perimeter:
+- Directly Changed Logic:
+  - `.dex/.sh` artifact detection fallback
+  - manifest `signing_profile` 读取与断言
+  - `AC-2` cleanup 行为
+  - `AC-4` hardened pipeline contract
+  - `AC-5` main route contract
+- Adjacent Paths:
+  - `post_link_mutator_smoke_test`
+  - `hardened_target_pipeline_test`
+  - `post_link_mutator_derived_target_kind_contract_test`
+  - `mutator_app` 的 `detect_base_artifact_kind()` 调用路径
+- Unchanged Guarantees:
+  - `main.cpp` 仍为薄入口
+  - `run_mutator_with_test_fault` 只用于测试
+  - `target_classifier` 语义不变
+  - exit code `2..11` 语义不变
+  - trailer `magic/version` 合同不变
+- Second-Order Risks:
+  - 若 `.dex/.sh` 检测收得过紧，可能误伤原本合法的 input-suffix 路径
+  - 若 `smoke` 与 `AC-4` 共用错误常量，可能出现“双错一致”的伪通过
+  - 若 cleanup 改成静默吞错，可能掩盖真实资源泄露
+
+PM Task Card / Core repair track:
+- 目标：只修 `artifact_detector` fail-closed 与 `manifest_writer` 真相源，不碰其他 core 文件。
+- 只允许改：
+  - `core/post_link_mutator/src/artifact_detector.cpp`
+  - `core/post_link_mutator/src/manifest_writer.cpp`
+  - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（仅在确有接口需要时）
+- 严格动作顺序：
+  1. 打开 `artifact_detector.cpp`。
+  2. 保留 `PE/ELF/Mach-O` 的输入魔数识别逻辑。
+  3. 删除对 `output_path` 的 `.dex/.sh` 后缀识别。
+  4. 对 `.dex/.sh` 仅允许 `input_path.extension()` 命中时返回对应 `ArtifactKind`。
+  5. 若输入既非已知魔数，也不是 `.dex/.sh` 输入后缀，必须返回 `ArtifactKind::kUnknown`。
+  6. 打开 `manifest_writer.cpp`。
+  7. 将 `signing_profile_for_target()` 精确收敛到本计划 `Architecture Contract Summary` 的 4 条映射；若当前实现已完全一致，不改函数行为。
+  8. 只跑：
+     - `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+     - `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core`
+  9. 交付时只回：
+     - changed files
+     - 两条命令结果
+     - 是否严格只改允许文件
+
+PM Task Card / Test repair track:
+- 目标：只修 `smoke + AC-2 + AC-4 + AC-5`，不碰 `core/post_link_mutator/**`。
+- 只允许改：
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+  - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+- 严格动作顺序：
+  1. 打开 `post_link_mutator_smoke_test.cpp`。
+  2. 将 `ExpectedManifest.signing_profile` 期望值精确对齐 `manifest_writer.cpp` 真相源：
+     - `desktop_native` -> `unsigned_dev_or_sign_after_mutation`
+     - `ios_appstore` -> `ios_codesign_after_mutation`
+     - `windows_driver` -> `windows_driver_sign_after_mutation`
+     - `linux_kernel_module/android_kernel_module` -> `kernel_module_sign_after_mutation`
+  3. 在 `smoke` 中新增两条负向安全用例：
+     - 随机二进制 input `.bin` + output `.sh` + target `bootstrap.sh` 必须失败
+     - 随机二进制 input `.bin` + output `.dex` + explicit `--target-kind android_dex` 必须失败
+  4. 打开 `post_link_mutator_exit_code_trailer_contract_test.cpp`。
+  5. 把所有 `std::filesystem::remove_all(temp_dir)` 的 cleanup 改为无异常路径：
+     - 使用 `std::error_code`
+     - 不允许 cleanup 因 `ENOENT` 直接抛异常终止测试
+  6. 打开 `post_link_mutator_hardened_pipeline_contract_test.cpp`。
+  7. 将 `target_kind_source` 断言收紧为只允许 `explicit_cli`。
+  8. 将 `signing_profile` 断言收紧为只允许 `unsigned_dev_or_sign_after_mutation`。
+  9. 保留 trailer `magic/version` 精确校验。
+  10. 打开 `core/tests/post_link_mutator/CMakeLists.txt`，仅对 `post_link_mutator_fault_isolation_contract_test` 增加 compile definition：
+      - `EIPPF_POST_LINK_MUTATOR_MAIN_CPP="${CMAKE_SOURCE_DIR}/post_link_mutator/src/main.cpp"`
+  11. 打开 `post_link_mutator_fault_isolation_contract_test.cpp`。
+  12. 读取 `EIPPF_POST_LINK_MUTATOR_MAIN_CPP` 指向的源文件，并新增两条强制断言：
+      - 必须包含 `run_mutator(argc, argv, std::cout, std::cerr)`
+      - 不得出现 `run_mutator_with_test_fault(`
+  13. 保留既有 `7/8/9` fault code 与 non-fault 断言。
+  14. 只跑：
+      - `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+      - `cmake --build /workspace/build_phase25_c -j --target post_link_mutator_smoke_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_target_classifier_test hardened_target_pipeline_test`
+  15. 交付时只回：
+      - changed files
+      - 两条命令结果
+      - 是否严格只改允许文件
+
+Quality Gates:
+- G1 / Configure
+  - `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+- G2 / Build
+  - `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core post_link_mutator_smoke_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_target_classifier_test hardened_target_pipeline_test`
+- G3 / Primary Test Regex
+  - `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+- G4 / Determinism Re-Run
+  - 重复一次 `G3`
+- G5 / AC-2 Stability
+  - `post_link_mutator_exit_code_trailer_contract_test` 单测重复运行 5 次，全部通过
+- G6 / Fail-Closed Negative
+  - `smoke` 中新增两条后缀误分类负例必须均失败
+
+Merge Order:
+- `M1`: Core repair track
+- `M2`: Test repair track
+- `M3`: PM integration build
+- `M4`: 双次 `ctest`
+- `M5`: 5x `AC-2` stability loop
+- `M6`: 三审复验
+
+Open Risks:
+- 若 `manifest_writer.cpp` 真相源后续再次被改动，`smoke` 与 `AC-4` 仍可能发生漂移，因此后续应考虑抽公共常量；但这不属于 `2C.3` 范围。
+- `run_mutator_with_test_fault` 仍是公开头接口；本计划只验证其未进入 `main.cpp` 生产入口，不在本轮做 API 隔离。
+

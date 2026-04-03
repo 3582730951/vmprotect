@@ -1,6 +1,13 @@
 add_library(eippf_runtime STATIC
   src/EippfRuntime.cpp
+  src/string_token_runtime.cpp
+  src/android_so_policy.cpp
   src/backends/backend_registry.cpp
+  src/backends/desktop_user_mode_backend.cpp
+  src/backends/kernel_safe_backend.cpp
+  src/backends/ios_safe_backend.cpp
+  src/backends/dex_loader_backend.cpp
+  src/backends/shell_launcher_backend.cpp
   src/backend_policy.cpp
   src/policy_engine.cpp
   src/secure_ir_engine.cpp
@@ -39,6 +46,7 @@ endif()
 eippf_apply_common_compile_options(eippf_runtime)
 
 add_library(eippf_vm_rt STATIC
+  src/backend_policy.cpp
   src/secure_ir_engine.cpp
   src/vm_runtime_bridge.cpp
 )

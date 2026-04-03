@@ -1,0 +1,135 @@
+# 2026-04-02 Phase 5c `perf_smoke` 验证命令闭环最小 delta 计划
+
+Execution Mode:
+- constrained-single-agent
+
+Assurance Level:
+- standard
+
+Task Charter:
+- Objective: 仅修补 Phase 5b 被 Validation Reviewer `BLOCK` 的单一缺口，把 `perf_smoke` 从错误的 `ctest -R` 测试名筛选改为真实可执行的 CMake build target 运行命令，形成验证命令闭环。
+- Scope: 只修正文档中的验证命令映射、冻结条件措辞与 reviewer 验收口径；不触及任何代码、测试逻辑、性能阈值或其他 Phase 5b scope。
+- Non-Goals: 不新增或删改任何 Phase 5b Task Card；不调整 `launcher manifest full-contract validation`、`runtime unsafe-shell recheck/fail-closed`、`stderr leak closure`、`shell strict audit true execution` 的技术范围；不扩到 Phase 6。
+- Acceptance Criteria: Phase 5c 文本中 `shell_launcher_perf_smoke_test` 继续通过 CTest 精确执行，`perf_smoke` 改为 `cmake --build ... --target perf_smoke` 执行；Reviewer 可按命令原样复现并据此给出 `PASS/BLOCK`。
+- Constraints: 只改验证命令闭环；沿用 Phase 5b 的其余 Freeze 条件、性能预算 `<10%` 与安全边界。
+- Forbidden Shortcuts: 不允许继续把 `perf_smoke` 写进 `ctest -R`；不允许以“`shell_launcher_perf_smoke_test` 已绿”替代 `perf_smoke` 聚合目标执行；不允许顺手修改其他 scope。
+- Sources Of Truth: `/workspace/plan/2026-04-02-phase-5b-security-closure-plan.txt`
+- Sources Of Truth: Validation blocker 摘要：`perf_smoke` 应使用构建目标运行，不是测试名筛选。
+- Sources Of Truth: `/workspace/core/tests/CMakeLists.txt`
+
+Delta Scope:
+- In Scope: 仅修补 Phase 5b 的 `Validation Commands` 与 `Freeze 条件` 中 `perf_smoke` 的执行入口。
+- In Scope: 明确 `shell_launcher_perf_smoke_test` 与 `perf_smoke` 的命令职责分离，前者是 CTest 测试，后者是 CMake custom target。
+- Out Of Scope: 所有 Phase 5b 既有安全闭环范围、测试内容、代码文件、实现顺序、性能预算定义。
+- Delta Rule: Phase 5b 其余正文全部继承；Phase 5c 只覆盖命令闭环差异，不重写技术方案。
+
+Agent Roster:
+- PM: `main_agent` -> `Agent 1 (Planner)`
+- Architect: `Agent 1 (Planner)`
+- Engineer-Planner: `Agent 2 (Engineer)`
+- Tester-Planner: `Agent 2 (Engineer)`
+- Reviewer: `Agent 3 (Security Reviewer)`
+- Security Reviewer: `Agent 3 (Security Reviewer)`
+
+Delegation Map:
+- 本计划为 `constrained-single-agent`，不声明真实多 agent 委派。
+- `Agent 1 (Planner)` 负责冻结 Phase 5c delta 范围并给出唯一命令修补方案。
+- `Agent 2 (Engineer)` 在执行时只按修正后的命令链产出验证日志，不得扩改其他任务。
+- `Agent 3 (Security Reviewer)` 仅按命令是否真实可执行闭环给出 `PASS/BLOCK`。
+
+Architecture Contract Summary:
+- Phase 5b 的技术 contract 全部保持不变；Phase 5c 不新增任何实现 contract。
+- `shell_launcher_perf_smoke_test` 维持 `add_test(...)` 身份，属于 CTest 可筛选测试。
+- `perf_smoke` 维持 `add_custom_target(...)` 身份，属于 `cmake --build --target` 运行入口，不属于 CTest 测试名空间。
+- Validation contract 必须把“测试名执行”和“构建目标执行”分开表达，避免 reviewer 用错误工具调用错误入口。
+
+Parallel Tracks:
+- Track A / `Agent 1 (Planner)` / 输出 Phase 5c 最小 delta 文本，只修正命令闭环。
+- Track B / `Agent 2 (Engineer)` / 依赖 Track A / 按修正后的命令序列执行并收集日志。
+- Track C / `Agent 3 (Security Reviewer)` / 依赖 Track B / 仅验证命令入口与执行结果是否闭环。
+
+File Ownership:
+- `/workspace/plan/2026-04-02-phase-5c-validation-command-closure-plan.txt` -> `Agent 1 (Planner)`
+- `/workspace/plan/2026-04-02-phase-5b-security-closure-plan.txt` -> 只读继承，不在 Phase 5c 内重写
+- `/workspace/core/tests/CMakeLists.txt` -> 只读佐证，不在 Phase 5c 内改动
+
+Dependencies:
+- Phase 5b 的全部技术 Freeze 条件已定义且保持不变。
+- `shell_launcher_perf_smoke_test` 已在 CMake 中注册为 `add_test(NAME shell_launcher_perf_smoke_test ...)`。
+- `perf_smoke` 已在 CMake 中注册为 `add_custom_target(perf_smoke ...)`。
+- Phase 5c 只需把 reviewer 执行入口与上述 CMake 真相对齐。
+
+Regression Perimeter:
+- Changed Path: 仅限 Phase 5 计划文档中的 `Validation Commands` 与 `Freeze 条件`。
+- Adjacent Paths: `shell_launcher_perf_smoke_test` 的 CTest 调用方式；构建目录 `build_phase5c` 的一致性；reviewer 对性能门的执行口径。
+- Direct Risk: 若继续使用 `ctest -R '...|perf_smoke'`，`perf_smoke` 不会作为 custom target 被真实执行，验证证据无效。
+- Collateral Risk: 若只跑 `perf_smoke` 而不区分 `shell_launcher_perf_smoke_test` 的 CTest 身份，容易把测试名 gate 与聚合 target gate 混为一谈。
+
+Unchanged Guarantees:
+- Phase 5b 的四个安全闭环 scope 不增不减。
+- `bundle v3`、`shell_ephemeral -> shell_launcher -> pipe_stdin_exec`、provider allowlist、fail-closed、no-persistent-plaintext 保持不变。
+- 性能预算仍为 `<10%`，Phase 5c 只修正验证命令，不改性能定义。
+- 不新增文件改动范围，不引入代码、测试或 CMake 逻辑修改。
+
+Second-Order Risks:
+- 如果命令文本只把 `perf_smoke` 从正则中删掉，但没有补上 `cmake --build ... --target perf_smoke`，闭环仍然不成立。
+- 如果 `shell_launcher_perf_smoke_test` 与 `perf_smoke` 共用一个含糊命令，reviewer 无法判断失败来自测试入口还是 custom target 入口。
+- 如果 configure、build、ctest、target run 不使用同一 build 目录，日志链会失去可复现性。
+
+Model Routing:
+- PM -> current Codex runtime -> constrained-single-agent -> 负责 delta 冻结与验收门定义
+- Engineer-Planner -> current Codex runtime -> constrained-single-agent -> 负责执行命令链落地口径
+- Security Reviewer -> current Codex runtime -> constrained-single-agent checklist -> 负责命令闭环 `PASS/BLOCK`
+
+Context Packages:
+- `Agent 1 (Planner)` 可依赖：Phase 5b 计划正文、validation blocker 摘要、`/workspace/core/tests/CMakeLists.txt`
+- `Agent 1 (Planner)` 不可依赖：任何新增安全需求、任何代码修补假设、Phase 6 扩展
+- `Agent 2 (Engineer)` 可依赖：Phase 5c 明确的 configure/build/ctest/build-target 命令链
+- `Agent 2 (Engineer)` 不可依赖：手动替代 `perf_smoke`、口头说明、未执行日志
+- `Agent 3 (Security Reviewer)` 可依赖：真实命令返回码、CTest 输出、`cmake --build --target perf_smoke` 输出
+- `Agent 3 (Security Reviewer)` 不可依赖：错误的 `ctest -R '...|perf_smoke'` 结果、未运行 target 的口头承诺
+
+Validation Commands:
+- `cmake -S /workspace/core -B /workspace/build_phase5c -G Ninja`
+- `cmake --build /workspace/build_phase5c -j`
+- `ctest --test-dir /workspace/build_phase5c --output-on-failure -R 'script_guard_smoke_test|script_launcher_success_test|script_launcher_failure_test|script_launcher_security_edge_test|artifact_audit_strict_test'`
+- `ctest --test-dir /workspace/build_phase5c --output-on-failure -R '^shell_launcher_perf_smoke_test$'`
+- `cmake --build /workspace/build_phase5c --target perf_smoke`
+
+Quality Gates:
+- Scope Gate: Phase 5c 只能修补 `perf_smoke` 验证命令闭环，不得借机修改其他 Phase 5b 条款。
+- Command Gate: 计划正文必须同时保留 `shell_launcher_perf_smoke_test` 的 CTest 入口与 `perf_smoke` 的 build target 入口。
+- Evidence Gate: reviewer 只能基于上述五条命令的真实执行结果作出结论。
+- Independence Gate: `Agent 3 (Security Reviewer)` 不接受“命令语义等价”或“人工解释替代执行”。
+
+Freeze 条件:
+- `Validation Commands` 中不得再出现 `ctest --test-dir ... -R '...|perf_smoke'` 这类把 `perf_smoke` 当测试名筛选的写法。
+- `shell_launcher_perf_smoke_test` 必须只以 CTest 精确测试名执行，命令形态固定为 `ctest --test-dir /workspace/build_phase5c --output-on-failure -R '^shell_launcher_perf_smoke_test$'`。
+- `perf_smoke` 必须只以 CMake build target 执行，命令形态固定为 `cmake --build /workspace/build_phase5c --target perf_smoke`。
+- configure、full build、focused ctest、perf test、perf target run 必须共用同一 build 目录 `/workspace/build_phase5c`。
+- 除 `Validation Commands` 与与之直接对应的 reviewer 验收口径外，Phase 5b 其余 Freeze 条件全部原样继承。
+- 任一命令入口写错、缺失、混用，或 reviewer 不能按命令原样复现，Phase 5c 结论直接 `BLOCK`。
+
+Assurance Scorecard:
+- architecture completeness: 5/5
+- evidence coverage: 5/5
+- blast radius coverage: 5/5
+- PM boundary integrity: 5/5
+- review independence: 5/5
+- context integrity: 5/5
+- delegation integrity: 5/5
+- gate result: PASS
+
+Open Risks:
+- risk: 执行者仍沿用 Phase 5b 老命令把 `perf_smoke` 放进 CTest 正则
+- owner: `Agent 2 (Engineer)`
+- mitigation: 以 Phase 5c `Validation Commands` 作为唯一有效执行清单，旧命令全部作废
+- risk: reviewer 只看 `shell_launcher_perf_smoke_test` 通过就误判 `perf_smoke` 已闭环
+- owner: `Agent 3 (Security Reviewer)`
+- mitigation: 把 `ctest` 与 `cmake --build --target perf_smoke` 视为两个独立必跑 gate
+
+State Snapshot:
+- current truth: Phase 5b 当前 blocker 仅剩一个验证命令问题，即把 `perf_smoke` 错写进了 `ctest -R`。
+- accepted decisions: Phase 5c 只修补命令闭环；Phase 5b 其他 scope、freeze 与性能预算全部继承不变。
+- blockers: 在 `cmake --build /workspace/build_phase5c --target perf_smoke` 被明确写入并执行前，`perf_smoke` 冻结门不能视为已验证。
+- next actions: 按 `Validation Commands` 原样执行；由 `Agent 3 (Security Reviewer)` 仅依据命令闭环与返回结果给出最终 `PASS/BLOCK`。

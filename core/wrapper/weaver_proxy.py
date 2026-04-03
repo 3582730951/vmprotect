@@ -897,6 +897,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--vm-runtime-lib", default=None, help="Absolute path to VM runtime static library.")
     parser.add_argument("--compile-commands", default=None, help="Path to compile_commands.json.")
     parser.add_argument("--keep-temps", action="store_true", help="Keep temporary bitcode files.")
+    parser.add_argument(
+        "--android-so-baseline",
+        action="store_true",
+        help="Enable Android .so baseline policy marker passthrough to IR weaver.",
+    )
     parser.add_argument("--weaver-arg", action="append", default=[], help="Extra arg forwarded to IR weaver.")
     parser.add_argument("compiler_and_args", nargs=argparse.REMAINDER)
     parsed = parser.parse_args(list(argv[1:]))
@@ -991,6 +996,8 @@ def main(argv: Sequence[str]) -> int:
             codegen_args = _collect_codegen_args(effective_args, source_path, is_msvc=is_msvc)
 
         weaver_args = list(parsed.weaver_arg)
+        if parsed.android_so_baseline and "--android-so-baseline" not in weaver_args:
+            weaver_args.append("--android-so-baseline")
         if source.ext in _RUST_SOURCES or is_rust:
             if _env_enabled("EIPPF_RUST_FULL_COVERAGE", True):
                 if "--protect-all-functions" not in weaver_args:

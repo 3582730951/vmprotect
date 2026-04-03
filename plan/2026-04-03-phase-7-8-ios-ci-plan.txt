@@ -1,0 +1,188 @@
+# 2026-04-03 Phase 7/8 iOS + CI Delta Plan
+
+Execution Mode:
+- `constrained-single-agent`
+- 说明：
+  - 本轮已尝试对 `Architect / Security / Validation` 发起真实子 agent 只读盘点。
+  - 既有 4 个子线程未返回有效文本结果，新增 2 个 explorer 也未在超时窗口内返回结果。
+  - 因此本轮按 `PM 记录 Role Transfer` 进入单线程冻结计划与实施，后续仍以独立测试和执行记录作为复核证据。
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 在当前仓库已经完成 `Phase 6` 且全量 `84/84` 测试通过的基础上，补齐终局目标剩余的 `Phase 7 iOS App Store lane` 与 `Phase 8 CI/evidence` 最小闭环。
+- 这轮只做仓库内可验证闭环，不伪装成真实 Apple 签名基础设施或云端 CI 已实跑。
+
+Task Charter:
+- Objective:
+  - 补齐 `ios_safe` lane 的 strict gate、lane tests、perf gate、CI workflow 与 evidence artifact 输出。
+- Scope:
+  - `core/tools/artifact_audit.py`
+  - `core/tests/lane_ios_safe/*`
+  - `core/tests/perf/*`
+  - `core/tests/CMakeLists.txt`
+  - `core/tests/tools/*` 如需增量断言
+  - `.github/workflows/*`
+- Non-Goals:
+  - 不实现真实 Apple codesign 身份申请与 notarization。
+  - 不实现深度 Mach-O binary rewrite。
+  - 不伪装 App Store 提交流程已在线验证。
+- Constraints:
+  - iOS lane 必须 `no-JIT / no-MAP_JIT / no-RWX / no-private-API / no-self-modifying-code`
+  - CI 必须至少覆盖 `configure/build/ctest/perf_smoke`
+  - 所有新增 public behavior 必须具备 `success/failure/security-edge`
+- Acceptance Criteria:
+  - `artifact_audit --strict` 对 `ios_appstore + macho` 输出明确 gate：
+    - `ios_gate_failed`
+    - `private_api_detected`
+    - `macho_code_signature_missing`
+    - `rwx_segment_detected`
+  - 存在 `lane_ios_safe` 成功/失败/安全边界测试
+  - 存在 `ios_safe_perf_smoke_test`
+  - `ctest --test-dir /workspace/build_phase6_probe --output-on-failure` 继续全绿
+  - `cmake --build /workspace/build_phase6_probe --target perf_smoke` 继续通过
+  - `.github/workflows` 存在最小矩阵和 evidence artifact 上传
+- Forbidden Shortcuts:
+  - 禁止仅靠已有 `artifact_audit_strict_test` 零散断言宣称 iOS lane 完成
+  - 禁止把 `optional_verifier` 用于 `ios_appstore`
+  - 禁止把 `writable_executable_segment` 只留在通用 violation 而不提升为 iOS gate code
+  - 禁止创建空 workflow 或只 echo 的伪 CI
+
+Agent Roster:
+- Agent 1 / PM / 当前主线程
+  - 负责：冻结计划、文件边界、实施排序、验收、执行记录
+- Agent 2 / Engineer
+  - 计划职责：按 PM task card 修改指定文件
+  - 当前状态：子 agent 平台未返回有效文本，PM 触发临时 `Role Transfer`
+- Agent 3 / Security Reviewer
+  - 计划职责：审 iOS gate 与 CI 红线
+  - 当前状态：子 agent 未返回有效文本，由 strict tests 充当硬证据
+- Agent 4 / Validation Reviewer
+  - 计划职责：审测试矩阵与 evidence
+  - 当前状态：子 agent 未返回有效文本，由全量 `ctest` / `perf_smoke` 充当硬证据
+
+Role Transfer:
+- 原因：
+  - Phase 7/8 仍未完成，但真实子 agent 在当前运行环境中未返回可用计划文本。
+- 接管范围：
+  - 仅限 `Phase 7/8` 代码与测试闭环。
+- 独立复核方式：
+  - `lane_ios_safe` 测试
+  - `artifact_audit_strict_test`
+  - `perf_smoke`
+  - 全量 `ctest`
+
+Canonical Artifacts:
+- `plan/2026-04-03-phase-7-8-ios-ci-plan.txt`
+- `plan/2026-04-02-phase-6-execution.txt`
+- `plan/2026-04-02-terminal-goal-superseding-plan.txt`
+
+Current State Snapshot:
+- 已存在 iOS 相关基础：
+  - `core/runtime/src/backends/ios_safe_backend.cpp`
+  - `core/runtime/include/runtime/backends/ios_safe_backend.hpp`
+  - `core/post_link_mutator` 已识别 Mach-O，并为 `ios_appstore` 写出 `ios_safe_aot / ios_safe / ios_codesign_after_mutation`
+  - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp` 已覆盖 Mach-O manifest 输出
+  - `core/tools/artifact_audit.py` 已支持 Mach-O parse / imports / symbols / signature surface
+  - `core/tests/tools/artifact_audit_strict_test.cpp` 已覆盖 signed Mach-O verifier success
+- 明确缺口：
+  - 没有 `core/tests/lane_ios_safe/`
+  - 没有 iOS 专用 strict gate code
+  - 没有 iOS perf smoke
+  - 没有 `.github/workflows`
+
+Architecture Contract:
+- Track A / iOS Strict Gate
+  - 文件：
+    - `core/tools/artifact_audit.py`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+  - 规则：
+    - 当 `resolved_target_kind == "ios_appstore"` 或 `artifact_kind == "macho"` 时，额外执行 iOS gate
+    - 以下任一成立必须 strict fail:
+      - `runtime_lane != "ios_safe"`
+      - `backend_kind != "ios_safe_aot"`
+      - `mutation_profile != "ios_macho"`
+      - `signature_policy != "required_verifier"`
+      - `allow_jit != false`
+      - `allow_runtime_executable_pages != false`
+      - `allow_persistent_plaintext != false`
+      - `require_fail_closed != true`
+    - Mach-O 缺少 `LC_CODE_SIGNATURE` -> `macho_code_signature_missing`
+    - Mach-O 出现 `writable_executable_segment` -> `rwx_segment_detected`
+    - Mach-O imports 命中 `/System/Library/PrivateFrameworks/` 或 `PrivateFrameworks` -> `private_api_detected`
+- Track B / Lane Tests
+  - 文件：
+    - `core/tests/lane_ios_safe/CMakeLists.txt`
+    - `core/tests/lane_ios_safe/ios_safe_success_test.cpp`
+    - `core/tests/lane_ios_safe/ios_safe_failure_test.cpp`
+    - `core/tests/lane_ios_safe/ios_safe_security_edge_test.cpp`
+    - `core/tests/CMakeLists.txt`
+  - 规则：
+    - success：signed Mach-O + verifier + correct manifest -> pass
+    - failure：signed Mach-O + no verifier -> fail with signature gate
+    - security-edge：bad manifest / private framework import / missing code signature -> fail with expected gate code
+- Track C / Perf
+  - 文件：
+    - `core/tests/perf/ios_safe_perf_smoke_test.cpp`
+    - `core/tests/perf/CMakeLists.txt`
+    - `core/tests/CMakeLists.txt`
+  - 规则：
+    - 仿照 `windows_driver_perf_smoke_test`
+    - baseline=`desktop_native`
+    - compared=`ios_appstore`
+    - 总体预算 `<=10%`
+- Track D / CI + Evidence
+  - 文件：
+    - `.github/workflows/core-matrix.yml`
+  - 规则：
+    - `ubuntu-latest`：`configure/build/ctest/perf_smoke`
+    - `macos-latest`：`configure/build` + `ctest -R 'ios_safe|artifact_audit_strict_test|post_link_mutator_smoke_test'`
+    - 上传：
+      - `CTest` log
+      - `Testing/Temporary/LastTest.log`
+      - `build cache key metadata`
+      - `artifact_audit` related logs
+
+Parallel Tracks:
+- Track A / iOS strict gate / Owner: PM takeover
+- Track B / lane_ios_safe tests / Owner: PM takeover
+- Track C / ios perf / Owner: PM takeover
+- Track D / CI workflow / Owner: PM takeover
+
+File Ownership:
+- `core/tools/artifact_audit.py` -> Track A
+- `core/tests/tools/artifact_audit_strict_test.cpp` -> Track A
+- `core/tests/lane_ios_safe/*` -> Track B
+- `core/tests/perf/ios_safe_perf_smoke_test.cpp` -> Track C
+- `core/tests/perf/CMakeLists.txt` -> Track C
+- `core/tests/CMakeLists.txt` -> Track B/C
+- `.github/workflows/core-matrix.yml` -> Track D
+
+Dependencies:
+- 先补 iOS strict gate，再写 lane tests
+- lane tests 通过后再接入 perf
+- CI workflow 最后添加，不阻塞本地 build/test
+
+Quality Gates:
+- G1:
+  - `cmake -S /workspace/core -B /workspace/build_phase6_probe -G Ninja`
+- G2:
+  - `cmake --build /workspace/build_phase6_probe -j 4`
+- G3:
+  - `ctest --test-dir /workspace/build_phase6_probe --output-on-failure -R 'ios_safe|artifact_audit_strict_test'`
+- G4:
+  - `ctest --test-dir /workspace/build_phase6_probe --output-on-failure`
+- G5:
+  - `cmake --build /workspace/build_phase6_probe --target perf_smoke`
+
+Merge Order:
+- M1: `artifact_audit.py` + `artifact_audit_strict_test.cpp`
+- M2: `lane_ios_safe/*` + `tests/CMakeLists.txt`
+- M3: `ios_safe_perf_smoke_test.cpp` + perf wiring
+- M4: `.github/workflows/core-matrix.yml`
+
+Open Risks:
+- iOS private API 检测当前只能以 Mach-O import surface 为准，不等于完整 App Store 静态审计
+- 本地 Linux 环境无法真实执行 macOS codesign；仓库内仅验证 Mach-O 结构和外部 verifier 协议
+- GitHub Actions 只能静态落盘，无法在当前回合内证明云端 runner 已跑通

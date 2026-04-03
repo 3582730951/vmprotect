@@ -1,0 +1,927 @@
+# 2026-04-02 Phase 6 Android `.dex` loader/VM 实施计划
+
+## Execution Mode
+- `real-multi-agent`
+- 说明：本阶段按真实多 agent 并行执行，`main_agent` 仅担任 PM；架构、工程、审核通过真实子 agent 完成，不做单线程角色扮演。
+
+## Assurance Level
+- `heavy`
+
+## Task Charter
+- Objective:
+  - 将当前 `/workspace/core/dex_toolchain/` 从“只生成加密 bundle 的 skeleton”推进到 `encrypted dex container v3 -> loader/VM consumer -> tokenized method/native bridge -> strict audit -> no-persistent-plaintext evidence -> perf` 的完整闭环。
+- Scope:
+  - `/workspace/core/dex_toolchain/`
+  - `/workspace/core/tests/dex_toolchain/`
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/plan/`
+- Non-Goals:
+  - 不引入新的 Gradle/Java/Android Studio 构建系统。
+  - 不重构 `core/runtime/*`、`core/script_guard/*`、`core/post_link_mutator/*` 成新的公共框架。
+  - 不实现通用 ART/Dalvik 替代品；本 Phase 的 “VM” 定义为 bundle consumer + tokenized bridge dispatcher，不是通用 dex 解释器。
+  - 不把 `.dex` lane 伪装成 `.so` lane 的变体。
+- Acceptance Criteria:
+  - `dex_toolchain` 不再只是 bundle skeleton，必须存在 loader 可消费格式。
+  - manifest 必须具备 release lane 所需固定字段，至少包含 `target_kind`、`backend_kind`、`runtime_lane`、`mutation_profile`、`loader_format_version`、`external_key_required=true`、`plaintext_output=false`。
+  - release lane 必须显式对抗并在计划中冻结以下威胁：
+    - `JADX`
+    - `apktool`
+    - `baksmali`
+    - string pool grep
+    - `Frida`
+    - `Xposed`
+    - `JDWP`
+    - `ClassLoader dump`
+    - `dex dump`
+  - external key provider 不允许退化成静态磁盘 key file。
+  - `artifact_audit --strict` 必须新增 dex lane 独立 gate。
+  - 至少具备：
+    - 1 条 success test
+    - 1 条 failure test
+    - 1 条 security-edge test
+    - 1 条 perf smoke test
+  - `configure/build/ctest/perf_smoke` 通过。
+  - dex lane 额外开销在 host 侧验证口径下 `<10%`，否则不得宣称 Phase 6 完成。
+- Constraints:
+  - 兼容 Phase 5 已冻结状态，`core/script_guard/*` 与 shell lane 语义不得回退。
+  - 兼容当前 runtime contract：`android_dex -> dex_loader_vm -> no-JIT -> no runtime executable pages -> no persistent plaintext`。
+  - 不允许把设计决策留给工程 agent。
+  - 所有 loader/provider 失败路径必须 `fail-closed`。
+- Forbidden Shortcuts:
+  - 禁止继续使用“读取普通文本 key file”的 provider 路径。
+  - 禁止把明文 dex、明文类名、明文方法名写入 bundle header、manifest、stdout、stderr、temp file。
+  - 禁止用 raw `.dex` 输出代替 loader。
+  - 禁止通过关闭 anti-analysis gate 来换取测试通过或性能达标。
+- Sources Of Truth:
+  - `/workspace/AGENTS.md`
+  - `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-5-shell-launcher-plan.txt`
+  - `/workspace/core/dex_toolchain/src/main.cpp`
+  - `/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp`
+  - `/workspace/core/runtime/include/runtime/backend_policy.hpp`
+  - `/workspace/core/runtime/include/runtime/backends/backend_registry.hpp`
+  - `/workspace/core/tools/artifact_audit.py`
+
+## Main PM
+- `main_agent`
+
+## Agent Roster
+- Agent 1 / Planner / PM / `main_agent`
+  - 负责：冻结范围、发布 task cards、验收 gates、merge order、做最终 freeze 判定。
+  - 计划子轨：Product Security Architect / `gpt-5.4`
+    - 只负责：Threat Model、Architecture Contract、delta replan。
+- Agent 2 / Engineer / `gpt-5.3-codex`
+  - 负责：唯一 repo-level 工程 owner。
+  - 工程子轨：
+    - Engineer-A / Track A / Bundle + Provider Contract Closure
+    - Engineer-B / Track B / Loader + Bridge + Guardrail Closure
+    - Engineer-C / Track C / Audit + Tests + Perf Closure
+- Agent 3 / Security Reviewer / `gpt-5.4`
+  - 负责：唯一 repo-level 审核 owner。
+  - 审核子轨：
+    - Architecture Review / `gpt-5.4`
+    - Security Review / `gpt-5.4`
+    - Validation Review / `gpt-5.2`
+  - 输出规则：虽然实际复审可并行由多个 reviewer 子轨完成，但仓库级 traceability 统一映射回 `Agent 3`。
+
+## Delegation Map
+- 当前回合：
+  - `main_agent` 以 PM 身份冻结范围并分发真实子 agent。
+- 实施时固定采用真实多 agent 并行：
+  - Agent 1 先冻结文件边界与 merge order，并通过架构子轨产出最小 delta。
+  - Agent 2 通过 3 个工程子轨并行实现：
+    - Engineer-A 按 Card 1 实现 Track A。
+    - Engineer-B 按 Card 2 实现 Track B。
+    - Engineer-C 按 Card 3-5 实现 Track C。
+  - Agent 3 通过 3 个审核子轨在实现与验证后分别做 Architecture / Security / Validation 独立复审。
+- 禁止：
+  - PM 直接变成隐式实现者。
+  - Reviewer 复用 Engineer 的结论替代独立检查。
+  - 多个 Engineer 并发修改同一文件；出现冲突时必须先由 PM 重新分配所有权。
+
+## Threat Model
+### Assets
+- 加密 dex container。
+- external key provider response。
+- loader manifest。
+- tokenized bridge table。
+- 解密后的短生命周期 dex 内存缓冲区。
+- strict audit 报告与 no-persistent-plaintext evidence。
+
+### Trust Boundaries
+- `bundler -> bundle/manifest` 文件边界。
+- `loader -> external key provider` 端点边界。
+- `loader -> Android/runtime host` 调用边界。
+- `loader -> anti-analysis signals` 判定边界。
+- `artifact_audit -> manifest/bundle bytes` 审计边界。
+
+### Attacker Capabilities
+- 静态分析者可离线读取产物并使用 `JADX`、`apktool`、`baksmali`、`strings`、`grep`、自定义 string-pool 扫描器。
+- 动态分析者可尝试通过 `Frida`、`Xposed`、`JDWP`、ClassLoader 观察、内存 dump、fake provider、stdout/stderr 截获获取 dex 或 key。
+- 攻击者不能修改本仓库冻结的 runtime contracts，但可以喂入畸形 bundle、错误 manifest、错误 key、错误 provider 端点。
+
+### Abuse Paths
+- T1 / `JADX`、`apktool`、`baksmali`、string pool grep 直接恢复业务类名与方法名
+  - Likelihood: 高
+  - Impact: 高
+  - Mitigation:
+    - release lane 只交付 `dex_bundle`，不交付 raw `.dex`。
+    - bundle 内完整 dex 必须加密；bundle header 和 manifest 不允许出现类名、方法名、签名明文。
+    - bridge metadata 只允许密文存储；如需 cleartext mirror，只能是 opaque token。
+- T2 / `Frida`、`Xposed`、`JDWP` 在 loader 解密窗口截获 dex 或 hook bridge
+  - Likelihood: 高
+  - Impact: 高
+  - Mitigation:
+    - loader 必须有 `anti_debug_policy` 与 `anti_hook_policy` 固定字段。
+    - guardrail 失败直接退出，不能继续解密。
+    - 解密缓冲区短生命周期、立即清零、不得复制到 argv/env/stdout/stderr/temp file。
+    - bridge 只暴露 allowlist token，不暴露原始 class/method name。
+- T3 / `ClassLoader dump`、`dex dump` 通过可见 loader handle 或 sidecar 文件还原 dex
+  - Likelihood: 高
+  - Impact: 高
+  - Mitigation:
+    - manifest 固定 `class_loader_policy=private_handle_only`、`class_loader_exported=false`。
+    - loader 不提供“导出 dex”“打印 class list”“列出 method list”类 CLI。
+    - loader 不得创建 `.dex/.jar/.tmp/.plain` sidecar。
+    - 成功路径只输出 token、计数和 gate 状态。
+- T4 / external key provider 退化成静态磁盘 key file
+  - Likelihood: 高
+  - Impact: 高
+  - Mitigation:
+    - provider 端点只允许：
+      - `executable_adapter`
+      - `fifo`
+      - `unix_socket`
+    - 普通文件 provider、解析后落到普通文件的 symlink provider、工作目录静态 key file、temp dir 静态 key file 一律 `fail-closed`。
+    - bundle/manifest/report 中不得回显 key material。
+- T5 / manifest、report、测试日志泄露明文类名、方法名或 dex anchor
+  - Likelihood: 中
+  - Impact: 高
+  - Mitigation:
+    - manifest/report 字段固定白名单。
+    - tests 必须断言 stdout/stderr/report 不出现 anchor 与类名。
+    - `artifact_audit` 新增 dex lane plaintext leak gate。
+
+## Architecture Contract
+### 1. Lane 与兼容性冻结
+- release lane 固定：
+  - `target_kind = "android_dex"`
+  - `backend_kind = "dex_loader_vm"`
+  - `runtime_lane = "dex_loader_vm"`
+  - `mutation_profile = "dex_bundle"`
+  - `signature_policy = "required_verifier"`
+  - `artifact_kind = "dex_bundle"`
+  - `allow_jit = false`
+  - `allow_runtime_executable_pages = false`
+  - `allow_persistent_plaintext = false`
+  - `require_fail_closed = true`
+  - `plaintext_ttl_ms = 0`
+- 兼容规则：
+  - `core/runtime/include/runtime/backend_policy.hpp` 与 `core/runtime/include/runtime/backends/backend_registry.hpp` 在 Phase 6 中默认为只读兼容锚点。
+  - runtime 现有 `kDexLoaderVm`、`RuntimeLaneKind::kDexLoaderVm`、`android_dex` 语义不得改名、不得降级。
+  - 当前 skeleton 仍输出 `android_dex_research`；Phase 6 必须迁移为 `android_dex`。
+  - 仅允许 loader/audit 在迁移窗口读取 legacy `android_dex_research` 旧 fixture；release manifest、success test、freeze 后产物一律使用 `android_dex`。
+
+### 2. 交付物形态
+- 产物 1：
+  - `eippf_dex_toolchain`
+  - 职责：读取 raw `.dex`，校验输入、读取 external key provider、输出 `dex bundle v3 + manifest`。
+- 产物 2：
+  - `eippf_dex_loader`
+  - 职责：读取 `bundle + manifest + external key provider`，执行 anti-analysis preflight，内存解密，构建 tokenized bridge table，完成 loader/VM consumption。
+- 产物 3：
+  - `artifact_audit --strict`
+  - 职责：验证 dex lane manifest contract、bundle invariant、plaintext leak、provider gate、loader gate。
+
+### 3. `dex bundle v3` 固定格式
+- magic:
+  - `EDXB`
+- format_version:
+  - `3`
+- key_material_marker:
+  - 固定 `0`
+- flags:
+  - bit0 `bridge_table_present`
+  - bit1 `guardrail_required`
+- dex_version_ascii:
+  - 固定 3 位 ASCII 版本号
+- key_id_len
+- bridge_record_count
+- payload_len
+- key_id bytes
+- encrypted bridge table bytes
+- encrypted dex payload bytes
+- 禁止：
+  - 在 header 区写入 class name、method name、signature、plaintext dex hash、raw key material。
+
+### 3A. Bridge Record Contract 固定格式
+- `bridge_record_count` 表示密文 bridge table 中的记录数；值必须与解密后记录条数精确一致。
+- 单条 bridge record 解密后固定字段顺序为：
+  - `token_u64_le`
+  - `dispatch_kind_u8`
+  - `method_ordinal_u32_le`
+  - `flags_u16_le`
+  - `opaque_metadata_len_u16_le`
+  - `opaque_metadata_bytes`
+- 固定值与约束：
+  - `dispatch_kind_u8` 当前 phase 固定为 `1`，表示 `native_bridge_dispatch`
+  - `flags_u16_le` 当前 phase 固定为 `0`
+  - `opaque_metadata_bytes` 允许承载最小 bridge dispatch 所需 opaque 数据，但禁止包含 class name、method name、descriptor 明文
+  - record 不允许可变前缀、字符串 key、JSON、明文 method surface
+- bundler 侧若解密后任一 record 字段越界、长度不合法、或记录数与 `bridge_record_count` 不匹配，必须 fail-closed 且不得产出 bundle/manifest。
+
+### 3B. Bridge Token Contract 固定规则
+- CLI `--bridge-token=<hex_u64>` 固定为 16 个小写十六进制字符，不带 `0x`。
+- bundler 生成 token 的固定输入为：
+  - `key_id`
+  - `method_ordinal`
+  - `record_index`
+  - `bridge_salt = "eippf.dex.bridge.v1"`
+- 生成规则固定为：
+  - 对以上 4 段按 `key_id + "\x1f" + decimal(method_ordinal) + "\x1f" + decimal(record_index) + "\x1f" + bridge_salt` 拼接
+  - 计算 `fnv1a64`
+  - 结果按 64 位无符号整数存储并以 16 位小写十六进制对外表示
+- 唯一性规则：
+  - 单个 bundle 内 token 必须唯一
+  - 若生成冲突，bundler 必须 fail-closed，拒绝产物，不允许自动重试或静默覆盖
+- loader 对 `--bridge-token` 的固定语义：
+  - 仅检查 token 是否存在于 allowlist bridge table
+  - 不打印映射名称
+  - 找不到时直接非零退出
+
+### 3C. Loader Report Contract 固定字段
+- `--report=<path>` 可选；若提供，report 固定只允许写出以下白名单字段：
+  - `schema_version`
+  - `kind`
+  - `target_kind`
+  - `backend_kind`
+  - `runtime_lane`
+  - `loader_format_version`
+  - `bridge_record_count`
+  - `bridge_token_checked`
+  - `bridge_token_status`
+  - `guardrail_status`
+  - `provider_endpoint_kind`
+  - `result`
+- `bridge_token_status` 固定枚举：
+  - `not_requested`
+  - `matched`
+  - `missing`
+- `guardrail_status` 固定枚举：
+  - `clear`
+  - `blocked_jdwp`
+  - `blocked_frida`
+  - `blocked_xposed`
+  - `blocked_classloader_dump`
+  - `blocked_dex_dump`
+- report 禁止写出：
+  - class name
+  - method name
+  - descriptor
+  - dex bytes
+  - key bytes
+  - 明文 bridge metadata
+
+### 4. Manifest 固定字段
+- `schema_version: 2`
+- `kind: "android_dex_bundle"`
+- `target_kind: "android_dex"`
+- `backend_kind: "dex_loader_vm"`
+- `runtime_lane: "dex_loader_vm"`
+- `mutation_profile: "dex_bundle"`
+- `signature_policy: "required_verifier"`
+- `artifact_kind: "dex_bundle"`
+- `allow_jit: false`
+- `allow_runtime_executable_pages: false`
+- `allow_persistent_plaintext: false`
+- `require_fail_closed: true`
+- `plaintext_ttl_ms: 0`
+- `loader_format_version: 3`
+- `key_provider_protocol: "eippf.external_key.v1"`
+- `key_provider_endpoint_kind: "executable_adapter" | "fifo" | "unix_socket"`
+- `key_provider_static_file: false`
+- `external_key_required: true`
+- `key_id: <non-empty>`
+- `key_material_embedded: false`
+- `bridge_surface: "allowlist_only"`
+- `class_loader_policy: "private_handle_only"`
+- `class_loader_exported: false`
+- `anti_debug_policy: "block_jdwp_attach"`
+- `anti_hook_policy: "best_effort_frida_xposed_guard"`
+- `plaintext_output: false`
+- `no_persistent_plaintext_goal: true`
+- manifest 不允许出现：
+  - `encryption_key`
+  - `input_hash_fnv1a64`
+  - 明文 class name
+  - 明文 method name
+  - 明文 dex bytes
+
+### 5. Loader/VM 消费链
+- 输入 CLI 固定为：
+  - `--input-bundle=<path>`
+  - `--manifest=<path>`
+  - `--key-provider=<path>`
+  - `--key-id=<id>`
+  - `--bridge-token=<hex_u64>` 可选
+  - `--report=<path>` 可选
+- 固定执行顺序：
+  1. 读取 manifest。
+  2. 读取 bundle header。
+  3. 校验 manifest 与 header 的版本、`target_kind`、`backend_kind`、`runtime_lane`、`key_id`。
+  4. 解析并验证 external key provider 端点。
+  5. 执行 guardrail preflight。
+  6. 在内存中解密 bridge table 与 dex payload。
+  7. 校验 dex magic/version。
+  8. 解析最小必需 dex tables，仅构建 tokenized bridge table，不输出 class/method 明文。
+  9. 若给定 `--bridge-token`，仅验证 token 是否存在并模拟 bridge dispatch 成功；不得打印映射名称。
+  10. 写出白名单字段 report，清零明文缓冲区，退出。
+- fail-closed 条件：
+  - manifest 缺字段或字段错值。
+  - bundle 不是 `EDXB v3`。
+  - provider 不可读、协议坏、拒绝、key_id 不匹配、静态文件退化。
+  - guardrail preflight 发现 `JDWP`、`Frida`、`Xposed`、`ClassLoader dump`、`dex dump` 风险。
+  - bridge table 缺失、bridge token 不存在、dex 头无效、任何清零或 I/O 失败。
+
+### 6. External Key Provider Contract
+- `--key-provider=<path>` 只允许代表以下 3 类 provider 端点：
+  - `executable_adapter`
+  - `fifo`
+  - `unix_socket`
+- 必须沿用 shell lane 已冻结的协议名：
+  - `eippf.external_key.v1`
+- 明确禁止：
+  - 普通文件形式的静态 key file。
+  - 解析后指向普通文件的 symlink provider。
+  - 工作目录中的明文 key file。
+  - temp dir 中的明文 key file。
+  - bundle、manifest、report、stdout、stderr、env 中出现原始 key material。
+- 设计约束：
+  - `core/dex_toolchain` 允许复制 Phase 5 的 provider endpoint 规则，但不允许回头改 `core/script_guard/*` 做大规模公共化重构。
+  - `main.cpp` 原有“读普通文本 provider 文件”的路径必须删除，不得保留为 fallback。
+
+### 7. Anti-Analysis Baseline
+- 本仓库 Phase 6 的 on-host 交付不直接接入 Android APK 壳层，但必须把 Android threat model 编码为 loader gate。
+- guardrail probe 固定覆盖：
+  - `JDWP`
+  - `Frida`
+  - `Xposed`
+  - `ClassLoader dump`
+  - `dex dump`
+- host 测试允许通过固定环境变量模拟上述信号：
+  - `EIPPF_SIMULATE_JDWP=1`
+  - `EIPPF_SIMULATE_FRIDA=1`
+  - `EIPPF_SIMULATE_XPOSED=1`
+  - `EIPPF_SIMULATE_CLASSLOADER_DUMP=1`
+  - `EIPPF_SIMULATE_DEX_DUMP=1`
+- 任一信号触发时 loader 必须非零退出，并且不得产生 report success、不得留下明文副产物。
+
+## Dependencies
+- `Phase 5` 必须已 freeze，`core/script_guard/*` 视为只读。
+- `runtime/backend_policy` 与 `backend_registry` 现有 `android_dex` 语义是 Phase 6 manifest 布尔值的唯一来源，不允许自造第二套安全布尔含义。
+- `artifact_audit.py` 仍是 strict release gate 的单一真源。
+- perf test 只能在 success/failure/security-edge 全绿后运行。
+
+## Regression Perimeter
+### Root Cause
+- 当前 `core/dex_toolchain/src/main.cpp` 只做：
+  - 读取 raw dex
+  - 使用单字节 key 做简单异或
+  - 写入 `EDXB v2`
+  - 写出 `android_dex_research` manifest
+  - 读取普通文本 provider 文件
+- 当前缺失：
+  - loader/VM consumer
+  - tokenized bridge
+  - anti-analysis gate
+  - strict dex lane audit
+  - release lane target migration
+
+### Changed Path
+- `/workspace/core/dex_toolchain/*`
+- `/workspace/core/tests/dex_toolchain/*`
+- `/workspace/core/tools/artifact_audit.py`
+- `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- `/workspace/core/tests/perf/*`
+- `/workspace/core/tests/CMakeLists.txt`
+
+### Adjacent Paths
+- `/workspace/core/runtime/include/runtime/backend_policy.hpp`
+- `/workspace/core/runtime/include/runtime/backends/backend_registry.hpp`
+- `/workspace/core/include/contracts/protection_contracts.hpp`
+- `/workspace/core/cmake/HardenTarget.cmake`
+- `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+- `/workspace/core/script_guard/*`
+
+### Unchanged Guarantees
+- `android_dex` 继续 `allow_jit=false`。
+- `android_dex` 继续 `allow_runtime_executable_pages=false`。
+- `android_dex` 继续 `allow_persistent_plaintext=false`。
+- `shell_ephemeral` lane 行为与 gate 不得回退。
+- 不引入新的 repo-level build system。
+
+### Second-Order Risks
+- `android_dex_research -> android_dex` 迁移可能遗漏旧 fixture。
+- provider 规则若与 shell lane 发生漂移，会产生双重实现风险。
+- host 侧 anti-analysis 只能验证 gate 逻辑，不能替代真机 Frida/Xposed 对抗证据。
+- 若工程 agent 把 loader 直接塞回 `main.cpp` 单体，会造成 blast radius 过大并破坏 Phase 5 之后的收敛模式。
+
+### Regression Matrix
+- dex bundler success path。
+- dex loader success path。
+- provider missing/malformed/reject/mismatch path。
+- static key file rejected path。
+- strict audit dex pass/fail path。
+- Phase 5 shell lane smoke path不回退。
+- runtime backend extraction contract 对 `android_dex` 不回退。
+
+## Parallel Tracks
+- Track A / Bundle + Provider Contract Closure
+  - 输出：`dex bundle v3`、manifest v2、provider endpoint hardening。
+- Track B / Loader + Bridge + Guardrail Closure
+  - 输出：`eippf_dex_loader`、tokenized bridge table、anti-analysis gate。
+- Track C / Audit + Tests + Perf Closure
+  - 输出：strict dex gate、lane tests、perf smoke、evidence checklist。
+
+## File Ownership
+- PM / Planner
+  - `/workspace/plan/*`
+- Product Security Architect / 只读架构边界
+  - `/workspace/plan/2026-04-02-phase-6-dex-loader-plan.txt`
+- Engineer-A / Track A
+  - `/workspace/core/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/dex_toolchain/src/main.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/bundle_format.hpp`
+  - `/workspace/core/dex_toolchain/src/bundle_format.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/external_key_provider.hpp`
+  - `/workspace/core/dex_toolchain/src/external_key_provider.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/manifest_contract.hpp`
+  - `/workspace/core/dex_toolchain/src/manifest_contract.cpp`
+- Engineer-B / Track B
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/loader.hpp`
+  - `/workspace/core/dex_toolchain/src/loader.cpp`
+  - `/workspace/core/dex_toolchain/src/loader_main.cpp`
+- Engineer-C / Track C
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_success_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_failure_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_security_edge_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/perf/dex_loader_perf_smoke_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+- Frozen Compatibility Anchors / no-write by default
+  - `/workspace/core/runtime/include/runtime/backend_policy.hpp`
+  - `/workspace/core/runtime/include/runtime/backends/backend_registry.hpp`
+  - `/workspace/core/script_guard/*`
+  - `/workspace/core/tests/script_guard/*`
+
+## Review Ownership
+- Architecture Reviewer
+  - 只读审查：
+    - `/workspace/plan/2026-04-02-phase-6-dex-loader-plan.txt`
+    - `/workspace/plan/2026-04-02-phase-6-execution.txt`
+    - `core/dex_toolchain/*` 变更集
+- Security Reviewer
+  - 只读审查：
+    - `core/dex_toolchain/*`
+    - `core/tools/artifact_audit.py`
+    - `core/tests/dex_toolchain/*`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+- Validation Reviewer
+  - 只读审查：
+    - `/workspace/plan/2026-04-02-phase-6-execution.txt`
+    - `core/tests/dex_toolchain/*`
+    - `core/tests/perf/dex_loader_perf_smoke_test.cpp`
+    - `core/tests/CMakeLists.txt`
+
+## Mechanical Task Cards
+### Card 0 / Agent 1 / Preflight + Freeze Baseline
+- 只做：
+  - 固定构建目录为 `/workspace/build_phase6`。
+  - 记录当前 dex skeleton 基线：
+    - `EDXB v2`
+    - `target_kind=android_dex_research`
+    - 文本 provider 文件路径仍可被读取
+  - 记录当前 runtime contract 基线：
+    - `android_dex -> dex_loader_vm`
+    - `allow_jit=false`
+    - `allow_runtime_executable_pages=false`
+    - `allow_persistent_plaintext=false`
+  - 确认 `Phase 5` shell plan 已冻结且不在本 phase 改写范围内。
+- 不做：
+  - 不改代码。
+  - 不改 `core/runtime/*`。
+  - 不改 `core/script_guard/*`。
+
+### Card 1 / Engineer-A / Track A / Bundle Contract Closure
+- 只读打开：
+  - `/workspace/core/dex_toolchain/src/main.cpp`
+  - `/workspace/core/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp`
+- 只允许修改：
+  - `/workspace/core/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/dex_toolchain/src/main.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/bundle_format.hpp`
+  - `/workspace/core/dex_toolchain/src/bundle_format.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/external_key_provider.hpp`
+  - `/workspace/core/dex_toolchain/src/external_key_provider.cpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/manifest_contract.hpp`
+  - `/workspace/core/dex_toolchain/src/manifest_contract.cpp`
+- 固定动作：
+  - 在 `CMakeLists.txt` 中新增 object library：
+    - `eippf_dex_toolchain_common`
+  - 保留 bundler 可执行文件名：
+    - `eippf_dex_toolchain`
+  - 预注册 loader 可执行文件：
+    - `eippf_dex_loader`
+  - 从 `main.cpp` 抽出公共模块：
+    - `read_bundle_header_v3()`
+    - `write_bundle_v3()`
+    - `build_android_dex_manifest_v2_json()`
+    - `load_and_validate_manifest_contract()`
+    - `resolve_external_key_from_endpoint()`
+  - `main.cpp` 保留为 bundler 入口，不加入 loader 逻辑。
+  - bundler CLI 继续支持：
+    - `--input`
+    - `--output-bundle`
+    - `--manifest`
+    - `--key-provider`
+    - `--key-id`
+  - manifest 的 `target_kind` 固定迁移为 `android_dex`。
+  - 允许 loader/audit 读取 legacy `android_dex_research`，但 bundler 成功路径不得再输出该值。
+  - bundle header 固定升级到 `EDXB v3`，并加入：
+    - `bridge_record_count`
+    - `guardrail_required`
+  - 必须严格按本计划 `3A/3B` 生成 bridge record 与 token：
+    - `dispatch_kind_u8=1`
+    - `flags_u16_le=0`
+    - `token` 由 `key_id + method_ordinal + record_index + "eippf.dex.bridge.v1"` 的 `fnv1a64` 生成
+    - 发现 token 冲突时直接 fail-closed
+  - bridge metadata 必须位于密文区，不得在 cleartext header 暴露类名或方法名。
+  - external key provider 只允许：
+    - `executable_adapter`
+    - `fifo`
+    - `unix_socket`
+  - 必须删除现有“普通文本 provider 文件”成功路径；不允许 fallback。
+  - 对下列 provider 一律非零退出，且不得输出 bundle/manifest：
+    - 普通文件
+    - 指向普通文件的 symlink
+    - 工作目录静态 key file
+    - temp dir 静态 key file
+
+### Card 2 / Engineer-B / Track B / Loader + Bridge + Guardrail Closure
+- 只读打开：
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/bundle_format.hpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/external_key_provider.hpp`
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/manifest_contract.hpp`
+- 只允许修改：
+  - `/workspace/core/dex_toolchain/include/dex_toolchain/loader.hpp`
+  - `/workspace/core/dex_toolchain/src/loader.cpp`
+  - `/workspace/core/dex_toolchain/src/loader_main.cpp`
+- 固定动作：
+  - 新增可执行文件：
+    - `eippf_dex_loader`
+  - `loader_main.cpp` 固定支持 CLI：
+    - `--input-bundle=<path>`
+    - `--manifest=<path>`
+    - `--key-provider=<path>`
+    - `--key-id=<id>`
+    - `--bridge-token=<hex_u64>`
+    - `--report=<path>`
+  - 固定新增函数：
+    - `parse_loader_options()`
+    - `load_and_validate_android_dex_manifest()`
+    - `decrypt_bundle_payload_to_memory()`
+    - `parse_minimal_dex_tables()`
+    - `materialize_bridge_table()`
+    - `evaluate_guardrail_probe()`
+    - `run_loader_session()`
+    - `write_loader_report()`
+  - `evaluate_guardrail_probe()` 固定检查以下 5 类信号：
+    - `JDWP`
+    - `Frida`
+    - `Xposed`
+    - `ClassLoader dump`
+    - `dex dump`
+  - on-host 测试固定用以下环境变量驱动 guardrail：
+    - `EIPPF_SIMULATE_JDWP`
+    - `EIPPF_SIMULATE_FRIDA`
+    - `EIPPF_SIMULATE_XPOSED`
+    - `EIPPF_SIMULATE_CLASSLOADER_DUMP`
+    - `EIPPF_SIMULATE_DEX_DUMP`
+  - loader 成功路径只允许输出：
+    - token 计数
+    - gate 状态
+    - report 路径
+  - `--bridge-token` 固定按本计划 `3B` 解析：
+    - 只接受 16 位小写十六进制
+    - 查表命中返回 success
+    - 未命中直接 fail-closed
+  - `write_loader_report()` 固定按本计划 `3C` 输出白名单字段，不允许自由增删字段。
+  - loader 禁止输出：
+    - dex bytes
+    - class name
+    - method name
+    - key bytes
+  - loader 不得创建以下副产物：
+    - `*.dex`
+    - `*.jar`
+    - `*.tmp`
+    - `*.plain`
+    - `*.dec`
+  - loader 不得通过 argv/env/stdout/stderr/report 暴露 key 或 dex。
+  - loader 遇到静态 key file provider、guardrail 触发、manifest 不合规、bridge token 不存在时必须直接失败。
+
+### Card 3 / Engineer-C / Track C / Audit Closure
+- 只读打开：
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- 只允许修改：
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- 固定动作：
+  - 为 dex lane 新增固定 failure code：
+    - `dex_plaintext_leak_detected`
+    - `loader_metadata_missing`
+    - `loader_gate_unresolved`
+  - `loader_metadata_missing` 触发条件固定为任一不满足：
+    - `target_kind == android_dex`
+    - `backend_kind == dex_loader_vm`
+    - `runtime_lane == dex_loader_vm`
+    - `mutation_profile == dex_bundle`
+    - `artifact_kind == dex_bundle`
+    - `loader_format_version == 3`
+    - `external_key_required == true`
+    - `key_provider_protocol == eippf.external_key.v1`
+  - `loader_gate_unresolved` 触发条件固定为任一不满足：
+    - `allow_jit == false`
+    - `allow_runtime_executable_pages == false`
+    - `allow_persistent_plaintext == false`
+    - `require_fail_closed == true`
+    - `bridge_surface == allowlist_only`
+    - `class_loader_policy == private_handle_only`
+    - `class_loader_exported == false`
+    - `anti_debug_policy == block_jdwp_attach`
+    - `anti_hook_policy == best_effort_frida_xposed_guard`
+    - `key_provider_endpoint_kind` 属于允许集合
+    - `key_provider_static_file == false`
+  - `dex_plaintext_leak_detected` 触发条件固定为任一成立：
+    - 产物被识别为 raw `dex`
+    - `key_material_embedded != false`
+    - `plaintext_output != false`
+    - `no_persistent_plaintext_goal != true`
+    - `key_provider_static_file != false`
+    - bundle 或 report 中出现测试 anchor 明文
+  - `artifact_audit` 必须继续允许 legacy `android_dex_research` 被读取，但 strict success fixture 改为 `android_dex`。
+
+### Card 4 / Engineer-C / Track C / Tests Closure
+- 只读打开：
+  - `/workspace/core/tests/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp`
+- 只允许修改：
+  - `/workspace/core/tests/dex_toolchain/CMakeLists.txt`
+  - `/workspace/core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_success_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_failure_test.cpp`
+  - `/workspace/core/tests/dex_toolchain/android_dex_security_edge_test.cpp`
+- 固定动作：
+  - 不新增 `lane_android_dex/` 新目录；继续复用现有 `core/tests/dex_toolchain/`，避免大规模测试重布线。
+  - `CMakeLists.txt` 新增 3 个测试，名字不允许改：
+    - `android_dex_success_test`
+    - `android_dex_failure_test`
+    - `android_dex_security_edge_test`
+  - `dex_toolchain_smoke_test.cpp` 必须补充断言：
+    - bundle version 为 `3`
+    - manifest `target_kind == android_dex`
+    - manifest 包含：
+      - `backend_kind`
+      - `runtime_lane`
+      - `mutation_profile`
+      - `loader_format_version`
+      - `key_provider_endpoint_kind`
+      - `key_provider_static_file:false`
+      - `bridge_surface`
+      - `class_loader_policy`
+      - `class_loader_exported:false`
+      - `anti_debug_policy`
+      - `anti_hook_policy`
+    - manifest 不包含：
+      - `android_dex_research`
+      - `encryption_key`
+      - `input_hash_fnv1a64`
+      - `SECRET_ANCHOR`
+  - `android_dex_success_test.cpp` 固定测试：
+    - executable provider 成功
+    - bundler 成功
+    - loader 成功
+    - `--bridge-token` 成功命中 allowlist token
+    - temp dir 中不存在 `.dex/.jar/.tmp/.plain/.dec`
+    - report 中不出现类名、方法名、anchor
+  - `android_dex_failure_test.cpp` 固定测试：
+    - 缺 provider
+    - provider malformed
+    - provider rejected
+    - key_id mismatch
+    - 普通文件 provider
+    - symlink-to-regular-file provider
+    - manifest 缺必需字段
+    - bundle header version 错误
+    - `--bridge-token` 不存在
+    - 全部必须非零退出
+  - `android_dex_security_edge_test.cpp` 固定测试：
+    - `EIPPF_SIMULATE_JDWP=1` 时 loader 失败
+    - `EIPPF_SIMULATE_FRIDA=1` 时 loader 失败
+    - `EIPPF_SIMULATE_XPOSED=1` 时 loader 失败
+    - `EIPPF_SIMULATE_CLASSLOADER_DUMP=1` 时 loader 失败
+    - `EIPPF_SIMULATE_DEX_DUMP=1` 时 loader 失败
+    - strict audit 命中 `dex_plaintext_leak_detected` 或 `loader_gate_unresolved`
+
+### Card 5 / Engineer-C / Track C / Perf + Evidence Closure
+- 只读打开：
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/CMakeLists.txt`
+- 只允许修改：
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/perf/dex_loader_perf_smoke_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+- 固定动作：
+  - 新增 perf 测试：
+    - `dex_loader_perf_smoke_test`
+  - baseline 固定为：
+    - raw dex read + minimal parse
+  - protected path 固定为：
+    - bundle read + provider resolve + decrypt + bridge materialize
+  - perf 输出必须记录：
+    - baseline 用时
+    - protected 用时
+    - overhead 百分比
+  - `core/tests/CMakeLists.txt` 必须把 `android_dex_*` 与 `dex_loader_perf_smoke_test` 接入总测试与 `perf_smoke`。
+
+## Quality Gates
+- `G0 / Preflight Gate`
+  - 通过条件：
+    - `/workspace/build_phase6` 可 configure/build。
+    - Phase 5 shell lane 现有目标未回退。
+- `G1 / Bundle Contract Gate`
+  - 通过条件：
+    - `EDXB v3` 头格式正确。
+    - bundler 成功路径输出 `target_kind=android_dex`。
+    - bundle header 与 manifest 中不出现明文类名、方法名、anchor。
+- `G2 / Provider Hardening Gate`
+  - 通过条件：
+    - 只允许 `executable_adapter`、`fifo`、`unix_socket`。
+    - 普通文件 provider、symlink-to-regular-file provider、工作目录静态 key file、temp dir 静态 key file 全部 fail-closed。
+    - external key provider 不存在任何静态磁盘 key file 成功路径。
+- `G3 / Loader/VM Closure Gate`
+  - 通过条件：
+    - loader 可消费 bundle + manifest + provider。
+    - `--bridge-token` 成功命中 allowlist token。
+    - loader 不输出类名、方法名、dex bytes、key bytes。
+    - loader 不产生 `.dex/.jar/.tmp/.plain/.dec` 副产物。
+- `G4 / Anti-Analysis Gate`
+  - 通过条件：
+    - `JADX`/`apktool`/`baksmali`/string pool grep 无法直接作用于 release 产物，因为 release 产物只交付 `dex_bundle`。
+    - `Frida`、`Xposed`、`JDWP`、`ClassLoader dump`、`dex dump` 的模拟信号全部触发 fail-closed。
+    - manifest/report 固定存在 anti-analysis policy 字段。
+- `G5 / Strict Audit Gate`
+  - 通过条件：
+    - dex success fixture `strict_failures=[]`。
+    - dex failure/security fixtures 能稳定触发：
+      - `dex_plaintext_leak_detected`
+      - `loader_metadata_missing`
+      - `loader_gate_unresolved`
+    - shell lane 现有 strict failure code 不回退。
+- `G6 / No-Persistent-Plaintext Evidence Gate`
+  - 通过条件：
+    - manifest 中：
+      - `allow_persistent_plaintext=false`
+      - `external_key_required=true`
+      - `key_material_embedded=false`
+      - `plaintext_output=false`
+      - `key_provider_static_file=false`
+    - temp dir、workspace、report 中均无 raw dex 副产物。
+    - stdout/stderr/env/argv 不暴露 key 或 dex。
+- `G7 / Perf Gate`
+  - 通过条件：
+    - `dex_loader_perf_smoke_test` 记录的额外开销 `<10%`。
+    - `cmake --build /workspace/build_phase6 --target perf_smoke` 不红。
+- `G8 / Final Validation Gate`
+  - 通过条件：
+    - 所有命令按计划执行通过。
+    - 无人工解释放行。
+    - Security Reviewer 对 provider 退化与 plaintext leak 结论为 green。
+
+## Validation Commands
+- `cmake -S /workspace/core -B /workspace/build_phase6 -G Ninja`
+- `cmake --build /workspace/build_phase6 -j`
+- `ctest --test-dir /workspace/build_phase6 --output-on-failure -R 'runtime_backend_extraction_contract_test|dex_toolchain_smoke_test|android_dex_success_test|android_dex_failure_test|android_dex_security_edge_test|artifact_audit_strict_test'`
+- `ctest --test-dir /workspace/build_phase6 --output-on-failure -R 'dex_loader_perf_smoke_test'`
+- `cmake --build /workspace/build_phase6 --target perf_smoke`
+
+## Freeze 条件
+- `F0 / Phase 5 Freeze`
+  - `core/script_guard/*` 与 shell tests 进入只读，不在 Phase 6 改写。
+- `F1 / Runtime Contract Freeze`
+  - `backend_policy.hpp` 与 `backend_registry.hpp` 对 `android_dex` 的布尔语义保持不变：
+    - `allow_jit=false`
+    - `allow_runtime_executable_pages=false`
+    - `allow_persistent_plaintext=false`
+- `F2 / Dex Manifest Freeze`
+  - 本计划列出的 dex manifest 字段名与固定值冻结，不得中途改名。
+- `F3 / Dex Bundle v3 Freeze`
+  - `EDXB v3` 头格式、`bridge_record_count`、`guardrail_required` 字段冻结。
+- `F4 / Provider Contract Freeze`
+  - provider allowlist 固定为：
+    - `executable_adapter`
+    - `fifo`
+    - `unix_socket`
+  - “静态磁盘 key file 禁止”冻结为永久约束，不得在后续 phase 解除。
+- `F5 / Audit Code Freeze`
+  - dex lane failure code 冻结为：
+    - `dex_plaintext_leak_detected`
+    - `loader_metadata_missing`
+    - `loader_gate_unresolved`
+- `F6 / Target Kind Migration Freeze`
+  - 迁移窗口结束后，in-tree release fixture、success test、生成器默认值全部固定为 `android_dex`。
+  - `android_dex_research` 仅作为 legacy read-compat 保留；若不再被 fixture 使用，则在下一次 superseding plan 中移除。
+
+## Model Routing
+- PM / 规划与验收：
+  - `main_agent`
+  - 原因：需要保持 PM 边界，不把设计下放给实现者。
+- Engineer / 后续实现：
+  - `gpt-5.3-codex` 或人工工程师
+  - 原因：按机械 task cards 执行文件级修改。
+- Security Reviewer / 独立审计：
+  - `gpt-5.4` 或人工安全评审
+  - 原因：对抗面和 fail-closed 结论需要独立校核。
+
+## Context Packages
+- PM 可依赖：
+  - 本计划列出的全部 source of truth。
+- Engineer 必须依赖：
+  - task cards 中列出的文件与固定字段/固定函数名。
+- Engineer 不得依赖：
+  - 未写进计划的“自由发挥架构”。
+  - 对 `core/runtime/*` 或 `core/script_guard/*` 的临时重构想法。
+- Security Reviewer 必须检查：
+  - provider 是否退化为静态磁盘 key file。
+  - strict audit 是否真正覆盖 dex lane。
+  - no-persistent-plaintext evidence 是否可复核。
+
+## Assurance Scorecard
+- architecture completeness: `5/5`
+- evidence coverage: `4/5`
+- blast radius coverage: `5/5`
+- PM boundary integrity: `5/5`
+- review independence: `4/5`
+- context integrity: `5/5`
+- delegation integrity: `4/5`
+- gate result: `PASS for planning`
+
+## Open Risks
+- 风险 1：
+  - host 侧 `Frida/Xposed/JDWP` 仅能通过模拟信号验证 gate 逻辑，不能替代真机证据。
+  - Owner: Agent 3
+  - Mitigation: 在 Phase 8 evidence pack 中追加真机采样，不影响本 phase 仓库内闭环。
+- 风险 2：
+  - `android_dex_research -> android_dex` 迁移可能在隐藏 fixture 或工具脚本中残留。
+  - Owner: Agent 1
+  - Mitigation: freeze 前对仓库全文搜索并清理残留引用。
+- 风险 3：
+  - tokenized bridge dispatcher 不是通用 dex VM，若后续业务要求任意方法执行，需要新的 superseding plan。
+  - Owner: Agent 1
+  - Mitigation: 本 phase 验收只按 allowlist bridge contract 判定，不扩大语义。
+
+## State Snapshot
+- current truth:
+  - `core/dex_toolchain/src/main.cpp` 仍是 bundle skeleton。
+  - `core/tests/dex_toolchain/dex_toolchain_smoke_test.cpp` 仍校验 `android_dex_research`。
+  - `core/runtime/include/runtime/backend_policy.hpp` 与 `backend_registry.hpp` 已冻结 `android_dex -> dex_loader_vm` 的 safe policy。
+  - `core/tools/artifact_audit.py` 目前尚无 dex lane 专属 strict gate。
+  - Phase 5 shell lane 已经形成可复用的 provider hardening 参考模式。
+- accepted decisions:
+  - Phase 6 不做大规模公共化重构。
+  - Phase 6 release lane 统一切到 `android_dex`。
+  - external key provider 永不允许退化为静态磁盘 key file。
+  - `.dex` 对抗 `JADX/apktool/baksmali/string pool grep/Frida/Xposed/JDWP/ClassLoader dump/dex dump` 全部通过 loader gate 与 audit contract 编码。
+- blockers:
+  - 首轮计划三审结果为：
+    - Architecture Review: `BLOCK`
+    - Security Review: `PASS`
+    - Validation Review: `BLOCK`
+  - 最小 delta replan 后重新三审结果为：
+    - Architecture Review: `PASS`
+    - Security Review: `PASS`
+    - Validation Review: `PASS`
+  - 当前已无计划级 blocker，可以按 task cards 进入工程实现。
+- next actions:
+  - 先执行 Card 0，冻结 build 目录与 Phase 5 边界。
+  - 再由 Agent 2 的 Engineer-A/B/C 子轨按文件所有权并行落地 Card 1-5。
+  - 最后按 `G0` 到 `G8` 逐门验收并执行 freeze。

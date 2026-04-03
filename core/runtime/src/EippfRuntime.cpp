@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <mutex>
 
+#include "runtime/memory_hal.hpp"
+
 #if defined(_WIN32) || defined(_WIN64)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -43,6 +45,13 @@ constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
 constexpr std::size_t kMaxDecodedApiNameBytes = 64u;
 constexpr std::size_t kMaxDecodedModuleNameBytes = 32u;
 constexpr std::size_t kResolverCacheCapacity = 256u;
+constexpr std::uint32_t kJitEnclaveProbeGateChecked = 0x1u;
+constexpr std::uint32_t kJitEnclaveProbeResolveAttempted = 0x2u;
+constexpr std::uint32_t kJitEnclaveProbeExecAllocAttempted = 0x4u;
+constexpr const char* kJitRouteForbiddenForTarget = "jit_route_forbidden_for_target";
+
+thread_local const char* g_last_gate_code = "";
+thread_local std::uint32_t g_jit_enclave_probe_flags = 0u;
 
 struct ResolverCacheEntry final {
   std::uint64_t hash = 0u;
@@ -653,12 +662,33 @@ extern "C" void* eippf_resolve_api(std::uint64_t hash) noexcept {
   return lookup_or_resolve(hash);
 }
 
+extern "C" const char* eippf_runtime_last_gate_code() noexcept {
+  return g_last_gate_code;
+}
+
+extern "C" void eippf_runtime_reset_jit_enclave_probe() noexcept {
+  g_last_gate_code = "";
+  g_jit_enclave_probe_flags = 0u;
+}
+
+extern "C" std::uint32_t eippf_runtime_jit_enclave_probe_flags() noexcept {
+  return g_jit_enclave_probe_flags;
+}
+
 extern "C" void eippf_execute_jit_enclave(const std::uint8_t* encrypted_payload, std::size_t size,
                                           std::uint8_t key) noexcept {
   ensure_runtime_initialized();
+  g_last_gate_code = "";
+  g_jit_enclave_probe_flags = 0u;
+  g_jit_enclave_probe_flags |= kJitEnclaveProbeGateChecked;
+  if (!eippf::runtime::MemoryHAL::runtime_dynamic_code_allowed()) {
+    g_last_gate_code = kJitRouteForbiddenForTarget;
+    return;
+  }
   if (encrypted_payload == nullptr || size == 0u) {
     return;
   }
+  g_jit_enclave_probe_flags |= kJitEnclaveProbeResolveAttempted;
 
 #if defined(_WIN32) || defined(_WIN64)
   using VirtualAllocFn = void* (WINAPI*)(void*, SIZE_T, DWORD, DWORD);
@@ -672,6 +702,7 @@ extern "C" void eippf_execute_jit_enclave(const std::uint8_t* encrypted_payload,
     return;
   }
 
+  g_jit_enclave_probe_flags |= kJitEnclaveProbeExecAllocAttempted;
   void* executable_page = virtual_alloc(
       nullptr, static_cast<SIZE_T>(size), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
   if (executable_page == nullptr) {
@@ -716,6 +747,7 @@ extern "C" void eippf_execute_jit_enclave(const std::uint8_t* encrypted_payload,
   return;
 #endif
 
+  g_jit_enclave_probe_flags |= kJitEnclaveProbeExecAllocAttempted;
   void* executable_page = mmap_fn(
       nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, map_flags, -1, static_cast<off_t>(0));
   if (executable_page == MAP_FAILED || executable_page == nullptr) {

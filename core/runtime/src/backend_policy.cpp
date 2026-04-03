@@ -6,6 +6,7 @@ namespace {
 
 using contracts::ProtectionTargetKind;
 using contracts::RuntimeBackendKind;
+using contracts::RuntimeLaneKind;
 
 [[nodiscard]] bool is_unknown_target(ProtectionTargetKind target) noexcept {
   return target == ProtectionTargetKind::kUnknown;
@@ -15,67 +16,103 @@ using contracts::RuntimeBackendKind;
   return backend == RuntimeBackendKind::kUnknown;
 }
 
-}  // namespace
-
-Policy default_policy_for_target(ProtectionTargetKind target) noexcept {
+[[nodiscard]] std::uint32_t default_plaintext_ttl_ms(ProtectionTargetKind target) noexcept {
   switch (target) {
     case ProtectionTargetKind::kDesktopNative:
     case ProtectionTargetKind::kAndroidSo:
-      return Policy{
+      return 50u;
+    case ProtectionTargetKind::kAndroidDex:
+    case ProtectionTargetKind::kShellEphemeral:
+      return 25u;
+    case ProtectionTargetKind::kIosAppStore:
+    case ProtectionTargetKind::kWindowsDriver:
+    case ProtectionTargetKind::kLinuxKernelModule:
+    case ProtectionTargetKind::kAndroidKernelModule:
+    case ProtectionTargetKind::kUnknown:
+      return 0u;
+  }
+  return 0u;
+}
+
+}  // namespace
+
+RuntimeBackendDispatch dispatch_for_target(ProtectionTargetKind target) noexcept {
+  switch (target) {
+    case ProtectionTargetKind::kDesktopNative:
+    case ProtectionTargetKind::kAndroidSo:
+      return RuntimeBackendDispatch{
           .target = target,
+          .lane = RuntimeLaneKind::kDesktopUserMode,
           .backend = RuntimeBackendKind::kDesktopJit,
           .allow_jit = true,
           .allow_runtime_executable_pages = true,
           .allow_persistent_plaintext = false,
           .require_fail_closed = true,
-          .plaintext_ttl_ms = 50u,
+          .requires_sign_after_mutate = false,
       };
     case ProtectionTargetKind::kIosAppStore:
-      return Policy{
+      return RuntimeBackendDispatch{
           .target = target,
+          .lane = RuntimeLaneKind::kIosSafe,
           .backend = RuntimeBackendKind::kIosSafeAot,
           .allow_jit = false,
           .allow_runtime_executable_pages = false,
           .allow_persistent_plaintext = false,
           .require_fail_closed = true,
-          .plaintext_ttl_ms = 0u,
+          .requires_sign_after_mutate = false,
       };
     case ProtectionTargetKind::kWindowsDriver:
     case ProtectionTargetKind::kLinuxKernelModule:
     case ProtectionTargetKind::kAndroidKernelModule:
-      return Policy{
+      return RuntimeBackendDispatch{
           .target = target,
+          .lane = RuntimeLaneKind::kKernelSafe,
           .backend = RuntimeBackendKind::kKernelSafeAot,
           .allow_jit = false,
           .allow_runtime_executable_pages = false,
           .allow_persistent_plaintext = false,
           .require_fail_closed = true,
-          .plaintext_ttl_ms = 0u,
+          .requires_sign_after_mutate = true,
       };
     case ProtectionTargetKind::kAndroidDex:
-      return Policy{
+      return RuntimeBackendDispatch{
           .target = target,
+          .lane = RuntimeLaneKind::kDexLoaderVm,
           .backend = RuntimeBackendKind::kDexLoaderVm,
           .allow_jit = false,
           .allow_runtime_executable_pages = false,
           .allow_persistent_plaintext = false,
           .require_fail_closed = true,
-          .plaintext_ttl_ms = 25u,
+          .requires_sign_after_mutate = false,
       };
     case ProtectionTargetKind::kShellEphemeral:
-      return Policy{
+      return RuntimeBackendDispatch{
           .target = target,
+          .lane = RuntimeLaneKind::kShellLauncher,
           .backend = RuntimeBackendKind::kShellLauncher,
           .allow_jit = false,
           .allow_runtime_executable_pages = false,
           .allow_persistent_plaintext = false,
           .require_fail_closed = true,
-          .plaintext_ttl_ms = 25u,
+          .requires_sign_after_mutate = false,
       };
     case ProtectionTargetKind::kUnknown:
-      return Policy{};
+      return RuntimeBackendDispatch{};
   }
-  return Policy{};
+  return RuntimeBackendDispatch{};
+}
+
+Policy default_policy_for_target(ProtectionTargetKind target) noexcept {
+  const RuntimeBackendDispatch dispatch = dispatch_for_target(target);
+  return Policy{
+      .target = dispatch.target,
+      .backend = dispatch.backend,
+      .allow_jit = dispatch.allow_jit,
+      .allow_runtime_executable_pages = dispatch.allow_runtime_executable_pages,
+      .allow_persistent_plaintext = dispatch.allow_persistent_plaintext,
+      .require_fail_closed = dispatch.require_fail_closed,
+      .plaintext_ttl_ms = default_plaintext_ttl_ms(target),
+  };
 }
 
 bool target_forbids_jit(ProtectionTargetKind target) noexcept {
@@ -83,7 +120,10 @@ bool target_forbids_jit(ProtectionTargetKind target) noexcept {
 }
 
 bool target_forbids_runtime_executable_pages(ProtectionTargetKind target) noexcept {
-  return target == ProtectionTargetKind::kIosAppStore || contracts::is_kernel_target(target);
+  if (is_unknown_target(target)) {
+    return true;
+  }
+  return !dispatch_for_target(target).allow_runtime_executable_pages;
 }
 
 bool target_forbids_persistent_plaintext(ProtectionTargetKind target) noexcept {
@@ -91,23 +131,20 @@ bool target_forbids_persistent_plaintext(ProtectionTargetKind target) noexcept {
 }
 
 bool backend_matches_target(RuntimeBackendKind backend, ProtectionTargetKind target) noexcept {
-  switch (backend) {
-    case RuntimeBackendKind::kDesktopInterpreter:
-    case RuntimeBackendKind::kDesktopJit:
-      return target == ProtectionTargetKind::kDesktopNative ||
-             target == ProtectionTargetKind::kAndroidSo;
-    case RuntimeBackendKind::kIosSafeAot:
-      return target == ProtectionTargetKind::kIosAppStore;
-    case RuntimeBackendKind::kKernelSafeAot:
-      return contracts::is_kernel_target(target);
-    case RuntimeBackendKind::kDexLoaderVm:
-      return target == ProtectionTargetKind::kAndroidDex;
-    case RuntimeBackendKind::kShellLauncher:
-      return target == ProtectionTargetKind::kShellEphemeral;
-    case RuntimeBackendKind::kUnknown:
-      return false;
+  if (is_unknown_target(target) || is_unknown_backend(backend)) {
+    return false;
   }
-  return false;
+  const RuntimeBackendDispatch dispatch = dispatch_for_target(target);
+  return dispatch.backend == backend;
+}
+
+bool target_kind_supports_desktop_jit(ProtectionTargetKind target) noexcept {
+  const RuntimeBackendDispatch dispatch = dispatch_for_target(target);
+  return dispatch.backend == RuntimeBackendKind::kDesktopJit && dispatch.allow_jit;
+}
+
+bool target_kind_requires_sign_after_mutate(ProtectionTargetKind target) noexcept {
+  return dispatch_for_target(target).requires_sign_after_mutate;
 }
 
 PolicyError validate_policy(const Policy& policy) noexcept {
@@ -117,22 +154,36 @@ PolicyError validate_policy(const Policy& policy) noexcept {
   if (is_unknown_backend(policy.backend)) {
     return PolicyError::kUnknownBackend;
   }
-  if (!backend_matches_target(policy.backend, policy.target)) {
+  const RuntimeBackendDispatch dispatch = dispatch_for_target(policy.target);
+  if (dispatch.backend == RuntimeBackendKind::kUnknown) {
+    return PolicyError::kUnknownTarget;
+  }
+  if (policy.backend != dispatch.backend) {
     return PolicyError::kBackendTargetMismatch;
   }
-  if (eippf::runtime::backend::target_forbids_jit(policy.target) && policy.allow_jit) {
-    return PolicyError::kJitForbidden;
+  if (policy.allow_jit != dispatch.allow_jit) {
+    if (policy.allow_jit && !dispatch.allow_jit) {
+      return PolicyError::kJitForbidden;
+    }
+    return PolicyError::kBackendTargetMismatch;
   }
-  if (eippf::runtime::backend::target_forbids_runtime_executable_pages(policy.target) &&
-      policy.allow_runtime_executable_pages) {
-    return PolicyError::kRuntimeExecutablePagesForbidden;
+  if (policy.allow_runtime_executable_pages != dispatch.allow_runtime_executable_pages) {
+    if (policy.allow_runtime_executable_pages && !dispatch.allow_runtime_executable_pages) {
+      return PolicyError::kRuntimeExecutablePagesForbidden;
+    }
+    return PolicyError::kBackendTargetMismatch;
   }
-  if (eippf::runtime::backend::target_forbids_persistent_plaintext(policy.target) &&
-      policy.allow_persistent_plaintext) {
-    return PolicyError::kPersistentPlaintextForbidden;
+  if (policy.allow_persistent_plaintext != dispatch.allow_persistent_plaintext) {
+    if (policy.allow_persistent_plaintext && !dispatch.allow_persistent_plaintext) {
+      return PolicyError::kPersistentPlaintextForbidden;
+    }
+    return PolicyError::kBackendTargetMismatch;
   }
-  if (!policy.require_fail_closed) {
-    return PolicyError::kFailClosedRequired;
+  if (policy.require_fail_closed != dispatch.require_fail_closed) {
+    if (!policy.require_fail_closed) {
+      return PolicyError::kFailClosedRequired;
+    }
+    return PolicyError::kBackendTargetMismatch;
   }
   if (policy.allow_persistent_plaintext && policy.plaintext_ttl_ms == 0u) {
     return PolicyError::kInvalidPlaintextTtl;

@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <string>
 
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
@@ -18,6 +20,7 @@
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CommandLine.h"
 #if defined(__has_include)
 #if __has_include("llvm/TargetParser/Triple.h")
 #include "llvm/TargetParser/Triple.h"
@@ -35,7 +38,14 @@ constexpr llvm::StringLiteral kRouteAttribute("eippf.route");
 constexpr llvm::StringLiteral kRouteJit("jit");
 constexpr llvm::StringLiteral kJitEntryPointName("eippf_execute_jit_enclave");
 constexpr llvm::StringLiteral kJitInjectedAttr("eippf.jit.enclave.injected");
+constexpr llvm::StringLiteral kGateCodeJitRouteForbidden("jit_route_forbidden_for_target");
 constexpr std::uint8_t kDummyPayloadKey = 0x5Au;
+
+llvm::cl::opt<std::string> kTargetKindOpt(
+    "eippf-target-kind",
+    llvm::cl::desc("EIPPF protection target kind"),
+    llvm::cl::value_desc("target_kind"),
+    llvm::cl::init("unknown"));
 
 llvm::StringRef extract_annotation_text(llvm::Constant* annotation_operand) {
   llvm::Constant* cursor = annotation_operand;
@@ -231,9 +241,64 @@ bool rewrite_function_body_to_jit_enclave(llvm::Function& function, llvm::Functi
 
 namespace eippf::passes {
 
+JITEnclavePass::TargetKind JITEnclavePass::parse_target_kind_option() noexcept {
+  const llvm::StringRef raw_kind(kTargetKindOpt);
+  if (raw_kind.empty()) {
+    return TargetKind::kUnknown;
+  }
+  return llvm::StringSwitch<TargetKind>(raw_kind.lower())
+      .Case("desktop_native", TargetKind::kDesktopNative)
+      .Case("android_so", TargetKind::kAndroidSo)
+      .Case("ios_appstore", TargetKind::kIosAppStore)
+      .Case("windows_driver", TargetKind::kWindowsDriver)
+      .Case("linux_kernel_module", TargetKind::kLinuxKernelModule)
+      .Case("android_kernel_module", TargetKind::kAndroidKernelModule)
+      .Case("android_dex", TargetKind::kAndroidDex)
+      .Case("shell_ephemeral", TargetKind::kShellEphemeral)
+      .Case("unknown", TargetKind::kUnknown)
+      .Default(TargetKind::kUnknown);
+}
+
+bool JITEnclavePass::is_desktop_target_kind(TargetKind kind) noexcept {
+  return kind == TargetKind::kDesktopNative;
+}
+
+const char* JITEnclavePass::target_kind_name_for_diagnostic(TargetKind kind) noexcept {
+  switch (kind) {
+    case TargetKind::kDesktopNative:
+      return "desktop_native";
+    case TargetKind::kAndroidSo:
+      return "android_so";
+    case TargetKind::kIosAppStore:
+      return "ios_appstore";
+    case TargetKind::kWindowsDriver:
+      return "windows_driver";
+    case TargetKind::kLinuxKernelModule:
+      return "linux_kernel_module";
+    case TargetKind::kAndroidKernelModule:
+      return "android_kernel_module";
+    case TargetKind::kAndroidDex:
+      return "android_dex";
+    case TargetKind::kShellEphemeral:
+      return "shell_ephemeral";
+    case TargetKind::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
 llvm::PreservedAnalyses JITEnclavePass::run(llvm::Module& module, llvm::ModuleAnalysisManager&) {
   llvm::SmallPtrSet<llvm::Function*, 32> jit_targets = collect_jit_targets(module);
   if (jit_targets.empty()) {
+    return llvm::PreservedAnalyses::all();
+  }
+
+  const TargetKind target_kind = parse_target_kind_option();
+  if (!is_desktop_target_kind(target_kind)) {
+    module.getContext().emitError(
+        (llvm::Twine(kGateCodeJitRouteForbidden) + ": target_kind=" +
+         target_kind_name_for_diagnostic(target_kind))
+            .str());
     return llvm::PreservedAnalyses::all();
   }
 

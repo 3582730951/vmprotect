@@ -1,0 +1,216 @@
+# 2026-04-02 Phase 2A.2 Call-Site Integration Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 收口 runtime 实际调用点的动态执行页/JIT policy。
+- 本轮只覆盖：
+  - `MemoryHAL`
+  - `SecureIREngine`
+  - `eippf_execute_jit_enclave`
+  - 对应 safe/hardened tests
+
+Task Charter:
+- Objective:
+  - 让所有运行时动态执行页/JIT 入口统一受 `MemoryHAL::runtime_dynamic_code_allowed()` 控制，并为拒绝路径提供稳定 gate code 证据。
+- Scope:
+  - `core/runtime/include/runtime/memory_hal.hpp`
+  - `core/runtime/include/runtime/secure_ir_engine.hpp`
+  - `core/runtime/src/secure_ir_engine.cpp`
+  - `core/runtime/src/EippfRuntime.cpp`
+  - `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+  - `core/tests/runtime/hal/memory_hal_test.cpp`
+  - `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+  - `core/tests/runtime/ir/secure_ir_engine_test.cpp`
+  - `core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+  - `core/tests/CMakeLists.txt`
+  - `core/tests/tools/CMakeLists.txt`
+- Non-Goals:
+  - 不修改 passes
+  - 不修改 mutator
+  - 不修改 artifact audit
+  - 不进入 Phase 2B/2C
+- Constraints:
+  - 所有调用点必须走统一 gate
+  - gate code 需要稳定、可测试、可审计
+  - 不允许 safe lane 先触达可执行页 API 再失败
+- Acceptance Criteria:
+  - `MemoryHAL::runtime_dynamic_code_allowed()` 成为唯一动态执行页/JIT 允许入口
+  - `SecureIREngine::CompileResult` 带稳定 `gate_code`
+  - `eippf_execute_jit_enclave(...)` 被拒绝时可通过 `eippf_runtime_last_gate_code()` 读取 `jit_route_forbidden_for_target`
+  - `eippf_execute_jit_enclave(...)` 被拒绝时探针 `probe_flags == 0x1`
+  - desktop `eippf_execute_jit_enclave(...)` 正向路径必须产生允许证据
+  - desktop 正向回归与 safe/unknown/dex/shell 拒绝回归共同通过
+- Forbidden Shortcuts:
+  - 禁止在单个调用点维护自己的 target 白名单
+  - 禁止被拒绝后继续进入 `VirtualAlloc/mmap/VirtualProtect/mprotect`
+  - 禁止 gate code 只写日志、不落到结果字段/API
+
+Design Decisions:
+- 唯一收口点：
+  - 所有“是否允许动态执行页/JIT”的判断只走 `MemoryHAL::runtime_dynamic_code_allowed()`
+- `MemoryHAL::runtime_dynamic_code_allowed()` 唯一规则：
+  - 读取 `configured_target_kind()`
+  - 仅当 `target_kind_supports_desktop_jit(target) == true`
+  - 且 `target_forbids_runtime_executable_pages(target) == false`
+  - 才返回 `true`
+  - 其他 target 一律 `false`
+- `jit_route_forbidden_for_target` 的唯一落点：
+  - C++ IR 路径：
+    - `SecureIREngine::CompileResult::gate_code`
+    - 枚举值：`GateCode::kJitRouteForbiddenForTarget`
+  - C ABI JIT enclave 路径：
+    - `extern "C" const char* eippf_runtime_last_gate_code() noexcept`
+    - 返回稳定字符串：`"jit_route_forbidden_for_target"`
+- `eippf_execute_jit_enclave(...)` 必须先 gate，再做任何 resolve / 分配 / 执行
+- 探针 API：
+  - `extern "C" void eippf_runtime_reset_jit_enclave_probe() noexcept`
+  - `extern "C" std::uint32_t eippf_runtime_jit_enclave_probe_flags() noexcept`
+  - 位定义固定：
+    - `0x1 = gate_checked`
+    - `0x2 = resolve_attempted`
+    - `0x4 = exec_alloc_attempted`
+  - 禁止目标执行后探针必须精确等于 `0x1`
+  - desktop 允许路径执行后必须满足 `(probe_flags & 0x7) == 0x7`
+
+File Ownership:
+- PM:
+  - `plan/2026-04-02-phase-2a2-call-site-plan.txt`
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+- Engineer:
+  - `core/runtime/include/runtime/memory_hal.hpp`
+  - `core/runtime/include/runtime/secure_ir_engine.hpp`
+  - `core/runtime/src/secure_ir_engine.cpp`
+- `core/runtime/src/EippfRuntime.cpp`
+- `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+- `core/tests/runtime/hal/memory_hal_test.cpp`
+- `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+- `core/tests/runtime/ir/secure_ir_engine_test.cpp`
+- `core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+- `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+- `core/tests/CMakeLists.txt`
+- `core/tests/tools/CMakeLists.txt`
+- Reviewers:
+  - read-only
+
+Engineer Task Card:
+- 文件 `[memory_hal.hpp](/workspace/core/runtime/include/runtime/memory_hal.hpp)`
+  - 引入 `runtime/backend_policy.hpp`
+  - 重写 `runtime_dynamic_code_allowed()`：
+    - 读取 `configured_target_kind()`
+    - 返回：
+      - `target_kind_supports_desktop_jit(target) && !target_forbids_runtime_executable_pages(target)`
+  - 不要保留额外 target 特判
+- 文件 `[secure_ir_engine.hpp](/workspace/core/runtime/include/runtime/secure_ir_engine.hpp)`
+  - 新增：
+    - `enum class GateCode { kNone, kJitRouteForbiddenForTarget }`
+  - 在 `CompileResult` 中增加：
+    - `GateCode gate_code = GateCode::kNone`
+- 文件 `[secure_ir_engine.cpp](/workspace/core/runtime/src/secure_ir_engine.cpp)`
+  - 当 `!MemoryHAL::runtime_dynamic_code_allowed()`：
+    - `result.gate_code = GateCode::kJitRouteForbiddenForTarget`
+    - `result.error` 保持 fail-closed 错误态
+    - `result.error_message_hash` 以 `"jit_route_forbidden_for_target"` 计算
+  - 其他路径不引入新的 gate code
+- 文件 `[EippfRuntime.cpp](/workspace/core/runtime/src/EippfRuntime.cpp)`
+  - 新增 gate code 存储
+  - 新增导出：
+    - `extern "C" const char* eippf_runtime_last_gate_code() noexcept`
+    - `extern "C" void eippf_runtime_reset_jit_enclave_probe() noexcept`
+    - `extern "C" std::uint32_t eippf_runtime_jit_enclave_probe_flags() noexcept`
+  - 在 `eippf_execute_jit_enclave(...)` 开头：
+    - 清空 last gate code
+    - 重置 probe
+    - 设置 `gate_checked`
+    - 先判 `MemoryHAL::runtime_dynamic_code_allowed()`
+    - 若 `false`：
+      - 设置 `"jit_route_forbidden_for_target"`
+      - 立即返回
+    - 进入 resolve 前设置 `resolve_attempted`
+    - 进入 executable page 分配前设置 `exec_alloc_attempted`
+  - 不得在 gate 失败后继续 resolve API 或申请可执行页
+- 文件 `[secure_ir_engine_test.cpp](/workspace/core/tests/runtime/ir/secure_ir_engine_test.cpp)`
+  - 不改逻辑
+  - 但必须纳入 2A.2 验收命令，作为 desktop 允许路径回归门
+- 文件 `[memory_hal_test.cpp](/workspace/core/tests/runtime/hal/memory_hal_test.cpp)`
+  - 不改逻辑
+  - 但必须纳入 2A.2 验收命令，作为 desktop 允许路径回归门
+- 文件 `[secure_ir_engine_safe_backend_test.cpp](/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp)`
+  - 新增断言：
+    - `compile(...).gate_code == Engine::GateCode::kJitRouteForbiddenForTarget`
+  - 扩展目标矩阵到：
+    - `ios_appstore`
+    - `windows_driver`
+    - `android_dex`
+    - `shell_ephemeral`
+    - `unknown`
+- 文件 `[hardened_target_secure_ir_engine_test.cpp](/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp)`
+  - 新增断言：
+    - `compile(...).gate_code == Engine::GateCode::kJitRouteForbiddenForTarget`
+- 文件 `[hardened_target_runtime_kind_test.cpp](/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp)`
+  - 声明：
+    - `eippf_execute_jit_enclave(...)`
+    - `eippf_runtime_last_gate_code()`
+    - `eippf_runtime_reset_jit_enclave_probe()`
+    - `eippf_runtime_jit_enclave_probe_flags()`
+  - 新增断言：
+    - 调 `eippf_execute_jit_enclave(...)` 后
+    - `eippf_runtime_last_gate_code() == "jit_route_forbidden_for_target"`
+    - `eippf_runtime_jit_enclave_probe_flags() == 0x1`
+  - 新增 desktop 分支：
+    - `configured_target_kind == desktop_native`
+    - `MemoryHAL::runtime_dynamic_code_allowed() == true`
+    - 调 `eippf_execute_jit_enclave(...)` 后
+    - `eippf_runtime_last_gate_code()` 为空字符串
+    - `(eippf_runtime_jit_enclave_probe_flags() & 0x7) == 0x7`
+  - 扩展目标矩阵到：
+    - `desktop_native`
+    - `ios_appstore`
+    - `windows_driver`
+    - `android_dex`
+    - `shell_ephemeral`
+    - `unknown`
+- 文件 `[memory_hal_safe_backend_test.cpp](/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp)`
+  - 保持并强化：
+    - `runtime_dynamic_code_allowed() == false`
+    - `protect_rx(...) == false`
+  - 扩展目标矩阵到：
+    - `ios_appstore`
+    - `windows_driver`
+    - `android_dex`
+    - `shell_ephemeral`
+    - `unknown`
+- 文件 `[core/tests/CMakeLists.txt](/workspace/core/tests/CMakeLists.txt)`
+  - 扩展现有 runtime safe test 目标矩阵到 `android_dex/shell_ephemeral/unknown`
+  - `unknown` 构建不调用 `eippf_harden_target`
+- 文件 `[core/tests/tools/CMakeLists.txt](/workspace/core/tests/tools/CMakeLists.txt)`
+  - 扩展现有 hardened runtime_kind 测试矩阵到 `android_dex/shell_ephemeral/unknown`
+  - 复用现有矩阵新增 `desktop_native`
+  - `unknown` 构建不调用 `eippf_harden_target`
+- 固定命令：
+  - `cmake -S /workspace/core -B /workspace/build_phase25_a2 -G Ninja`
+  - `cmake --build /workspace/build_phase25_a2 -j --target runtime_secure_ir_engine_test runtime_memory_hal_test secure_ir_engine_ios_appstore_safe_test secure_ir_engine_windows_driver_safe_test secure_ir_engine_android_dex_safe_test secure_ir_engine_shell_ephemeral_safe_test secure_ir_engine_unknown_safe_test memory_hal_ios_appstore_safe_test memory_hal_windows_driver_safe_test memory_hal_android_dex_safe_test memory_hal_shell_ephemeral_safe_test memory_hal_unknown_safe_test hardened_target_desktop_runtime_kind_test hardened_target_ios_runtime_kind_test hardened_target_windows_driver_runtime_kind_test hardened_target_android_dex_runtime_kind_test hardened_target_shell_ephemeral_runtime_kind_test hardened_target_unknown_runtime_kind_test hardened_target_ios_secure_ir_engine_test hardened_target_windows_driver_secure_ir_engine_test`
+  - `ctest --test-dir /workspace/build_phase25_a2 --output-on-failure -R 'runtime_secure_ir_engine_test|runtime_memory_hal_test|runtime_secure_ir_engine_.*_safe_test|runtime_memory_hal_.*_safe_test|hardened_target_.*_runtime_kind_test|hardened_target_.*_secure_ir_engine_test'`
+
+Reviewer Checklist:
+- Architecture Reviewer:
+  - 动态执行页/JIT gate 已统一收口到 `MemoryHAL::runtime_dynamic_code_allowed()`
+  - `jit_route_forbidden_for_target` 有明确、稳定落点
+- Security Reviewer:
+  - iOS/kernel/dex/shell/unknown 无法在两条路径进入动态执行页/JIT
+  - gate 失败发生在任何可执行页分配之前
+- Validation Reviewer:
+  - desktop 正向回归测试通过
+  - unknown/dex/shell 调用点级测试通过
+  - 探针证明 “先 gate 后解析/分配”
+  - `hardened_target_.*_secure_ir_engine_test` 族被实际执行
+  - gate code 断言能在移除 policy gate 时失败
+
+Exit Rule:
+- 三审全部 `PASS` 前，不得派工程实现
+- 本子阶段通过前，不得进入 `Phase 2B`

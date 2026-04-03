@@ -36,6 +36,10 @@ int main() {
               "compile should fail closed with kMemoryProtectFailed")) {
     return 1;
   }
+  if (!expect(compiled.gate_code == Engine::GateCode::kJitRouteForbiddenForTarget,
+              "compile should set jit_route_forbidden_for_target gate code")) {
+    return 1;
+  }
   if (!expect(compiled.error_message_hash != 0u,
               "failed compile should still emit an audit hash")) {
     return 1;

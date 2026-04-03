@@ -74,6 +74,14 @@ KNOWN_TARGET_KINDS = {
     "shell_ephemeral",
 }
 
+USER_MODE_TARGET_KINDS = {
+    "desktop_native",
+    "android_so",
+}
+
+PE_USER_MODE_MARKER = b"EIPPF_PE_USERMODE_V1"
+ELF_USER_MODE_MARKER = b"EIPPF_ELF_USERMODE_V1"
+
 SIGNED_TARGET_KINDS = {
     "ios_appstore",
     "windows_driver",
@@ -85,6 +93,30 @@ SIGNED_ARTIFACT_KINDS = {
     "windows_driver_sys",
     "linux_kernel_module_ko",
 }
+
+DEX_LOADER_PROVIDER_KIND_ALLOWLIST = (
+    "executable_adapter",
+    "fifo",
+    "unix_socket",
+)
+DEX_REQUIRED_BRIDGE_SURFACE = "allowlist_only"
+DEX_REQUIRED_CLASS_LOADER_POLICY = "private_handle_only"
+DEX_REQUIRED_ANTI_DEBUG_POLICY = "block_jdwp_attach"
+DEX_REQUIRED_ANTI_HOOK_POLICY = "best_effort_frida_xposed_guard"
+DEX_BRIDGE_SURFACE_ALLOWLIST = (
+    "restricted",
+    "allowlist_only",
+    "minimized",
+)
+DEX_CLASS_LOADER_ALLOWLIST = (
+    "isolated",
+    "in_memory_only",
+    "allowlist_only",
+)
+IOS_PRIVATE_FRAMEWORK_MARKERS = (
+    "/system/library/privateframeworks/",
+    "privateframeworks/",
+)
 
 SIGNATURE_VERIFIER_SCHEMA_VERSION = 1
 SIGNATURE_VERIFIER_TIMEOUT_SECONDS = 1.0
@@ -1035,6 +1067,35 @@ def load_manifest_metadata(manifest_path: Path | None) -> dict[str, object]:
             "target_kind": None,
             "target_kind_valid": True,
             "artifact_kind": None,
+            "backend_kind": None,
+            "runtime_lane": None,
+            "mutation_profile": None,
+            "signature_policy": None,
+            "sign_after_mutate_required": None,
+            "allow_jit": None,
+            "allow_runtime_executable_pages": None,
+            "allow_persistent_plaintext": None,
+            "require_fail_closed": None,
+            "kernel_compat_profile": None,
+            "hvci_profile": None,
+            "vermagic_profile": None,
+            "gki_kmi_profile": None,
+            "execution_model": None,
+            "trace_env_scrubbed": None,
+            "source_policy": None,
+            "unsafe_shell_features": [],
+            "loader_format_version": None,
+            "external_key_required": None,
+            "key_provider_protocol": None,
+            "bridge_surface": None,
+            "class_loader": None,
+            "anti_debug": None,
+            "anti_hook": None,
+            "key_provider_endpoint_kind": None,
+            "key_provider_static_file": None,
+            "key_material_embedded": None,
+            "plaintext_output": None,
+            "no_persistent_plaintext_goal": None,
         }
     if not manifest_path.exists():
         return {
@@ -1046,6 +1107,35 @@ def load_manifest_metadata(manifest_path: Path | None) -> dict[str, object]:
             "target_kind": None,
             "target_kind_valid": False,
             "artifact_kind": None,
+            "backend_kind": None,
+            "runtime_lane": None,
+            "mutation_profile": None,
+            "signature_policy": None,
+            "sign_after_mutate_required": None,
+            "allow_jit": None,
+            "allow_runtime_executable_pages": None,
+            "allow_persistent_plaintext": None,
+            "require_fail_closed": None,
+            "kernel_compat_profile": None,
+            "hvci_profile": None,
+            "vermagic_profile": None,
+            "gki_kmi_profile": None,
+            "execution_model": None,
+            "trace_env_scrubbed": None,
+            "source_policy": None,
+            "unsafe_shell_features": [],
+            "loader_format_version": None,
+            "external_key_required": None,
+            "key_provider_protocol": None,
+            "bridge_surface": None,
+            "class_loader": None,
+            "anti_debug": None,
+            "anti_hook": None,
+            "key_provider_endpoint_kind": None,
+            "key_provider_static_file": None,
+            "key_material_embedded": None,
+            "plaintext_output": None,
+            "no_persistent_plaintext_goal": None,
         }
     try:
         parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1059,6 +1149,35 @@ def load_manifest_metadata(manifest_path: Path | None) -> dict[str, object]:
             "target_kind": None,
             "target_kind_valid": False,
             "artifact_kind": None,
+            "backend_kind": None,
+            "runtime_lane": None,
+            "mutation_profile": None,
+            "signature_policy": None,
+            "sign_after_mutate_required": None,
+            "allow_jit": None,
+            "allow_runtime_executable_pages": None,
+            "allow_persistent_plaintext": None,
+            "require_fail_closed": None,
+            "kernel_compat_profile": None,
+            "hvci_profile": None,
+            "vermagic_profile": None,
+            "gki_kmi_profile": None,
+            "execution_model": None,
+            "trace_env_scrubbed": None,
+            "source_policy": None,
+            "unsafe_shell_features": [],
+            "loader_format_version": None,
+            "external_key_required": None,
+            "key_provider_protocol": None,
+            "bridge_surface": None,
+            "class_loader": None,
+            "anti_debug": None,
+            "anti_hook": None,
+            "key_provider_endpoint_kind": None,
+            "key_provider_static_file": None,
+            "key_material_embedded": None,
+            "plaintext_output": None,
+            "no_persistent_plaintext_goal": None,
         }
     if not isinstance(parsed, dict):
         return {
@@ -1070,11 +1189,78 @@ def load_manifest_metadata(manifest_path: Path | None) -> dict[str, object]:
             "target_kind": None,
             "target_kind_valid": False,
             "artifact_kind": None,
+            "backend_kind": None,
+            "runtime_lane": None,
+            "mutation_profile": None,
+            "signature_policy": None,
+            "sign_after_mutate_required": None,
+            "allow_jit": None,
+            "allow_runtime_executable_pages": None,
+            "allow_persistent_plaintext": None,
+            "require_fail_closed": None,
+            "kernel_compat_profile": None,
+            "hvci_profile": None,
+            "vermagic_profile": None,
+            "gki_kmi_profile": None,
+            "execution_model": None,
+            "trace_env_scrubbed": None,
+            "source_policy": None,
+            "unsafe_shell_features": [],
+            "loader_format_version": None,
+            "external_key_required": None,
+            "key_provider_protocol": None,
+            "bridge_surface": None,
+            "class_loader": None,
+            "anti_debug": None,
+            "anti_hook": None,
+            "key_provider_endpoint_kind": None,
+            "key_provider_static_file": None,
+            "key_material_embedded": None,
+            "plaintext_output": None,
+            "no_persistent_plaintext_goal": None,
         }
     target_kind_raw = parsed.get("target_kind")
     artifact_kind_raw = parsed.get("artifact_kind")
+    backend_kind_raw = parsed.get("backend_kind")
     target_kind = normalize_target_kind(target_kind_raw if isinstance(target_kind_raw, str) else None)
     target_kind_valid = target_kind_raw is None or target_kind is not None
+    runtime_lane_raw = parsed.get("runtime_lane")
+    mutation_profile_raw = parsed.get("mutation_profile")
+    signature_policy_raw = parsed.get("signature_policy")
+    sign_after_mutate_required_raw = parsed.get("sign_after_mutate_required")
+    allow_jit_raw = parsed.get("allow_jit")
+    allow_runtime_executable_pages_raw = parsed.get("allow_runtime_executable_pages")
+    allow_persistent_plaintext_raw = parsed.get("allow_persistent_plaintext")
+    require_fail_closed_raw = parsed.get("require_fail_closed")
+    kernel_compat_profile_raw = parsed.get("kernel_compat_profile")
+    hvci_profile_raw = parsed.get("hvci_profile")
+    vermagic_profile_raw = parsed.get("vermagic_profile")
+    gki_kmi_profile_raw = parsed.get("gki_kmi_profile")
+    execution_model_raw = parsed.get("execution_model")
+    trace_env_scrubbed_raw = parsed.get("trace_env_scrubbed")
+    source_policy_raw = parsed.get("source_policy")
+    unsafe_shell_features_raw = parsed.get("unsafe_shell_features")
+    loader_format_version_raw = parsed.get("loader_format_version")
+    external_key_required_raw = parsed.get("external_key_required")
+    key_provider_protocol_raw = parsed.get("key_provider_protocol")
+    bridge_surface_raw = parsed.get("bridge_surface")
+    class_loader_policy_raw = parsed.get("class_loader_policy")
+    class_loader_exported_raw = parsed.get("class_loader_exported")
+    class_loader_raw = parsed.get("class_loader")
+    anti_debug_policy_raw = parsed.get("anti_debug_policy")
+    anti_hook_policy_raw = parsed.get("anti_hook_policy")
+    anti_debug_raw = parsed.get("anti_debug")
+    anti_hook_raw = parsed.get("anti_hook")
+    key_provider_endpoint_kind_raw = parsed.get("key_provider_endpoint_kind")
+    key_provider_static_file_raw = parsed.get("key_provider_static_file")
+    key_material_embedded_raw = parsed.get("key_material_embedded")
+    plaintext_output_raw = parsed.get("plaintext_output")
+    no_persistent_plaintext_goal_raw = parsed.get("no_persistent_plaintext_goal")
+    unsafe_shell_features: list[str] = []
+    if isinstance(unsafe_shell_features_raw, list):
+        for item in unsafe_shell_features_raw:
+            if isinstance(item, str):
+                unsafe_shell_features.append(item)
     return {
         "provided": True,
         "path": str(manifest_path),
@@ -1083,6 +1269,84 @@ def load_manifest_metadata(manifest_path: Path | None) -> dict[str, object]:
         "target_kind": target_kind,
         "target_kind_valid": target_kind_valid,
         "artifact_kind": artifact_kind_raw if isinstance(artifact_kind_raw, str) else None,
+        "backend_kind": backend_kind_raw if isinstance(backend_kind_raw, str) else None,
+        "runtime_lane": runtime_lane_raw if isinstance(runtime_lane_raw, str) else None,
+        "mutation_profile": mutation_profile_raw if isinstance(mutation_profile_raw, str) else None,
+        "signature_policy": signature_policy_raw if isinstance(signature_policy_raw, str) else None,
+        "sign_after_mutate_required": (
+            sign_after_mutate_required_raw if isinstance(sign_after_mutate_required_raw, bool) else None
+        ),
+        "allow_jit": allow_jit_raw if isinstance(allow_jit_raw, bool) else None,
+        "allow_runtime_executable_pages": (
+            allow_runtime_executable_pages_raw
+            if isinstance(allow_runtime_executable_pages_raw, bool)
+            else None
+        ),
+        "allow_persistent_plaintext": (
+            allow_persistent_plaintext_raw if isinstance(allow_persistent_plaintext_raw, bool) else None
+        ),
+        "require_fail_closed": require_fail_closed_raw if isinstance(require_fail_closed_raw, bool) else None,
+        "kernel_compat_profile": (
+            kernel_compat_profile_raw if isinstance(kernel_compat_profile_raw, str) else None
+        ),
+        "hvci_profile": hvci_profile_raw if isinstance(hvci_profile_raw, bool) else None,
+        "vermagic_profile": vermagic_profile_raw if isinstance(vermagic_profile_raw, bool) else None,
+        "gki_kmi_profile": gki_kmi_profile_raw if isinstance(gki_kmi_profile_raw, bool) else None,
+        "execution_model": execution_model_raw if isinstance(execution_model_raw, str) else None,
+        "trace_env_scrubbed": (
+            trace_env_scrubbed_raw if isinstance(trace_env_scrubbed_raw, bool) else None
+        ),
+        "source_policy": source_policy_raw if isinstance(source_policy_raw, str) else None,
+        "unsafe_shell_features": unsafe_shell_features,
+        "loader_format_version": (
+            loader_format_version_raw
+            if isinstance(loader_format_version_raw, int)
+            and not isinstance(loader_format_version_raw, bool)
+            else None
+        ),
+        "external_key_required": (
+            external_key_required_raw if isinstance(external_key_required_raw, bool) else None
+        ),
+        "key_provider_protocol": (
+            key_provider_protocol_raw if isinstance(key_provider_protocol_raw, str) else None
+        ),
+        "bridge_surface": (
+            bridge_surface_raw
+            if isinstance(bridge_surface_raw, (bool, str))
+            else None
+        ),
+        "class_loader_policy": (
+            class_loader_policy_raw if isinstance(class_loader_policy_raw, str) else None
+        ),
+        "class_loader_exported": (
+            class_loader_exported_raw if isinstance(class_loader_exported_raw, bool) else None
+        ),
+        "class_loader": (
+            class_loader_raw
+            if isinstance(class_loader_raw, (bool, str))
+            else None
+        ),
+        "anti_debug_policy": (
+            anti_debug_policy_raw if isinstance(anti_debug_policy_raw, str) else None
+        ),
+        "anti_hook_policy": anti_hook_policy_raw if isinstance(anti_hook_policy_raw, str) else None,
+        "anti_debug": anti_debug_raw if isinstance(anti_debug_raw, bool) else None,
+        "anti_hook": anti_hook_raw if isinstance(anti_hook_raw, bool) else None,
+        "key_provider_endpoint_kind": (
+            key_provider_endpoint_kind_raw if isinstance(key_provider_endpoint_kind_raw, str) else None
+        ),
+        "key_provider_static_file": (
+            key_provider_static_file_raw if isinstance(key_provider_static_file_raw, bool) else None
+        ),
+        "key_material_embedded": (
+            key_material_embedded_raw if isinstance(key_material_embedded_raw, bool) else None
+        ),
+        "plaintext_output": plaintext_output_raw if isinstance(plaintext_output_raw, bool) else None,
+        "no_persistent_plaintext_goal": (
+            no_persistent_plaintext_goal_raw
+            if isinstance(no_persistent_plaintext_goal_raw, bool)
+            else None
+        ),
     }
 
 
@@ -1619,6 +1883,66 @@ def audit_signature_surface(
     }
 
 
+def resolve_user_mode_target_kind(
+    explicit_target_kind: str | None, manifest_meta: dict[str, object]
+) -> tuple[str | None, str]:
+    normalized_explicit = normalize_target_kind(explicit_target_kind)
+    if normalized_explicit is not None:
+        return normalized_explicit, "explicit_target_kind"
+    manifest_target_kind = manifest_meta.get("target_kind")
+    if isinstance(manifest_target_kind, str):
+        return manifest_target_kind, "manifest_target_kind"
+    return None, "none"
+
+
+def audit_user_mode_marker(
+    data: bytes,
+    artifact_kind: str,
+    explicit_target_kind: str | None,
+    manifest_meta: dict[str, object],
+) -> dict[str, object]:
+    target_kind, target_kind_source = resolve_user_mode_target_kind(explicit_target_kind, manifest_meta)
+    expected_marker = ""
+    marker_present = False
+
+    if artifact_kind == "pe":
+        expected_marker = PE_USER_MODE_MARKER.decode("ascii")
+        marker_present = PE_USER_MODE_MARKER in data
+    elif artifact_kind == "elf":
+        expected_marker = ELF_USER_MODE_MARKER.decode("ascii")
+        marker_present = ELF_USER_MODE_MARKER in data
+
+    required = (
+        target_kind in USER_MODE_TARGET_KINDS
+        and artifact_kind in ("pe", "elf")
+        and target_kind is not None
+        and target_kind_matches_artifact_kind(target_kind, artifact_kind)
+    )
+
+    return {
+        "required": required,
+        "target_kind": target_kind,
+        "target_kind_source": target_kind_source,
+        "expected_marker": expected_marker,
+        "marker_present": marker_present,
+        "passed": (not required) or marker_present,
+    }
+
+
+def find_ios_private_api_hits(imports_result: dict[str, object]) -> list[str]:
+    hits: list[str] = []
+    libraries = imports_result.get("libraries")
+    if not isinstance(libraries, list):
+        return hits
+    for library in libraries:
+        if not isinstance(library, str):
+            continue
+        lowered = library.lower()
+        if any(marker in lowered for marker in IOS_PRIVATE_FRAMEWORK_MARKERS):
+            hits.append(library)
+    return hits
+
+
 def audit_artifact(
     data: bytes,
     artifact_path: Path,
@@ -1630,6 +1954,44 @@ def audit_artifact(
     strict_mode: bool,
 ) -> dict[str, object]:
     artifact_kind = detect_artifact_kind(data)
+    normalized_explicit_target_kind = normalize_target_kind(explicit_target_kind)
+    manifest_target_kind = manifest_meta.get("target_kind")
+    resolved_target_kind = (
+        normalized_explicit_target_kind
+        if normalized_explicit_target_kind is not None
+        else (manifest_target_kind if isinstance(manifest_target_kind, str) else None)
+    )
+    runtime_lane = manifest_meta.get("runtime_lane")
+    manifest_artifact_kind = manifest_meta.get("artifact_kind")
+    backend_kind = manifest_meta.get("backend_kind")
+    mutation_profile = manifest_meta.get("mutation_profile")
+    signature_policy = manifest_meta.get("signature_policy")
+    sign_after_mutate_required = manifest_meta.get("sign_after_mutate_required")
+    loader_format_version = manifest_meta.get("loader_format_version")
+    external_key_required = manifest_meta.get("external_key_required")
+    key_provider_protocol = manifest_meta.get("key_provider_protocol")
+    allow_jit = manifest_meta.get("allow_jit")
+    allow_runtime_executable_pages = manifest_meta.get("allow_runtime_executable_pages")
+    allow_persistent_plaintext = manifest_meta.get("allow_persistent_plaintext")
+    require_fail_closed = manifest_meta.get("require_fail_closed")
+    bridge_surface = manifest_meta.get("bridge_surface")
+    class_loader_policy = manifest_meta.get("class_loader_policy")
+    class_loader_exported = manifest_meta.get("class_loader_exported")
+    anti_debug_policy = manifest_meta.get("anti_debug_policy")
+    anti_hook_policy = manifest_meta.get("anti_hook_policy")
+    kernel_compat_profile = manifest_meta.get("kernel_compat_profile")
+    hvci_profile = manifest_meta.get("hvci_profile")
+    vermagic_profile = manifest_meta.get("vermagic_profile")
+    gki_kmi_profile = manifest_meta.get("gki_kmi_profile")
+    execution_model = manifest_meta.get("execution_model")
+    trace_env_scrubbed = manifest_meta.get("trace_env_scrubbed")
+    source_policy = manifest_meta.get("source_policy")
+    unsafe_shell_features = manifest_meta.get("unsafe_shell_features")
+    key_provider_endpoint_kind = manifest_meta.get("key_provider_endpoint_kind")
+    key_provider_static_file = manifest_meta.get("key_provider_static_file")
+    key_material_embedded = manifest_meta.get("key_material_embedded")
+    plaintext_output = manifest_meta.get("plaintext_output")
+    no_persistent_plaintext_goal = manifest_meta.get("no_persistent_plaintext_goal")
     strings_found = extract_strings(data)
     matched_strings = find_denylist_hits(strings_found, denylist, "string")
 
@@ -1650,6 +2012,23 @@ def audit_artifact(
         signature_verifier,
         strict_mode,
     )
+    user_mode_marker_result = audit_user_mode_marker(
+        data,
+        artifact_kind,
+        explicit_target_kind,
+        manifest_meta,
+    )
+    ios_compliance_profile = None
+    private_api_hits: list[str] = []
+    code_signature_state = {
+        "present": False,
+        "format_valid": False,
+        "validation_mode": signature_result["validation_mode"],
+    }
+    exec_permission_summary = {
+        "rwx_detected": False,
+        "violation_kinds": [],
+    }
 
     strict_failures: list[str] = []
     if not denylist_loaded:
@@ -1693,9 +2072,187 @@ def audit_artifact(
         strict_failures.append("signature_verifier_digest_mismatch")
     if verifier_error == "signature_authenticity_rejected":
         strict_failures.append("signature_authenticity_rejected")
+    if not user_mode_marker_result["passed"]:
+        strict_failures.append("user_mode_marker_missing")
+
+    if resolved_target_kind in ("windows_driver", "linux_kernel_module", "android_kernel_module"):
+        expected_kernel_compat_profile = {
+            "windows_driver": "hvci_profile",
+            "linux_kernel_module": "vermagic_profile",
+            "android_kernel_module": "gki_kmi_profile",
+        }[resolved_target_kind]
+        kernel_gate_failed = (
+            runtime_lane != "kernel_safe"
+            or mutation_profile != "kernel_module"
+            or signature_policy != "sign_after_mutate"
+            or sign_after_mutate_required is not True
+            or allow_jit is not False
+            or allow_runtime_executable_pages is not False
+            or allow_persistent_plaintext is not False
+            or require_fail_closed is not True
+            or kernel_compat_profile != expected_kernel_compat_profile
+            or (resolved_target_kind == "windows_driver" and hvci_profile is not True)
+        )
+        if kernel_gate_failed:
+            strict_failures.append("kernel_gate_failed")
+        if resolved_target_kind == "linux_kernel_module" and vermagic_profile is not True:
+            strict_failures.append("vermagic_mismatch")
+        if resolved_target_kind == "android_kernel_module" and gki_kmi_profile is not True:
+            strict_failures.append("gki_kmi_mismatch")
+
+    if resolved_target_kind == "shell_ephemeral" or artifact_kind == "shell_bundle":
+        shell_gate_failed = (
+            resolved_target_kind != "shell_ephemeral"
+            or backend_kind != "shell_launcher"
+            or runtime_lane != "shell_launcher"
+            or mutation_profile != "shell_bundle"
+            or signature_policy != "required_verifier"
+            or allow_jit is not False
+            or allow_runtime_executable_pages is not False
+            or allow_persistent_plaintext is not False
+            or require_fail_closed is not True
+            or execution_model != "pipe_stdin_exec"
+            or trace_env_scrubbed is not True
+            or source_policy != "self_contained_only"
+            or key_provider_endpoint_kind not in ("executable_adapter", "fifo", "unix_socket")
+            or key_provider_static_file is not False
+        )
+        if shell_gate_failed:
+            strict_failures.append("shell_gate_failed")
+        if isinstance(unsafe_shell_features, list) and len(unsafe_shell_features) > 0:
+            strict_failures.append("shell_unsafe_feature_present")
+        if (
+            key_material_embedded is not False
+            or plaintext_output is not False
+            or no_persistent_plaintext_goal is not True
+        ):
+            strict_failures.append("shell_plaintext_leak_indicator")
+
+    if resolved_target_kind == "android_dex" or artifact_kind in ("dex", "dex_bundle"):
+        loader_metadata_missing = (
+            manifest_target_kind != "android_dex"
+            or backend_kind != "dex_loader_vm"
+            or runtime_lane != "dex_loader_vm"
+            or mutation_profile != "dex_bundle"
+            or manifest_artifact_kind != "dex_bundle"
+            or loader_format_version != 3
+            or external_key_required is not True
+            or key_provider_protocol != "eippf.external_key.v1"
+        )
+        if loader_metadata_missing:
+            strict_failures.append("loader_metadata_missing")
+
+        loader_gate_unresolved = (
+            allow_jit is not False
+            or allow_runtime_executable_pages is not False
+            or allow_persistent_plaintext is not False
+            or require_fail_closed is not True
+            or bridge_surface != DEX_REQUIRED_BRIDGE_SURFACE
+            or class_loader_policy != DEX_REQUIRED_CLASS_LOADER_POLICY
+            or class_loader_exported is not False
+            or anti_debug_policy != DEX_REQUIRED_ANTI_DEBUG_POLICY
+            or anti_hook_policy != DEX_REQUIRED_ANTI_HOOK_POLICY
+            or key_provider_endpoint_kind not in DEX_LOADER_PROVIDER_KIND_ALLOWLIST
+            or key_provider_static_file is not False
+        )
+        if loader_gate_unresolved:
+            strict_failures.append("loader_gate_unresolved")
+
+        dex_bundle_embedded_key_marker = any(
+            isinstance(violation, dict) and violation.get("kind") == "embedded_key_material"
+            for violation in bundle_violations
+        )
+        dex_plaintext_leak_detected = (
+            artifact_kind == "dex"
+            or dex_bundle_embedded_key_marker
+            or key_material_embedded is not False
+            or plaintext_output is not False
+            or no_persistent_plaintext_goal is not True
+            or b"SECRET_ANCHOR" in data
+        )
+        if dex_plaintext_leak_detected:
+            strict_failures.append("dex_plaintext_leak_detected")
+
+    if resolved_target_kind == "ios_appstore" or manifest_target_kind == "ios_appstore":
+        ios_compliance_profile = "app_store_safe"
+        private_api_hits = find_ios_private_api_hits(imports_result)
+        rwx_segment_detected = any(
+            isinstance(violation, dict) and violation.get("kind") == "writable_executable_segment"
+            for violation in permission_violations
+        )
+        signature_details = signature_result.get("details")
+        macho_code_signature_present = (
+            isinstance(signature_details, dict)
+            and bool(signature_details.get("macho_codesig_command", False))
+        )
+        ios_gate_failed = (
+            artifact_kind != "macho"
+            or backend_kind != "ios_safe_aot"
+            or runtime_lane != "ios_safe"
+            or mutation_profile != "ios_macho"
+            or signature_policy != "required_verifier"
+            or allow_jit is not False
+            or allow_runtime_executable_pages is not False
+            or allow_persistent_plaintext is not False
+            or require_fail_closed is not True
+        )
+        if ios_gate_failed:
+            strict_failures.append("ios_gate_failed")
+        if private_api_hits:
+            strict_failures.append("private_api_detected")
+        if not macho_code_signature_present:
+            strict_failures.append("macho_code_signature_missing")
+        if rwx_segment_detected:
+            strict_failures.append("rwx_segment_detected")
+        code_signature_state = {
+            "present": macho_code_signature_present,
+            "format_valid": bool(signature_result["format_valid"]),
+            "validation_mode": signature_result["validation_mode"],
+        }
+        exec_permission_summary = {
+            "rwx_detected": rwx_segment_detected,
+            "violation_kinds": [
+                violation.get("kind")
+                for violation in permission_violations
+                if isinstance(violation, dict) and isinstance(violation.get("kind"), str)
+            ],
+        }
 
     return {
         "schema_version": 1,
+        "target_kind": resolved_target_kind,
+        "backend_kind": backend_kind,
+        "runtime_lane": runtime_lane,
+        "mutation_profile": mutation_profile,
+        "signature_policy": signature_policy,
+        "sign_after_mutate_required": sign_after_mutate_required,
+        "loader_format_version": loader_format_version,
+        "external_key_required": external_key_required,
+        "key_provider_protocol": key_provider_protocol,
+        "allow_jit": allow_jit,
+        "allow_runtime_executable_pages": allow_runtime_executable_pages,
+        "allow_persistent_plaintext": allow_persistent_plaintext,
+        "require_fail_closed": require_fail_closed,
+        "bridge_surface": bridge_surface,
+        "class_loader_policy": class_loader_policy,
+        "class_loader_exported": class_loader_exported,
+        "anti_debug_policy": anti_debug_policy,
+        "anti_hook_policy": anti_hook_policy,
+        "kernel_compat_profile": kernel_compat_profile,
+        "hvci_profile": hvci_profile,
+        "vermagic_profile": vermagic_profile,
+        "gki_kmi_profile": gki_kmi_profile,
+        "execution_model": execution_model,
+        "trace_env_scrubbed": trace_env_scrubbed,
+        "source_policy": source_policy,
+        "unsafe_shell_features": (
+            unsafe_shell_features if isinstance(unsafe_shell_features, list) else []
+        ),
+        "key_provider_endpoint_kind": key_provider_endpoint_kind,
+        "key_provider_static_file": key_provider_static_file,
+        "key_material_embedded": key_material_embedded,
+        "plaintext_output": plaintext_output,
+        "no_persistent_plaintext_goal": no_persistent_plaintext_goal,
         "artifact_kind": artifact_kind,
         "file_size_bytes": len(data),
         "denylist_loaded": denylist_loaded,
@@ -1724,6 +2281,12 @@ def audit_artifact(
         "bundle_violations": bundle_violations,
         "signature_state_passed": bool(signature_result["passed"]),
         "signature_details": signature_result,
+        "user_mode_marker_check_passed": bool(user_mode_marker_result["passed"]),
+        "user_mode_marker": user_mode_marker_result,
+        "ios_compliance_profile": ios_compliance_profile,
+        "private_api_hits": private_api_hits,
+        "code_signature_state": code_signature_state,
+        "exec_permission_summary": exec_permission_summary,
         "strict_failures": strict_failures,
     }
 

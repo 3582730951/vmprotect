@@ -1,0 +1,140 @@
+# 2026-04-02 Phase 2A.1 Blocker Fix Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 仅修复 `Phase 2A.1` 的四个 blocker：
+  - `desktop_native` 的 `mutation_profile` 建模失真
+  - JIT 禁止策略双真相源不一致
+  - `kUnknown` 目标在 runtime executable pages 上的 fail-open
+  - `kUnknown` 目标在 JIT 判定上的 fail-open
+
+Task Charter:
+- Objective:
+  - 在不扩大范围的前提下，修复 `Phase 2A.1` 被架构审查与安全审查卡住的四个 blocker。
+- Scope:
+  - `core/include/contracts/protection_contracts.hpp`
+  - `core/runtime/src/backend_policy.cpp`
+  - `core/tests/contracts/protection_contracts_test.cpp`
+  - `core/tests/runtime/backend/backend_policy_test.cpp`
+  - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+- Non-Goals:
+  - 不修改 `backend_policy.cpp` 的 `dispatch_for_target(...)` 语义
+  - 不进入 `Phase 2A.2`
+  - 不修改 `iOS/kernel/dex/script` 其他逻辑
+- Constraints:
+  - 只能按唯一设计修复，不提供可选分支
+  - 不能通过放宽 runtime dispatch 规避 contracts 问题
+- Acceptance Criteria:
+  - `desktop_native` 不再被单维映射为 `kPeUserMode`
+  - `contracts::target_forbids_jit()` 与 runtime dispatch 对 `android_dex` / `shell_ephemeral` 完全一致
+  - `target_forbids_runtime_executable_pages(kUnknown) == true`
+  - `target_forbids_jit(kUnknown) == true`
+  - `protection_contracts_test`、`backend_policy_test`、`runtime_backend_extraction_contract_test` 全部通过
+- Forbidden Shortcuts:
+  - 禁止只改测试不改实现
+  - 禁止把 `mutation_profile_for_target(kDesktopNative)` 继续默认成 `kPeUserMode`
+  - 禁止新增配置开关或 fallback 行为
+
+Design Decisions:
+- 新增唯一入口：
+  - `mutation_profile_for_target_artifact(ProtectionTargetKind target, ArtifactKind artifact)`
+- 固定映射：
+  - `(kDesktopNative, kPe) -> kPeUserMode`
+  - `(kDesktopNative, kElf) -> kElfUserMode`
+  - 其他 `desktop_native + artifact` 组合一律 `kUnknown`
+- 兼容壳：
+  - `mutation_profile_for_target(kDesktopNative)` 固定返回 `kUnknown`
+  - 其他 target 保持当前语义
+- JIT 真相源：
+  - `contracts::target_forbids_jit()` 必须明确包含：
+    - `kAndroidDex`
+    - `kShellEphemeral`
+    - `kUnknown`
+  - `backend_policy.cpp` 当前 dispatch 保持不变
+- Unknown Target 可执行页策略：
+  - `target_forbids_runtime_executable_pages(kUnknown)` 必须返回 `true`
+  - 未知目标一律 fail-closed
+
+File Ownership:
+- PM:
+  - `plan/2026-04-02-phase-2a1-blocker-fix-plan.txt`
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+- Engineer:
+  - `core/include/contracts/protection_contracts.hpp`
+  - `core/runtime/src/backend_policy.cpp`
+  - `core/tests/contracts/protection_contracts_test.cpp`
+  - `core/tests/runtime/backend/backend_policy_test.cpp`
+  - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+- Reviewers:
+  - read-only
+
+Engineer Task Card:
+- 文件 `[protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)`
+  - 新增 `mutation_profile_for_target_artifact(ProtectionTargetKind, ArtifactKind)`
+  - 对 `kDesktopNative` 只允许：
+    - `ArtifactKind::kPe -> MutationProfileKind::kPeUserMode`
+    - `ArtifactKind::kElf -> MutationProfileKind::kElfUserMode`
+  - 其他 `kDesktopNative + artifact` 组合返回 `MutationProfileKind::kUnknown`
+  - 修改 `mutation_profile_for_target(ProtectionTargetKind)`：
+    - `kDesktopNative -> MutationProfileKind::kUnknown`
+    - 其他 target 保持现有语义
+  - 修改 `target_forbids_jit(ProtectionTargetKind)`：
+    - 将 `kAndroidDex`
+    - `kShellEphemeral`
+    - `kUnknown`
+    - 加入禁止集合
+- 文件 `[protection_contracts_test.cpp](/workspace/core/tests/contracts/protection_contracts_test.cpp)`
+  - 新增断言：
+    - `target_forbids_jit(kAndroidDex) == true`
+    - `target_forbids_jit(kShellEphemeral) == true`
+    - `target_forbids_jit(kUnknown) == true`
+    - `target_allows_jit(kAndroidDex) == false`
+    - `target_allows_jit(kShellEphemeral) == false`
+    - `target_allows_jit(kUnknown) == false`
+    - `mutation_profile_for_target_artifact(kDesktopNative, kPe) == kPeUserMode`
+    - `mutation_profile_for_target_artifact(kDesktopNative, kElf) == kElfUserMode`
+    - `mutation_profile_for_target(kDesktopNative) == kUnknown`
+- 文件 `[backend_policy.cpp](/workspace/core/runtime/src/backend_policy.cpp)`
+  - 修改 `target_forbids_runtime_executable_pages(ProtectionTargetKind)`：
+    - `kUnknown -> true`
+    - 其他目标保持现有 dispatch 驱动逻辑
+- 文件 `[backend_policy_test.cpp](/workspace/core/tests/runtime/backend/backend_policy_test.cpp)`
+  - 新增断言：
+    - `dispatch_for_target(kUnknown).allow_jit == false`
+    - `contracts::target_forbids_jit(kUnknown) == true`
+    - `dispatch_for_target(kUnknown).allow_jit == !contracts::target_forbids_jit(kUnknown)`
+    - `target_forbids_runtime_executable_pages(kUnknown) == true`
+    - `dispatch_for_target(kUnknown).allow_runtime_executable_pages == false`
+- 文件 `[runtime_backend_extraction_contract_test.cpp](/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp)`
+  - 新增一致性断言：
+    - `dispatch_for_target(kAndroidDex).allow_jit == false`
+    - `contracts::target_forbids_jit(kAndroidDex) == true`
+    - `dispatch_for_target(kShellEphemeral).allow_jit == false`
+    - `contracts::target_forbids_jit(kShellEphemeral) == true`
+- 固定命令：
+  - `cmake -S /workspace/core -B /workspace/build_phase25_a1_fix -G Ninja`
+  - `cmake --build /workspace/build_phase25_a1_fix -j --target protection_contracts_test backend_policy_test runtime_backend_extraction_contract_test`
+  - `ctest --test-dir /workspace/build_phase25_a1_fix --output-on-failure -R 'protection_contracts_test|backend_policy_test|runtime_backend_extraction_contract_test'`
+
+Reviewer Checklist:
+- Architecture Reviewer:
+  - `desktop_native` 不再被单维硬编码到 `kPeUserMode`
+  - `mutation_profile_for_target_artifact()` 存在并对 desktop 映射完整
+- Security Reviewer:
+  - `target_forbids_jit(kAndroidDex) == true`
+  - `target_forbids_jit(kShellEphemeral) == true`
+  - `target_forbids_jit(kUnknown) == true`
+  - runtime dispatch 对 `kAndroidDex`、`kShellEphemeral`、`kUnknown` 仍然 `allow_jit=false`
+  - `target_forbids_runtime_executable_pages(kUnknown) == true`
+- Validation Reviewer:
+  - 三个指定测试都通过
+  - 新断言在旧错误行为下可稳定失败
+
+Exit Rule:
+- 三审全部 `PASS` 前，不得进入工程修复
+- 工程修复合并前，不得进入 `Phase 2A.2`

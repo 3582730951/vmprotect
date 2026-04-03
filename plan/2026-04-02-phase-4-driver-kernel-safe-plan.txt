@@ -1,0 +1,1193 @@
+# 2026-04-02 Phase 4 / driver kernel-safe 详细计划
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3-final-freeze-execution.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`。
+- 本文件只覆盖 `Phase 4` 的三条 driver/kernel-safe lane：
+  - Windows `.sys`
+  - Linux `.ko`
+  - Android `.ko`
+- 本文件不回头重做 `Phase 3`。
+- 本文件不扩展到 `iOS` / `.dex` / `.sh`。
+
+Execution Mode:
+- `real-multi-agent`
+- 这里的 `real-multi-agent` 指 `Phase 4` 实施时必须按仓库既定 3 角色独立执行，不把本轮文档起草过程伪装成“已经发生真实子代理调用”。
+- 固定角色模型只允许：
+  - `Agent 1 (Planner / PM)`
+  - `Agent 2 (Engineer)`
+  - `Agent 3 (Security Reviewer)`
+- `Agent 1` 只写计划、冻结范围、下发 task cards、执行验收，不写实现代码。
+- `Agent 2` 只按 task cards 修改自己被分配的文件，不自定义范围、不改计划。
+- `Agent 3` 独立审核安全、gate、perf、fail-closed，不写实现代码。
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 在 `Phase 3` 已冻结前提下，把 `Windows .sys`、`Linux .ko`、`Android .ko` 三条 lane 推进到 `Phase 4` 可执行、可验证、可审计状态。
+  - 本批不是“补方向”或“补 skeleton”，而是直接闭合三条 kernel lane 的端到端证据链。
+  - 必须同时闭合：
+    - manifest 元数据
+    - `artifact_audit --strict` gate
+    - no-JIT / no-RWX / no-runtime-codegen 证据
+    - sign-after-mutate 元数据与真实性严格失败链
+    - 3 lane x 3 case 测试矩阵
+    - perf 预算证据
+- Scope:
+  - 只允许覆盖以下交付面：
+    - `core/post_link_mutator/*` 中与 kernel lane manifest 直接相关的部分
+    - `core/tools/artifact_audit.py`
+    - `core/tests/*` 中与 kernel lane runtime evidence、lane closure、perf evidence 直接相关的部分
+  - 本批 scope 明确只限：
+    - Windows `.sys`
+    - Linux `.ko`
+    - Android `.ko`
+  - 本批不允许把 scope 外溢到：
+    - `iOS`
+    - `Android .dex`
+    - `.sh`
+    - `Phase 3` user-mode lane
+- Non-Goals:
+  - 不扩展到 `iOS App Store` lane。
+  - 不扩展到 `Android .dex` lane。
+  - 不扩展到 `.sh` lane。
+  - 不回头重做 `Phase 3` 已冻结 user-mode 主线。
+  - 不把 `Phase 4` 降级成“contracts + audit + tests skeleton”。
+  - 不在本批重构 wrapper、pass、`ip_weaver_ir`、string mainline。
+- Acceptance Criteria:
+  - 配置与构建：
+    - `cmake -S /workspace/core -B /workspace/build_phase4 -G Ninja`
+    - `cmake --build /workspace/build_phase4 -j`
+  - runtime hard-gate：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_linux_kernel_module_safe_test|runtime_memory_hal_android_kernel_module_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_linux_kernel_module_safe_test|runtime_secure_ir_engine_android_kernel_module_safe_test|hardened_target_windows_driver_runtime_kind_test|hardened_target_linux_kernel_module_runtime_kind_test|hardened_target_android_kernel_module_runtime_kind_test|hardened_target_windows_driver_secure_ir_engine_test|hardened_target_linux_kernel_module_secure_ir_engine_test|hardened_target_android_kernel_module_secure_ir_engine_test|jit_enclave_pipeline_gate_test'`
+  - mutator / manifest / audit：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'post_link_mutator_smoke_test|artifact_audit_strict_test'`
+  - lane tests：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_success_test|windows_driver_failure_test|windows_driver_security_edge_test|linux_kernel_module_success_test|linux_kernel_module_failure_test|linux_kernel_module_security_edge_test|android_kernel_module_success_test|android_kernel_module_failure_test|android_kernel_module_security_edge_test'`
+  - perf：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_perf_smoke_test|linux_kernel_module_perf_smoke_test|android_kernel_module_perf_smoke_test'`
+    - `cmake --build /workspace/build_phase4 --target perf_smoke`
+  - `artifact_audit --strict` 验收结果必须满足：
+    - three success lanes: `strict_failures=[]`
+    - `windows_driver` success: `validation_mode=external_verifier`
+    - `linux_kernel_module` success: `validation_mode=external_verifier`
+    - `android_kernel_module` success: `validation_mode=external_verifier`
+    - `windows_driver` failure: 必须命中 `signature_authenticity_missing`、`signature_verifier_failed`、`signature_verifier_untrusted`、`signature_verifier_digest_mismatch`、`signature_authenticity_rejected` 中至少一项
+    - `linux_kernel_module` failure: 必须命中 `vermagic_mismatch` 或 `signature_missing`
+    - `android_kernel_module` failure: 必须命中 `gki_kmi_mismatch` 或 `signature_missing`
+    - three security-edge lanes: 必须命中 `kernel_gate_failed`
+  - success manifest / audit report 必须包含：
+    - `runtime_lane=kernel_safe`
+    - `mutation_profile=kernel_module`
+    - `signature_policy=sign_after_mutate`
+    - `sign_after_mutate_required=true`
+    - `kernel_compat_profile`
+    - `allow_jit=false`
+    - `allow_runtime_executable_pages=false`
+    - `allow_persistent_plaintext=false`
+    - `require_fail_closed=true`
+    - lane-specific compat flag：
+      - Windows `.sys` -> `hvci_profile=true`
+      - Linux `.ko` -> `vermagic_profile=true`
+      - Android `.ko` -> `gki_kmi_profile=true`
+  - perf 预算必须满足：
+    - hot path `<=8%`
+    - overall `<=12%`
+- Constraints:
+  - driver lane 硬约束必须写死且可被 tests / audit 观察到：
+    - compile-time `allow_jit=false`
+    - compile-time `allow_rwx=false`
+    - `no runtime codegen`
+    - `sign-after-mutate required`
+    - Windows `.sys` 需要 `hvci_profile`
+    - Linux `.ko` 需要 `vermagic_profile`
+    - Android `.ko` 需要 `gki_kmi_profile`
+  - 所有 kernel lane 必须 fail-closed。
+  - authenticity/verifier 严格失败条件不得降级、不得静默忽略。
+- Forbidden Shortcuts:
+  - 禁止把已有 `kernel_safe_backend` descriptor 直接当成 `Phase 4` 完成证据。
+  - 禁止只补 manifest 字段，不把字段接入 `artifact_audit --strict`。
+  - 禁止只补 tests skeleton，不闭合 strict gate 和 metadata。
+  - 禁止为通过 perf gate 放宽 no-JIT / no-RWX / no-runtime-codegen。
+  - 禁止改写 `Phase 3` 已冻结范围。
+  - 禁止在 dirty worktree 中顺手回滚或覆盖他人改动。
+- Sources Of Truth:
+  - `/workspace/plan/2026-04-02-phase-3-final-freeze-execution.txt`
+  - `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+  - `/workspace/core/runtime/src/backends/kernel_safe_backend.cpp`
+  - `/workspace/core/runtime/include/runtime/backends/kernel_safe_backend.hpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+  - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+  - `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/tests/tools/CMakeLists.txt`
+  - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+  - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+  - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+  - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+  - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+
+Agent Roster:
+- `Agent 1 (Planner / PM)`
+  - 负责：
+    - 冻结 scope
+    - 冻结 acceptance
+    - 冻结文件级单写者 ownership
+    - 下发 task cards
+    - 跑最终 configure/build/ctest/perf/hash 白名单
+- `Agent 2 (Engineer)`
+  - 负责：
+    - 只按 task cards 修改被允许写入的文件
+    - 不自行扩 scope
+    - 不自行更名字段、gate code、测试名
+- `Agent 3 (Security Reviewer)`
+  - 负责：
+    - 独立审核 no-JIT/no-RWX/no-runtime-codegen
+    - 独立审核 strict verifier / authenticity fail-closed
+    - 独立审核 `kernel_gate_failed` / `vermagic_mismatch` / `gki_kmi_mismatch`
+    - 独立审核 perf 是否仍在预算内
+
+Delegation Map:
+- `Agent 1`:
+  - 在实现前冻结：
+    - 范围
+    - merge order
+    - changed-path 白名单
+    - 机械 task cards
+  - 在实现后执行：
+    - configure/build/ctest/perf
+    - 内容哈希白名单比较
+    - 结果收口
+- `Agent 2`:
+  - 只实现 5 条轨道：
+    - Track A / kernel manifest closure
+    - Track B / artifact audit closure
+    - Track C / runtime hard-gate evidence closure
+    - Track D / lane test closure
+    - Track E / perf closure
+  - 不允许修改：
+    - `core/runtime/*` 生产实现
+    - `core/include/contracts/protection_contracts.hpp`
+    - `core/post_link_mutator/src/target_classifier.cpp`
+    - `Phase 3` user-mode 相关文件
+- `Agent 3`:
+  - 对每条轨道只做 `PASS/FAIL` 审核，不接管实现。
+  - 若发现必须修改 scope 外文件，直接 `FAIL` 并要求 `Agent 1` 重规划。
+- Merge Order:
+  - `Track A` -> `Track B` -> `Track C` -> `Track D` -> `Track E`
+  - `Track D` 不得早于 `Track A + Track B`
+  - `Track E` 不得早于 `Track D`
+
+Architecture Contract:
+- Phase 4 第一批实现的直接结论：
+  - 不是“先做 contracts + audit + tests skeleton”。
+  - 必须直接做 end-to-end lane closure。
+  - 允许内部实现顺序分成 `A/B/C/D/E` 五条轨道，但批次 DoD 只能是整体闭口，不存在 skeleton-only 子里程碑。
+- 对用户 4 个明确问题的直接回答：
+  - Q1 / 第一批实现只做 contracts + audit + tests skeleton，还是直接做 end-to-end lane closure
+    - 结论：直接做 end-to-end lane closure。
+    - 理由：
+      - `Phase 3` 已冻结，`Phase 4` 不能再交付“半成品方向稿”。
+      - 当前仓库已有 kernel-safe policy baseline，缺的是 manifest、strict audit、对称 runtime tests、lane tests、perf evidence。
+      - 若本批只做 skeleton，无法满足 `artifact_audit --strict`、sign-after-mutate、no-JIT/no-RWX gate、perf 预算四类 acceptance。
+  - Q2 / `core/runtime/*`、`core/post_link_mutator/*`、`core/tests/*`、`core/tools/artifact_audit.py` 分别谁写
+    - `core/runtime/*`
+      - `Agent 2` 本批默认不写 production runtime 文件。
+      - `core/runtime/src/*` 与 `core/runtime/include/*` 在 `Batch 1` 一律只读复用。
+      - 若实施过程中证明必须改 runtime 生产文件，立即停下并回到 `Agent 1` 重规划，不能偷偷扩写面。
+    - `core/post_link_mutator/*`
+      - `Agent 2` 写。
+      - 单写者轨道：`Track A / Kernel Manifest Closure`
+    - `core/tests/*`
+      - `Agent 2` 写。
+      - 单写者轨道：
+        - `Track C / Runtime Hard-Gate Evidence`
+        - `Track D / Lane Closure`
+        - `Track E / Perf Closure`
+    - `core/tools/artifact_audit.py`
+      - `Agent 2` 写。
+      - 单写者轨道：`Track B / Kernel Strict Audit Closure`
+  - Q3 / 哪些文件是第一批最小闭口必须改的
+    - 必改生产文件：
+      - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+      - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+      - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+      - `/workspace/core/tools/artifact_audit.py`
+    - 必改现有测试与接线文件：
+      - `/workspace/core/tests/CMakeLists.txt`
+      - `/workspace/core/tests/tools/CMakeLists.txt`
+      - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+      - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+      - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+      - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+      - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+      - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+      - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+      - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+      - `/workspace/core/tests/perf/CMakeLists.txt`
+    - 必新增文件：
+      - `/workspace/core/tests/lane_windows_driver/CMakeLists.txt`
+      - `/workspace/core/tests/lane_windows_driver/windows_driver_success_test.cpp`
+      - `/workspace/core/tests/lane_windows_driver/windows_driver_failure_test.cpp`
+      - `/workspace/core/tests/lane_windows_driver/windows_driver_security_edge_test.cpp`
+      - `/workspace/core/tests/lane_linux_kernel/CMakeLists.txt`
+      - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp`
+      - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp`
+      - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp`
+      - `/workspace/core/tests/lane_android_kernel/CMakeLists.txt`
+      - `/workspace/core/tests/lane_android_kernel/android_kernel_module_success_test.cpp`
+      - `/workspace/core/tests/lane_android_kernel/android_kernel_module_failure_test.cpp`
+      - `/workspace/core/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp`
+      - `/workspace/core/tests/perf/windows_driver_perf_smoke_test.cpp`
+      - `/workspace/core/tests/perf/linux_kernel_module_perf_smoke_test.cpp`
+      - `/workspace/core/tests/perf/android_kernel_module_perf_smoke_test.cpp`
+  - Q4 / 哪些当前已有实现可以直接复用，哪些只是 skeleton 不能算完成
+    - 可直接复用：
+      - `core/runtime/src/backends/kernel_safe_backend.cpp`
+        - 已有 `kernel_safe_aot` descriptor。
+        - 已明确 `supports_jit=false`、`supports_runtime_executable_pages=false`、`requires_sign_after_mutate=true`。
+      - `core/runtime/src/backend_policy.cpp`
+        - 已把 `windows_driver`、`linux_kernel_module`、`android_kernel_module` 全部接到 `kKernelSafeAot`。
+        - 已固定：
+          - `allow_jit=false`
+          - `allow_runtime_executable_pages=false`
+          - `allow_persistent_plaintext=false`
+          - `require_fail_closed=true`
+          - `requires_sign_after_mutate=true`
+      - `core/post_link_mutator/src/target_classifier.cpp`
+        - 已能把 `.sys` 分类成 `windows_driver`。
+        - 已能把 Linux / Android `.ko` 分类成对应 target kind。
+        - 已能把 `.ko` manifest artifact 映射到 `linux_kernel_module_ko`。
+      - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+        - 已对 `windows_driver`、`linux_kernel_module`、`android_kernel_module` 做 compile-time JIT route redlight。
+      - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+        - 已有 `windows_driver` 和 `linux_kernel_module` 基础成功路径。
+      - `core/tests/tools/artifact_audit_strict_test.cpp`
+        - 已有 windows driver authenticity/verifier 严格失败链。
+        - 已有 `.ko` success 验证基线。
+    - 只能算 partial / skeleton，不能算完成：
+      - `core/post_link_mutator/src/mutator_app.cpp`
+        - 还没有把 `runtime_lane`、`mutation_profile`、`signature_policy`、`kernel_compat_profile` 真正填进 manifest。
+      - `core/post_link_mutator/src/manifest_writer.cpp`
+        - 还没有把以下字段写到 JSON：
+          - `runtime_lane`
+          - `mutation_profile`
+          - `signature_policy`
+          - `kernel_compat_profile`
+          - `sign_after_mutate_required`
+          - `hvci_profile`
+          - `vermagic_profile`
+          - `gki_kmi_profile`
+      - `core/tools/artifact_audit.py`
+        - `load_manifest_metadata()` 目前只消费 `target_kind` / `artifact_kind`。
+        - 还没有 kernel lane top-level report fields。
+        - 还没有：
+          - `kernel_gate_failed`
+          - `vermagic_mismatch`
+          - `gki_kmi_mismatch`
+      - `core/tests/CMakeLists.txt`
+        - 现有 safe-backend 注册只对 `windows_driver` 对称，不覆盖 Linux / Android kernel module。
+      - `core/tests/tools/CMakeLists.txt`
+        - 现有 hardened target runtime/secure IR 也只对 `windows_driver` 对称。
+      - `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+      - `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+      - `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+      - `core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+        - 这四个 harness 目前都缺 `linux_kernel_module` / `android_kernel_module` 的对称 runtime gate 证据。
+- 固定实现契约:
+  - 生产 runtime 本批只读，不改语义。
+  - `mutator_app.cpp` 必须填充：
+    - `manifest.runtime_lane = runtime_lane_for_target(target_kind)`
+    - `manifest.mutation_profile = mutation_profile_for_target_artifact(target_kind, manifest_artifact_kind)`
+    - `manifest.signature_policy = signature_policy_for_target(target_kind)`
+    - `manifest.kernel_compat_profile`
+      - `windows_driver -> "hvci_profile"`
+      - `linux_kernel_module -> "vermagic_profile"`
+      - `android_kernel_module -> "gki_kmi_profile"`
+    - kernel lane 相关布尔值必须固定：
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+  - `manifest_writer.cpp` 必须稳定写出：
+    - `runtime_lane`
+    - `mutation_profile`
+    - `signature_policy`
+    - `kernel_compat_profile`
+    - `sign_after_mutate_required`
+    - `allow_jit`
+    - `allow_runtime_executable_pages`
+    - `allow_persistent_plaintext`
+    - `require_fail_closed`
+    - `hvci_profile`
+    - `vermagic_profile`
+    - `gki_kmi_profile`
+  - kernel lane 字段值不允许由 Engineer 自由发挥，固定如下：
+    - `windows_driver`
+      - `runtime_lane="kernel_safe"`
+      - `mutation_profile="kernel_module"`
+      - `signature_policy="sign_after_mutate"`
+      - `kernel_compat_profile="hvci_profile"`
+      - `sign_after_mutate_required=true`
+      - `hvci_profile=true`
+      - `vermagic_profile=false`
+      - `gki_kmi_profile=false`
+    - `linux_kernel_module`
+      - `runtime_lane="kernel_safe"`
+      - `mutation_profile="kernel_module"`
+      - `signature_policy="sign_after_mutate"`
+      - `kernel_compat_profile="vermagic_profile"`
+      - `sign_after_mutate_required=true`
+      - `hvci_profile=false`
+      - `vermagic_profile=true`
+      - `gki_kmi_profile=false`
+    - `android_kernel_module`
+      - `runtime_lane="kernel_safe"`
+      - `mutation_profile="kernel_module"`
+      - `signature_policy="sign_after_mutate"`
+      - `kernel_compat_profile="gki_kmi_profile"`
+      - `sign_after_mutate_required=true`
+      - `hvci_profile=false`
+      - `vermagic_profile=false`
+      - `gki_kmi_profile=true`
+- 固定 audit 契约:
+  - `artifact_audit.py` 必须扩展 `load_manifest_metadata()` 读取：
+    - `runtime_lane`
+    - `mutation_profile`
+    - `signature_policy`
+    - `sign_after_mutate_required`
+    - `allow_jit`
+    - `allow_runtime_executable_pages`
+    - `allow_persistent_plaintext`
+    - `require_fail_closed`
+    - `kernel_compat_profile`
+    - `hvci_profile`
+    - `vermagic_profile`
+    - `gki_kmi_profile`
+  - `artifact_audit.py` 顶层 report 必须新增：
+    - `target_kind`
+    - `runtime_lane`
+    - `mutation_profile`
+    - `signature_policy`
+    - `sign_after_mutate_required`
+    - `allow_jit`
+    - `allow_runtime_executable_pages`
+    - `allow_persistent_plaintext`
+    - `require_fail_closed`
+    - `kernel_compat_profile`
+    - `hvci_profile`
+    - `vermagic_profile`
+    - `gki_kmi_profile`
+  - `artifact_audit.py` strict gate code 固定如下：
+    - `kernel_gate_failed`
+      - 触发条件固定为 kernel lane 出现任一异常：
+        - `runtime_lane != kernel_safe`
+        - `mutation_profile != kernel_module`
+        - `signature_policy != sign_after_mutate`
+        - `sign_after_mutate_required != true`
+        - `allow_jit != false`
+        - `allow_runtime_executable_pages != false`
+        - `allow_persistent_plaintext != false`
+        - `require_fail_closed != true`
+        - `kernel_compat_profile` 缺失或与 lane 不匹配
+        - Windows `.sys` 缺失 `hvci_profile=true`
+    - `vermagic_mismatch`
+      - 只用于 `linux_kernel_module`
+      - `vermagic_profile != true` 时触发
+    - `gki_kmi_mismatch`
+      - 只用于 `android_kernel_module`
+      - `gki_kmi_profile != true` 时触发
+    - driver authenticity / verification 相关严格失败条件必须保留红灯：
+      - `signature_missing`
+      - `signature_format_invalid`
+      - `signature_authenticity_missing`
+      - `signature_verifier_untrusted`
+      - `signature_verifier_failed`
+      - `signature_verifier_digest_mismatch`
+      - `signature_authenticity_rejected`
+- 固定 runtime 证据契约:
+  - 不改 runtime 生产代码。
+  - 通过扩充现有 test harness 证明三条 kernel lane 的：
+    - `allow_jit=false`
+    - `allow_runtime_executable_pages=false`
+    - `no runtime codegen`
+    - `jit_route_forbidden_for_target`
+  - 需要扩充的现有 test harness 固定为：
+    - `memory_hal_safe_backend_test.cpp`
+    - `secure_ir_engine_safe_backend_test.cpp`
+    - `hardened_target_runtime_kind_test.cpp`
+    - `hardened_target_secure_ir_engine_test.cpp`
+  - 不新增新的 runtime 生产入口，不新增新的 runtime backend 实现。
+- 固定 lane 测试矩阵:
+  - `windows_driver_success_test`
+    - 必查：
+      - `target_kind=windows_driver`
+      - `artifact_kind=windows_driver_sys`
+      - `runtime_lane=kernel_safe`
+      - `mutation_profile=kernel_module`
+      - `signature_policy=sign_after_mutate`
+      - `sign_after_mutate_required=true`
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+      - `kernel_compat_profile=hvci_profile`
+      - `hvci_profile=true`
+      - `validation_mode=external_verifier`
+      - `strict_failures=[]`
+  - `windows_driver_failure_test`
+    - 必查：
+      - `signature_authenticity_missing` 或
+      - `signature_verifier_failed` 或
+      - `signature_verifier_untrusted` 或
+      - `signature_verifier_digest_mismatch` 或
+      - `signature_authenticity_rejected`
+  - `windows_driver_security_edge_test`
+    - 必查：
+      - 篡改 `allow_jit=true` 或删除 `hvci_profile`
+      - 命中 `kernel_gate_failed`
+  - `linux_kernel_module_success_test`
+    - 必查：
+      - `target_kind=linux_kernel_module`
+      - `artifact_kind=linux_kernel_module_ko`
+      - `runtime_lane=kernel_safe`
+      - `mutation_profile=kernel_module`
+      - `signature_policy=sign_after_mutate`
+      - `sign_after_mutate_required=true`
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+      - `kernel_compat_profile=vermagic_profile`
+      - `vermagic_profile=true`
+      - `validation_mode=external_verifier`
+      - `strict_failures=[]`
+  - `linux_kernel_module_failure_test`
+    - 必查：
+      - 缺失或伪造 `vermagic_profile`
+      - 命中 `vermagic_mismatch`
+      - 或签名缺失时命中 `signature_missing`
+  - `linux_kernel_module_security_edge_test`
+    - 必查：
+      - 篡改 `allow_runtime_executable_pages=true` 或 `sign_after_mutate_required=false`
+      - 命中 `kernel_gate_failed`
+  - `android_kernel_module_success_test`
+    - 必查：
+      - `target_kind=android_kernel_module`
+      - `artifact_kind=linux_kernel_module_ko`
+      - `runtime_lane=kernel_safe`
+      - `mutation_profile=kernel_module`
+      - `signature_policy=sign_after_mutate`
+      - `sign_after_mutate_required=true`
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+      - `kernel_compat_profile=gki_kmi_profile`
+      - `gki_kmi_profile=true`
+      - `validation_mode=external_verifier`
+      - `strict_failures=[]`
+  - `android_kernel_module_failure_test`
+    - 必查：
+      - 缺失或伪造 `gki_kmi_profile`
+      - 命中 `gki_kmi_mismatch`
+      - 或签名缺失时命中 `signature_missing`
+  - `android_kernel_module_security_edge_test`
+    - 必查：
+      - 篡改 `allow_jit=true` 或 `allow_runtime_executable_pages=true`
+      - 命中 `kernel_gate_failed`
+
+Parallel Tracks:
+- `Track A / Kernel Manifest Closure`
+  - Owner: `Agent 2`
+  - Writes:
+    - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+    - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+    - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+  - Output:
+    - 三条 kernel lane manifest 元数据闭合
+  - Dependency:
+    - 无；这是所有后续 track 的输入
+- `Track B / Kernel Strict Audit Closure`
+  - Owner: `Agent 2`
+  - Writes:
+    - `/workspace/core/tools/artifact_audit.py`
+  - Output:
+    - strict report fields
+    - `kernel_gate_failed`
+    - `vermagic_mismatch`
+    - `gki_kmi_mismatch`
+  - Dependency:
+    - `Track A` 的字段名冻结
+- `Track C / Runtime Hard-Gate Evidence Closure`
+  - Owner: `Agent 2`
+  - Writes:
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/tests/tools/CMakeLists.txt`
+    - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+    - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - Output:
+    - 3 条 kernel lane 对称 runtime evidence
+  - Dependency:
+    - 只读复用 runtime production baseline
+- `Track D / Lane Closure`
+  - Owner: `Agent 2`
+  - Writes:
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+    - `/workspace/core/tests/lane_windows_driver/*`
+    - `/workspace/core/tests/lane_linux_kernel/*`
+    - `/workspace/core/tests/lane_android_kernel/*`
+    - `/workspace/core/tests/CMakeLists.txt`
+  - Output:
+    - 9 条 success/failure/security-edge 测试
+  - Dependency:
+    - `Track A`
+    - `Track B`
+- `Track E / Perf Closure`
+  - Owner: `Agent 2`
+  - Writes:
+    - `/workspace/core/tests/perf/CMakeLists.txt`
+    - `/workspace/core/tests/perf/windows_driver_perf_smoke_test.cpp`
+    - `/workspace/core/tests/perf/linux_kernel_module_perf_smoke_test.cpp`
+    - `/workspace/core/tests/perf/android_kernel_module_perf_smoke_test.cpp`
+  - Output:
+    - hot path / overall budget evidence
+  - Dependency:
+    - `Track D`
+
+File Ownership:
+- Single-writer production files:
+  - `/workspace/core/post_link_mutator/src/mutator_app.cpp` -> `Track A / Agent 2`
+  - `/workspace/core/post_link_mutator/src/manifest_writer.cpp` -> `Track A / Agent 2`
+  - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp` -> `Track A / Agent 2`
+  - `/workspace/core/tools/artifact_audit.py` -> `Track B / Agent 2`
+- Single-writer existing test files:
+  - `/workspace/core/tests/CMakeLists.txt` -> `Track C+D / Agent 2`
+  - `/workspace/core/tests/tools/CMakeLists.txt` -> `Track C / Agent 2`
+  - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp` -> `Track C / Agent 2`
+  - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/perf/CMakeLists.txt` -> `Track E / Agent 2`
+- Single-writer new lane and perf files:
+  - `/workspace/core/tests/lane_windows_driver/CMakeLists.txt` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_windows_driver/windows_driver_success_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_windows_driver/windows_driver_failure_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_windows_driver/windows_driver_security_edge_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_linux_kernel/CMakeLists.txt` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_android_kernel/CMakeLists.txt` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_android_kernel/android_kernel_module_success_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_android_kernel/android_kernel_module_failure_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp` -> `Track D / Agent 2`
+  - `/workspace/core/tests/perf/windows_driver_perf_smoke_test.cpp` -> `Track E / Agent 2`
+  - `/workspace/core/tests/perf/linux_kernel_module_perf_smoke_test.cpp` -> `Track E / Agent 2`
+  - `/workspace/core/tests/perf/android_kernel_module_perf_smoke_test.cpp` -> `Track E / Agent 2`
+- Read-only reusable files:
+  - `/workspace/core/runtime/src/backends/kernel_safe_backend.cpp`
+  - `/workspace/core/runtime/include/runtime/backends/kernel_safe_backend.hpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/runtime/include/runtime/backend_policy.hpp`
+  - `/workspace/core/runtime/include/runtime/backends/backend_registry.hpp`
+  - `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+  - `/workspace/core/include/contracts/protection_contracts.hpp`
+  - `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+  - `/workspace/core/tests/perf/user_mode_perf_smoke_test.cpp`
+
+Dependencies:
+- 计划依赖：
+  - `/workspace/plan/2026-04-02-phase-3-final-freeze-execution.txt`
+  - `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+- 代码依赖：
+  - `ProtectionManifestV2` 已有：
+    - `runtime_lane`
+    - `mutation_profile`
+    - `signature_policy`
+    - `kernel_compat_profile`
+  - `backend_policy.cpp` 已有 kernel-safe baseline
+  - `target_classifier.cpp` 已有 `.sys/.ko` target 分类
+  - `artifact_audit_strict_test.cpp` 已有 verifier fixture/harness
+- 过程依赖：
+  - 当前工作树非干净，必须使用 changed-path 白名单控制 blast radius
+
+Regression Perimeter:
+- Root Cause:
+  - 当前仓库不是“没有 kernel-safe 基线”，而是“有基线但没有 Phase 4 发布级闭环”。
+  - 具体缺口：
+    - manifest 没写全 kernel lane metadata
+    - audit 没把 metadata 转成 strict gate
+    - runtime tests 没对称覆盖 Linux / Android kernel module
+    - 没有 3 lane x 3 case 的 lane tests
+    - 没有 kernel perf 预算证据
+- Changed Path:
+  - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+  - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+  - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+  - `/workspace/core/tools/artifact_audit.py`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/tests/tools/CMakeLists.txt`
+  - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+  - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+  - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+  - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+  - `/workspace/core/tests/perf/CMakeLists.txt`
+  - `/workspace/core/tests/lane_windows_driver/*`
+  - `/workspace/core/tests/lane_linux_kernel/*`
+  - `/workspace/core/tests/lane_android_kernel/*`
+  - `/workspace/core/tests/perf/windows_driver_perf_smoke_test.cpp`
+  - `/workspace/core/tests/perf/linux_kernel_module_perf_smoke_test.cpp`
+  - `/workspace/core/tests/perf/android_kernel_module_perf_smoke_test.cpp`
+- Adjacent Paths:
+  - `/workspace/core/runtime/src/backends/kernel_safe_backend.cpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+  - `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+  - `/workspace/core/tests/post_link_mutator/CMakeLists.txt`
+  - `/workspace/core/tests/runtime/backend/CMakeLists.txt`
+- Regression Matrix:
+  - Configure:
+    - `cmake -S /workspace/core -B /workspace/build_phase4 -G Ninja`
+  - Full build:
+    - `cmake --build /workspace/build_phase4 -j`
+  - Runtime hard-gate:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_linux_kernel_module_safe_test|runtime_memory_hal_android_kernel_module_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_linux_kernel_module_safe_test|runtime_secure_ir_engine_android_kernel_module_safe_test|hardened_target_windows_driver_runtime_kind_test|hardened_target_linux_kernel_module_runtime_kind_test|hardened_target_android_kernel_module_runtime_kind_test|hardened_target_windows_driver_secure_ir_engine_test|hardened_target_linux_kernel_module_secure_ir_engine_test|hardened_target_android_kernel_module_secure_ir_engine_test|jit_enclave_pipeline_gate_test'`
+  - Mutator / manifest:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'post_link_mutator_smoke_test'`
+  - Strict audit:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'artifact_audit_strict_test'`
+  - Lane closure:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_success_test|windows_driver_failure_test|windows_driver_security_edge_test|linux_kernel_module_success_test|linux_kernel_module_failure_test|linux_kernel_module_security_edge_test|android_kernel_module_success_test|android_kernel_module_failure_test|android_kernel_module_security_edge_test'`
+  - Perf:
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_perf_smoke_test|linux_kernel_module_perf_smoke_test|android_kernel_module_perf_smoke_test'`
+    - `cmake --build /workspace/build_phase4 --target perf_smoke`
+  - Task-local provenance 主约束：
+    - `cat > /tmp/phase4_allowed_writes.txt <<'EOF'\ncore/post_link_mutator/src/mutator_app.cpp\ncore/post_link_mutator/src/manifest_writer.cpp\ncore/post_link_mutator/include/post_link_mutator/manifest_writer.hpp\ncore/tools/artifact_audit.py\ncore/tests/CMakeLists.txt\ncore/tests/tools/CMakeLists.txt\ncore/tests/runtime/backend/backend_policy_test.cpp\ncore/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp\ncore/tests/runtime/hal/memory_hal_safe_backend_test.cpp\ncore/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp\ncore/tests/tools/hardened_target_runtime_kind_test.cpp\ncore/tests/tools/hardened_target_secure_ir_engine_test.cpp\ncore/tests/post_link_mutator/post_link_mutator_smoke_test.cpp\ncore/tests/tools/artifact_audit_strict_test.cpp\ncore/tests/perf/CMakeLists.txt\ncore/tests/lane_windows_driver/CMakeLists.txt\ncore/tests/lane_windows_driver/windows_driver_success_test.cpp\ncore/tests/lane_windows_driver/windows_driver_failure_test.cpp\ncore/tests/lane_windows_driver/windows_driver_security_edge_test.cpp\ncore/tests/lane_linux_kernel/CMakeLists.txt\ncore/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp\ncore/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp\ncore/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp\ncore/tests/lane_android_kernel/CMakeLists.txt\ncore/tests/lane_android_kernel/android_kernel_module_success_test.cpp\ncore/tests/lane_android_kernel/android_kernel_module_failure_test.cpp\ncore/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp\ncore/tests/perf/windows_driver_perf_smoke_test.cpp\ncore/tests/perf/linux_kernel_module_perf_smoke_test.cpp\ncore/tests/perf/android_kernel_module_perf_smoke_test.cpp\nEOF\nsort -u -o /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_writes.txt`
+    - `cat > /tmp/phase4_allowed_planner_writes.txt <<'EOF'\nplan/2026-04-02-phase-4-driver-kernel-safe-plan.txt\nplan/2026-04-02-phase-4-execution.txt\nEOF\nsort -u -o /tmp/phase4_allowed_planner_writes.txt /tmp/phase4_allowed_planner_writes.txt`
+    - `cat > /tmp/phase4_allowed_post_additions.txt <<'EOF'\ncore/tests/lane_windows_driver/\ncore/tests/lane_linux_kernel/\ncore/tests/lane_android_kernel/\nplan/2026-04-02-phase-4-execution.txt\nEOF\nsort -u -o /tmp/phase4_allowed_post_additions.txt /tmp/phase4_allowed_post_additions.txt`
+    - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a,\" -> \"); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_pre.txt`
+    - `comm -23 /tmp/phase4_dirty_files_pre.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_pre.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_pre.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_pre_expanded.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_scope_out_dirty_pre.txt | sort -u > /tmp/phase4_task_local_watchlist.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\tDIR\n' "$rel"; elif [ -e "/workspace/$rel" ]; then printf '%s\t%s\n' "$rel" "$(sha256sum "/workspace/$rel" | awk '{print $1}')"; else printf '%s\tMISSING\n' "$rel"; fi; done < /tmp/phase4_task_local_watchlist.txt > /tmp/phase4_task_local_pre.tsv`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\tDIR\n' "$rel"; elif [ -e "/workspace/$rel" ]; then printf '%s\t%s\n' "$rel" "$(sha256sum "/workspace/$rel" | awk '{print $1}')"; else printf '%s\tMISSING\n' "$rel"; fi; done < /tmp/phase4_task_local_watchlist.txt > /tmp/phase4_task_local_post.tsv`
+    - `join -a 1 -a 2 -t $'\t' -o 0,1.2,2.2 /tmp/phase4_task_local_pre.tsv /tmp/phase4_task_local_post.tsv | awk -F $'\t' '$2 != $3 {print $1}' > /tmp/phase4_task_local_changed_paths.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_task_local_out_of_scope_changes.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_planner_writes.txt | sort -u > /tmp/phase4_allowed_task_local_writes.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_task_local_writes.txt > /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - `test ! -s /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre.txt /tmp/phase4_scope_out_dirty_post.txt > /tmp/phase4_new_scope_out_dirty.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty.txt /tmp/phase4_allowed_post_additions.txt > /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - `test ! -s /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_post.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_post_expanded.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre_expanded.txt /tmp/phase4_scope_out_dirty_post_expanded.txt > /tmp/phase4_new_scope_out_dirty_expanded.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_post_additions.txt | sort -u > /tmp/phase4_allowed_post_inventory.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty_expanded.txt /tmp/phase4_allowed_post_inventory.txt > /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+    - `test ! -s /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+  - Auxiliary core-tree hash 证据：
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' -g '*.py' | sort | xargs sha256sum > /tmp/phase4_kernel_hash_pre.txt`
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' -g '*.py' | sort | xargs sha256sum > /tmp/phase4_kernel_hash_post.txt`
+    - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2" "$1}' /tmp/phase4_kernel_hash_pre.txt | sort) <(awk '{print $2" "$1}' /tmp/phase4_kernel_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+
+Unchanged Guarantees:
+- `Phase 3` user-mode 主线冻结不回退。
+- `core/runtime/*` production 语义本批不变。
+- 三条 kernel lane 继续强制：
+  - `allow_jit=false`
+  - `allow_runtime_executable_pages=false`
+  - `allow_persistent_plaintext=false`
+  - `require_fail_closed=true`
+  - `sign-after-mutate required`
+- authenticity / verifier 严格失败条件不降级。
+- `target_classifier.cpp` 的 `.sys/.ko` 分类语义保持不变。
+
+Second-Order Risks:
+- 只补 metadata 不补 strict gate，会形成假绿灯。
+- 只补 strict gate 不补 runtime 对称 tests，会让 Linux / Android kernel lane 仍然缺 no-runtime-codegen 证据。
+- 只补 lane tests 不补 perf，会让 `Phase 4` DoD 失真。
+- dirty worktree 可能带来无关 diff 污染，必须用哈希白名单卡死。
+- `hvci_profile` / `vermagic_profile` / `gki_kmi_profile` 本批只是 lane compatibility gate，不等价于完成真实发行签名基础设施或完整内核兼容矩阵。
+
+Model Routing:
+- `Agent 1 (Planner / PM)`:
+  - 负责架构冻结、task cards、验收、diff 白名单、DoD 签发
+- `Agent 2 (Engineer)`:
+  - 负责单写者实现，不拥有计划解释权
+- `Agent 3 (Security Reviewer)`:
+  - 负责独立安全与 gate 审核，拥有否决权
+
+Context Packages:
+- `Package P0 / Planning`
+  - `/workspace/plan/2026-04-02-phase-3-final-freeze-execution.txt`
+  - `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+- `Package P1 / Runtime Baseline`
+  - `/workspace/core/runtime/src/backends/kernel_safe_backend.cpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- `Package P2 / Mutator + Audit Baseline`
+  - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+  - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+  - `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+  - `/workspace/core/tools/artifact_audit.py`
+- `Package P3 / Existing Test Harness`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/tests/tools/CMakeLists.txt`
+  - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+  - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+  - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+  - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+- 禁止依赖：
+  - 任何未在 `Sources Of Truth` 中冻结的口头约定
+  - 任何把 `Phase 4` 扩到 `iOS/.dex/.sh` 的临时判断
+
+Quality Gates:
+- `G0 / Scope Gate`
+  - 通过条件：
+    - 变更只落在 `Changed Path`
+    - 不碰 `iOS/.dex/.sh`
+    - 不回修 `Phase 3`
+- `G1 / Runtime Hard-Constraint Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_linux_kernel_module_safe_test|runtime_memory_hal_android_kernel_module_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_linux_kernel_module_safe_test|runtime_secure_ir_engine_android_kernel_module_safe_test|hardened_target_windows_driver_runtime_kind_test|hardened_target_linux_kernel_module_runtime_kind_test|hardened_target_android_kernel_module_runtime_kind_test|hardened_target_windows_driver_secure_ir_engine_test|hardened_target_linux_kernel_module_secure_ir_engine_test|hardened_target_android_kernel_module_secure_ir_engine_test|jit_enclave_pipeline_gate_test'`
+  - 通过条件：
+    - 三条 kernel lane 都证明：
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `jit_route_forbidden_for_target`
+      - `no runtime codegen`
+- `G2 / Manifest Metadata Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'post_link_mutator_smoke_test|windows_driver_success_test|linux_kernel_module_success_test|android_kernel_module_success_test'`
+  - 通过条件：
+    - success manifest 有：
+      - `runtime_lane`
+      - `mutation_profile`
+      - `signature_policy`
+      - `sign_after_mutate_required=true`
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+      - `kernel_compat_profile`
+      - lane-specific compat flag
+- `G3 / Strict Audit Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'artifact_audit_strict_test|windows_driver_success_test|windows_driver_failure_test|windows_driver_security_edge_test|linux_kernel_module_success_test|linux_kernel_module_failure_test|linux_kernel_module_security_edge_test|android_kernel_module_success_test|android_kernel_module_failure_test|android_kernel_module_security_edge_test'`
+  - 通过条件：
+    - success lanes: `strict_failures=[]`
+    - failure/security-edge 命中固定 code
+    - existing authenticity/verifier failures 仍是红灯
+- `G4 / Lane Matrix Gate`
+  - 通过条件：
+    - 三条 lane 各自具备：
+      - success
+      - failure
+      - security-edge
+    - 一共不少于 9 条 lane tests
+- `G5 / Sign-After-Mutate Gate`
+  - 通过条件：
+    - success manifest/report 中：
+      - `sign_after_mutate_required=true`
+      - `signature_policy=sign_after_mutate`
+      - `validation_mode=external_verifier`
+- `G6 / Perf Gate`
+  - 命令：
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_perf_smoke_test|linux_kernel_module_perf_smoke_test|android_kernel_module_perf_smoke_test'`
+    - `cmake --build /workspace/build_phase4 --target perf_smoke`
+  - 通过条件：
+    - `windows_driver_perf_smoke_test` 通过
+    - `linux_kernel_module_perf_smoke_test` 通过
+    - `android_kernel_module_perf_smoke_test` 通过
+    - 每条 lane：
+      - hot path `<=8%`
+      - overall `<=12%`
+- `G7 / Task-Local Provenance Gate`
+  - 机械命令：
+    - `join -a 1 -a 2 -t $'\t' -o 0,1.2,2.2 /tmp/phase4_task_local_pre.tsv /tmp/phase4_task_local_post.tsv | awk -F $'\t' '$2 != $3 {print $1}' > /tmp/phase4_task_local_changed_paths.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_task_local_out_of_scope_changes.txt`
+    - `cat > /tmp/phase4_allowed_planner_writes.txt <<'EOF'\nplan/2026-04-02-phase-4-driver-kernel-safe-plan.txt\nplan/2026-04-02-phase-4-execution.txt\nEOF\nsort -u -o /tmp/phase4_allowed_planner_writes.txt /tmp/phase4_allowed_planner_writes.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_planner_writes.txt | sort -u > /tmp/phase4_allowed_task_local_writes.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_task_local_writes.txt > /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a," -> "); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_post.txt`
+    - `comm -23 /tmp/phase4_dirty_files_post.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_post.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre.txt /tmp/phase4_scope_out_dirty_post.txt > /tmp/phase4_new_scope_out_dirty.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty.txt /tmp/phase4_allowed_post_additions.txt > /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_pre.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_pre_expanded.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_post.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_post_expanded.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre_expanded.txt /tmp/phase4_scope_out_dirty_post_expanded.txt > /tmp/phase4_new_scope_out_dirty_expanded.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_post_additions.txt | sort -u > /tmp/phase4_allowed_post_inventory.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty_expanded.txt /tmp/phase4_allowed_post_inventory.txt > /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+  - 说明：
+    - `/tmp/phase4_task_local_out_of_scope_changes.txt`、`/tmp/phase4_new_scope_out_dirty.txt`、`/tmp/phase4_new_scope_out_dirty_expanded.txt` 仅作为 informational / diagnostic 中间产物保留，不再直接作为 hard-fail gate。
+    - planner artifacts 仅允许：
+      - `plan/2026-04-02-phase-4-driver-kernel-safe-plan.txt`
+      - `plan/2026-04-02-phase-4-execution.txt`
+  - 通过条件：
+    - `/tmp/phase4_task_local_changed_paths.txt` 中的变化路径只允许落在 `Changed Path + allowed planner artifacts`
+    - `/tmp/phase4_task_local_out_of_scope_unapproved.txt` 必须为空
+    - `/tmp/phase4_new_scope_out_dirty_unapproved.txt` 必须为空
+    - `/tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt` 必须为空
+- `G8 / Auxiliary Core-Tree Hash Gate`
+  - 通过条件：
+    - core-tree hash diff 仍只允许落在 `Changed Path`
+    - 该 gate 只作为辅助证据，不能替代 `G7`
+
+Assurance Scorecard:
+- architecture completeness: `5/5`
+- evidence coverage: `5/5`
+- blast radius coverage: `5/5`
+- PM boundary integrity: `5/5`
+- review independence: `4/5`
+- context integrity: `5/5`
+- delegation integrity: `4/5`
+- gate result: `PASS`
+- 备注：
+  - `review independence` 与 `delegation integrity` 为 `4/5` 的原因是仓库契约固定为 3 角色，validation 职责并未拆成独立第 4 角色；但 PM/Engineer/Reviewer 边界仍然清晰。
+
+Mechanical Task Cards:
+- `Card 0 / Agent 1 / Preflight`
+  - 只做：
+    - 记录当前 changed-path hash baseline
+    - 公布 `Changed Path` 白名单
+    - 公布 merge order
+    - 执行固定 provenance 预快照命令：
+      - `cat > /tmp/phase4_allowed_writes.txt <<'EOF'\ncore/post_link_mutator/src/mutator_app.cpp\ncore/post_link_mutator/src/manifest_writer.cpp\ncore/post_link_mutator/include/post_link_mutator/manifest_writer.hpp\ncore/tools/artifact_audit.py\ncore/tests/CMakeLists.txt\ncore/tests/tools/CMakeLists.txt\ncore/tests/runtime/backend/backend_policy_test.cpp\ncore/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp\ncore/tests/runtime/hal/memory_hal_safe_backend_test.cpp\ncore/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp\ncore/tests/tools/hardened_target_runtime_kind_test.cpp\ncore/tests/tools/hardened_target_secure_ir_engine_test.cpp\ncore/tests/post_link_mutator/post_link_mutator_smoke_test.cpp\ncore/tests/tools/artifact_audit_strict_test.cpp\ncore/tests/perf/CMakeLists.txt\ncore/tests/lane_windows_driver/CMakeLists.txt\ncore/tests/lane_windows_driver/windows_driver_success_test.cpp\ncore/tests/lane_windows_driver/windows_driver_failure_test.cpp\ncore/tests/lane_windows_driver/windows_driver_security_edge_test.cpp\ncore/tests/lane_linux_kernel/CMakeLists.txt\ncore/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp\ncore/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp\ncore/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp\ncore/tests/lane_android_kernel/CMakeLists.txt\ncore/tests/lane_android_kernel/android_kernel_module_success_test.cpp\ncore/tests/lane_android_kernel/android_kernel_module_failure_test.cpp\ncore/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp\ncore/tests/perf/windows_driver_perf_smoke_test.cpp\ncore/tests/perf/linux_kernel_module_perf_smoke_test.cpp\ncore/tests/perf/android_kernel_module_perf_smoke_test.cpp\nEOF\nsort -u -o /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_writes.txt`
+      - `cat > /tmp/phase4_allowed_planner_writes.txt <<'EOF'\nplan/2026-04-02-phase-4-driver-kernel-safe-plan.txt\nplan/2026-04-02-phase-4-execution.txt\nEOF\nsort -u -o /tmp/phase4_allowed_planner_writes.txt /tmp/phase4_allowed_planner_writes.txt`
+      - `cat > /tmp/phase4_allowed_post_additions.txt <<'EOF'\ncore/tests/lane_windows_driver/\ncore/tests/lane_linux_kernel/\ncore/tests/lane_android_kernel/\nplan/2026-04-02-phase-4-execution.txt\nEOF\nsort -u -o /tmp/phase4_allowed_post_additions.txt /tmp/phase4_allowed_post_additions.txt`
+      - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a,\" -> \"); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_pre.txt`
+      - `comm -23 /tmp/phase4_dirty_files_pre.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_pre.txt`
+      - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_pre.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_pre_expanded.txt`
+      - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_scope_out_dirty_pre.txt | sort -u > /tmp/phase4_task_local_watchlist.txt`
+      - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\tDIR\n' "$rel"; elif [ -e "/workspace/$rel" ]; then printf '%s\t%s\n' "$rel" "$(sha256sum "/workspace/$rel" | awk '{print $1}')"; else printf '%s\tMISSING\n' "$rel"; fi; done < /tmp/phase4_task_local_watchlist.txt > /tmp/phase4_task_local_pre.tsv`
+    - 固定声明后态 dirty 差集与 expanded inventory gate 的执行命令不得改写，Card 6 必须原样执行：
+      - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a," -> "); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_post.txt`
+      - `comm -23 /tmp/phase4_dirty_files_post.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_post.txt`
+      - `join -a 1 -a 2 -t $'\t' -o 0,1.2,2.2 /tmp/phase4_task_local_pre.tsv /tmp/phase4_task_local_post.tsv | awk -F $'\t' '$2 != $3 {print $1}' > /tmp/phase4_task_local_changed_paths.txt`
+      - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_task_local_out_of_scope_changes.txt`
+      - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_planner_writes.txt | sort -u > /tmp/phase4_allowed_task_local_writes.txt`
+      - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_task_local_writes.txt > /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+      - `test ! -s /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+      - `comm -13 /tmp/phase4_scope_out_dirty_pre.txt /tmp/phase4_scope_out_dirty_post.txt > /tmp/phase4_new_scope_out_dirty.txt`
+      - `comm -23 /tmp/phase4_new_scope_out_dirty.txt /tmp/phase4_allowed_post_additions.txt > /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+      - `test ! -s /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+      - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_post.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_post_expanded.txt`
+      - `comm -13 /tmp/phase4_scope_out_dirty_pre_expanded.txt /tmp/phase4_scope_out_dirty_post_expanded.txt > /tmp/phase4_new_scope_out_dirty_expanded.txt`
+      - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_post_additions.txt | sort -u > /tmp/phase4_allowed_post_inventory.txt`
+      - `comm -23 /tmp/phase4_new_scope_out_dirty_expanded.txt /tmp/phase4_allowed_post_inventory.txt > /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+      - `test ! -s /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+  - 不做：
+    - 任何实现代码修改
+- `Card 1 / Agent 2 / Track A`
+  - 只读打开：
+    - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+    - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+    - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+    - `/workspace/core/post_link_mutator/src/target_classifier.cpp`
+    - `/workspace/core/include/contracts/protection_contracts.hpp`
+  - 只允许修改：
+    - `/workspace/core/post_link_mutator/src/mutator_app.cpp`
+    - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+    - `/workspace/core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+  - 固定动作：
+    - 在 `mutator_app.cpp` 填充：
+      - `runtime_lane`
+      - `mutation_profile`
+      - `signature_policy`
+      - `kernel_compat_profile`
+    - 在 `manifest_writer.cpp` 固定写出：
+      - `runtime_lane`
+      - `mutation_profile`
+      - `signature_policy`
+      - `kernel_compat_profile`
+      - `sign_after_mutate_required`
+      - `allow_jit`
+      - `allow_runtime_executable_pages`
+      - `allow_persistent_plaintext`
+      - `require_fail_closed`
+      - `hvci_profile`
+      - `vermagic_profile`
+      - `gki_kmi_profile`
+    - 不得修改 `target_classifier.cpp`
+    - 不得修改 `protection_contracts.hpp`
+- `Card 2 / Agent 2 / Track B`
+  - 只读打开：
+    - `/workspace/core/tools/artifact_audit.py`
+    - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+    - `/workspace/core/post_link_mutator/src/manifest_writer.cpp`
+  - 只允许修改：
+    - `/workspace/core/tools/artifact_audit.py`
+  - 固定动作：
+    - 扩充 `load_manifest_metadata()` 读取新字段
+    - 把 manifest-derived kernel fields 抄入 top-level report
+    - 顶层 report 必须显式带出：
+      - `allow_jit`
+      - `allow_runtime_executable_pages`
+      - `allow_persistent_plaintext`
+      - `require_fail_closed`
+    - 新增 strict gate：
+      - `kernel_gate_failed`
+      - `vermagic_mismatch`
+      - `gki_kmi_mismatch`
+    - 不得删除现有 verifier 红灯
+    - 不得把 driver authenticity 失败改成 warning
+- `Card 3 / Agent 2 / Track C`
+  - 只读打开：
+    - `/workspace/core/runtime/src/backends/kernel_safe_backend.cpp`
+    - `/workspace/core/runtime/src/backend_policy.cpp`
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/tests/tools/CMakeLists.txt`
+    - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+    - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - 只允许修改：
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/tests/tools/CMakeLists.txt`
+    - `/workspace/core/tests/runtime/backend/backend_policy_test.cpp`
+    - `/workspace/core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `/workspace/core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `/workspace/core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_runtime_kind_test.cpp`
+    - `/workspace/core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+  - 固定动作：
+    - 在 `core/tests/CMakeLists.txt` 的 safe-backend loop 中新增：
+      - `linux_kernel_module`
+      - `android_kernel_module`
+    - 在 `core/tests/tools/CMakeLists.txt` 的 hardened-target loop 中新增：
+      - `linux_kernel_module`
+      - `android_kernel_module`
+    - 在 4 个现有 harness 中补以下宏分支：
+      - `EIPPF_EXPECT_LINUX_KERNEL_MODULE`
+      - `EIPPF_EXPECT_ANDROID_KERNEL_MODULE`
+    - 为 Linux / Android kernel module 加与 `windows_driver` 对称的断言：
+      - configured target kind
+      - runtime dynamic code forbidden
+      - `protect_rx` fail-closed 或 compile fail-closed
+      - `jit_route_forbidden_for_target`
+      - `requires_sign_after_mutate`
+    - 不得修改任何 runtime 生产源
+- `Card 4 / Agent 2 / Track D`
+  - 只读打开：
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/tests/tools/CMakeLists.txt`
+  - 只允许修改：
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `/workspace/core/tests/tools/artifact_audit_strict_test.cpp`
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/tests/lane_windows_driver/*`
+    - `/workspace/core/tests/lane_linux_kernel/*`
+    - `/workspace/core/tests/lane_android_kernel/*`
+  - 固定动作：
+    - 在 `post_link_mutator_smoke_test.cpp` 补断言：
+      - `runtime_lane`
+      - `mutation_profile`
+      - `signature_policy`
+      - `sign_after_mutate_required`
+      - `allow_jit`
+      - `allow_runtime_executable_pages`
+      - `allow_persistent_plaintext`
+      - `require_fail_closed`
+      - `kernel_compat_profile`
+      - `hvci_profile`
+      - `vermagic_profile`
+      - `gki_kmi_profile`
+    - 在 `artifact_audit_strict_test.cpp` 固定新增：
+      - Linux `.ko` failure path -> `vermagic_mismatch`
+      - Android `.ko` success/failure path -> `gki_kmi_profile` / `gki_kmi_mismatch`
+      - 三条 lane security-edge path -> `kernel_gate_failed`
+    - 新增 9 条 lane tests，名字不允许改：
+      - `windows_driver_success_test`
+      - `windows_driver_failure_test`
+      - `windows_driver_security_edge_test`
+      - `linux_kernel_module_success_test`
+      - `linux_kernel_module_failure_test`
+      - `linux_kernel_module_security_edge_test`
+      - `android_kernel_module_success_test`
+      - `android_kernel_module_failure_test`
+      - `android_kernel_module_security_edge_test`
+    - `core/tests/CMakeLists.txt` 只新增：
+      - `eippf_maybe_add_test_subdir(lane_windows_driver)`
+      - `eippf_maybe_add_test_subdir(lane_linux_kernel)`
+      - `eippf_maybe_add_test_subdir(lane_android_kernel)`
+- `Card 5 / Agent 2 / Track E`
+  - 只读打开：
+    - `/workspace/core/tests/perf/CMakeLists.txt`
+    - `/workspace/core/tests/perf/user_mode_perf_smoke_test.cpp`
+  - 只允许修改：
+    - `/workspace/core/tests/perf/CMakeLists.txt`
+    - `/workspace/core/tests/perf/windows_driver_perf_smoke_test.cpp`
+    - `/workspace/core/tests/perf/linux_kernel_module_perf_smoke_test.cpp`
+    - `/workspace/core/tests/perf/android_kernel_module_perf_smoke_test.cpp`
+  - 固定动作：
+    - 新增 3 条 perf tests，名字不允许改：
+      - `windows_driver_perf_smoke_test`
+      - `linux_kernel_module_perf_smoke_test`
+      - `android_kernel_module_perf_smoke_test`
+    - 每条 test 都必须输出：
+      - hot path overhead
+      - overall overhead
+    - 超过预算直接 `FAIL`
+- `Card 6 / Agent 1 / Validation Run`
+  - 固定顺序执行：
+    - `cmake -S /workspace/core -B /workspace/build_phase4 -G Ninja`
+    - `cmake --build /workspace/build_phase4 -j`
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_linux_kernel_module_safe_test|runtime_memory_hal_android_kernel_module_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_linux_kernel_module_safe_test|runtime_secure_ir_engine_android_kernel_module_safe_test|hardened_target_windows_driver_runtime_kind_test|hardened_target_linux_kernel_module_runtime_kind_test|hardened_target_android_kernel_module_runtime_kind_test|hardened_target_windows_driver_secure_ir_engine_test|hardened_target_linux_kernel_module_secure_ir_engine_test|hardened_target_android_kernel_module_secure_ir_engine_test|jit_enclave_pipeline_gate_test'`
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'post_link_mutator_smoke_test|artifact_audit_strict_test|windows_driver_success_test|windows_driver_failure_test|windows_driver_security_edge_test|linux_kernel_module_success_test|linux_kernel_module_failure_test|linux_kernel_module_security_edge_test|android_kernel_module_success_test|android_kernel_module_failure_test|android_kernel_module_security_edge_test'`
+    - `ctest --test-dir /workspace/build_phase4 --output-on-failure -R 'windows_driver_perf_smoke_test|linux_kernel_module_perf_smoke_test|android_kernel_module_perf_smoke_test'`
+    - `cmake --build /workspace/build_phase4 --target perf_smoke`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\tDIR\n' "$rel"; elif [ -e "/workspace/$rel" ]; then printf '%s\t%s\n' "$rel" "$(sha256sum "/workspace/$rel" | awk '{print $1}')"; else printf '%s\tMISSING\n' "$rel"; fi; done < /tmp/phase4_task_local_watchlist.txt > /tmp/phase4_task_local_post.tsv`
+    - `join -a 1 -a 2 -t $'\t' -o 0,1.2,2.2 /tmp/phase4_task_local_pre.tsv /tmp/phase4_task_local_post.tsv | awk -F $'\t' '$2 != $3 {print $1}' > /tmp/phase4_task_local_changed_paths.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_task_local_out_of_scope_changes.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_planner_writes.txt | sort -u > /tmp/phase4_allowed_task_local_writes.txt`
+    - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_task_local_writes.txt > /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - `test ! -s /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a," -> "); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_post.txt`
+    - `comm -23 /tmp/phase4_dirty_files_post.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_post.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre.txt /tmp/phase4_scope_out_dirty_post.txt > /tmp/phase4_new_scope_out_dirty.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty.txt /tmp/phase4_allowed_post_additions.txt > /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - `test ! -s /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_post.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_post_expanded.txt`
+    - `comm -13 /tmp/phase4_scope_out_dirty_pre_expanded.txt /tmp/phase4_scope_out_dirty_post_expanded.txt > /tmp/phase4_new_scope_out_dirty_expanded.txt`
+    - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_post_additions.txt | sort -u > /tmp/phase4_allowed_post_inventory.txt`
+    - `comm -23 /tmp/phase4_new_scope_out_dirty_expanded.txt /tmp/phase4_allowed_post_inventory.txt > /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+    - `test ! -s /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+    - 重新记录 auxiliary core-tree hash baseline 并比较
+  - 任何命令失败直接停止，不做“人工解释通过”。
+- `Card 7 / Agent 3 / Final Review`
+  - 逐项核对：
+    - 是否仍然只改 `Changed Path`
+    - 是否保留：
+      - `signature_authenticity_missing`
+      - `signature_verifier_untrusted`
+      - `signature_verifier_failed`
+      - `signature_verifier_digest_mismatch`
+      - `signature_authenticity_rejected`
+    - 是否新增：
+      - `kernel_gate_failed`
+      - `vermagic_mismatch`
+      - `gki_kmi_mismatch`
+    - success lanes 是否都有：
+      - `sign_after_mutate_required=true`
+      - `allow_jit=false`
+      - `allow_runtime_executable_pages=false`
+      - `allow_persistent_plaintext=false`
+      - `require_fail_closed=true`
+      - `validation_mode=external_verifier`
+      - `runtime_lane=kernel_safe`
+    - `/tmp/phase4_task_local_out_of_scope_unapproved.txt` 是否为空
+    - Card 6 是否原样执行以下 5 条 task-local provenance 命令：
+      - `join -a 1 -a 2 -t $'\t' -o 0,1.2,2.2 /tmp/phase4_task_local_pre.tsv /tmp/phase4_task_local_post.tsv | awk -F $'\t' '$2 != $3 {print $1}' > /tmp/phase4_task_local_changed_paths.txt`
+      - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_task_local_out_of_scope_changes.txt`
+      - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_planner_writes.txt | sort -u > /tmp/phase4_allowed_task_local_writes.txt`
+      - `comm -23 /tmp/phase4_task_local_changed_paths.txt /tmp/phase4_allowed_task_local_writes.txt > /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+      - `test ! -s /tmp/phase4_task_local_out_of_scope_unapproved.txt`
+    - Card 6 是否原样执行以下 4 条后态 dirty 差集命令：
+      - `git -C /workspace status --porcelain=v1 | awk '{path=substr($0,4); if (path ~ / -> /) {n=split(path,a," -> "); path=a[n]} print path}' | sort -u > /tmp/phase4_dirty_files_post.txt`
+      - `comm -23 /tmp/phase4_dirty_files_post.txt /tmp/phase4_allowed_writes.txt > /tmp/phase4_scope_out_dirty_post.txt`
+      - `comm -13 /tmp/phase4_scope_out_dirty_pre.txt /tmp/phase4_scope_out_dirty_post.txt > /tmp/phase4_new_scope_out_dirty.txt`
+      - `comm -23 /tmp/phase4_new_scope_out_dirty.txt /tmp/phase4_allowed_post_additions.txt > /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+      - `test ! -s /tmp/phase4_new_scope_out_dirty_unapproved.txt`
+    - Card 6 是否原样执行以下 4 条 expanded inventory 命令：
+      - `while IFS= read -r rel; do if [ -d "/workspace/$rel" ]; then printf '%s\n' "$rel"; (cd /workspace && find "$rel" -mindepth 1 -print); elif [ -e "/workspace/$rel" ]; then printf '%s\n' "$rel"; else printf '%s\n' "$rel"; fi; done < /tmp/phase4_scope_out_dirty_post.txt | sed '/^$/d' | sort -u > /tmp/phase4_scope_out_dirty_post_expanded.txt`
+      - `comm -13 /tmp/phase4_scope_out_dirty_pre_expanded.txt /tmp/phase4_scope_out_dirty_post_expanded.txt > /tmp/phase4_new_scope_out_dirty_expanded.txt`
+      - `cat /tmp/phase4_allowed_writes.txt /tmp/phase4_allowed_post_additions.txt | sort -u > /tmp/phase4_allowed_post_inventory.txt`
+      - `comm -23 /tmp/phase4_new_scope_out_dirty_expanded.txt /tmp/phase4_allowed_post_inventory.txt > /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+      - `test ! -s /tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt`
+    - `/tmp/phase4_new_scope_out_dirty_unapproved.txt` 是否为空
+    - `/tmp/phase4_new_scope_out_dirty_expanded_unapproved.txt` 是否为空
+    - perf 是否没有超预算
+  - 任一项不满足，结论只能是 `FAIL`
+
+Open Risks:
+- 当前仓库工作树非干净；若不做白名单比较，容易把无关改动混入 `Phase 4`。
+- `hvci_profile` / `vermagic_profile` / `gki_kmi_profile` 本批是 metadata + strict gate，不是完整发行签名基础设施。
+- 如果实施中发现必须修改 runtime production 文件，本计划必须被视为失效并重新规划，不能继续按当前批次推进。
+
+Decision Log:
+- `DL-P4-01`
+  - 决定：
+    - `Phase 4 Batch 1` 直接做 end-to-end lane closure
+  - 原因：
+    - skeleton-only 无法满足本批 acceptance
+- `DL-P4-02`
+  - 决定：
+    - `core/runtime/*` production 本批只读复用
+  - 原因：
+    - 当前 blocker 在 metadata / audit / tests / perf，不在 runtime backend 实现
+- `DL-P4-03`
+  - 决定：
+    - runtime 对称 evidence 必须通过扩充现有 test harness 获取
+  - 原因：
+    - 这样能证明 Linux / Android kernel module 的 no-runtime-codegen，而不扩大 production blast radius
+- `DL-P4-04`
+  - 决定：
+    - `artifact_audit.py` 同批次新增 `kernel_gate_failed`、`vermagic_mismatch`、`gki_kmi_mismatch`
+  - 原因：
+    - manifest 字段如果不转成 strict gate，不算闭环
+- `DL-P4-05`
+  - 决定：
+    - `target_classifier.cpp` 不动
+  - 原因：
+    - 当前 `.sys/.ko` 分类语义已有测试支撑，不是 blocker
+- `DL-P4-06`
+  - 决定：
+    - `Phase 4` 最少新增 9 条 lane tests + 3 条 perf tests
+  - 原因：
+    - 必须有 success/failure/security-edge 和 budget evidence
+
+State Snapshot:
+- `Phase 3`
+  - `PASS`
+  - 已冻结：
+    - Windows `.exe/.dll`
+    - Linux `ELF/.so`
+    - Android `.so`
+- `Phase 4` 当前真实状态
+  - 已有：
+    - `kernel_safe` backend descriptor
+    - `backend_policy` kernel-safe dispatch
+    - `.sys/.ko` target classifier
+    - windows driver strict verifier/authenticity harness
+    - compile-time JIT route redlight harness
+  - 未闭合：
+    - kernel lane manifest metadata
+    - kernel lane strict audit gate
+    - Linux / Android kernel runtime 对称 evidence
+    - 3 lane x 3 case lane tests
+    - kernel perf 预算 evidence
+- 工作树状态
+  - 当前 `/workspace` 不是干净工作树
+  - `Phase 4` 实施必须使用 changed-path 白名单，不能回滚、覆盖或夹带其他文件
+- 下一动作
+  - `Agent 1` 先冻结白名单和 merge order
+  - `Agent 2` 按 `Track A -> B -> C -> D -> E` 执行
+  - `Agent 3` 在每个 gate 后独立出 `PASS/FAIL`

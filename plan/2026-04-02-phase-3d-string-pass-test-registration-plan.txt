@@ -1,0 +1,439 @@
+# 2026-04-02 Phase 3d / string pass test registration plan
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`。
+- 本文件只关闭 `Phase 3 final integration` 暴露出的 `string_protection_pass_test` 未注册进构建/测试图的 blocker，不扩展到其他未阻塞项。
+
+Execution Mode:
+- `real-multi-agent`
+- 当前环境有真实 subagents；本计划按真实多代理流程送审。
+- PM / `main_agent` 持有编排权与 task card 下发权。
+- Architect / `Architect agent` 负责产出本最小 delta 技术计划；后续由独立 reviewer 审核，Engineer 仅在计划通过后执行。
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 只修补 `string_protection_pass_test` 未被注册进 `build/test` 图的 blocker，使 `Phase 3` 最终集成的 string pass 测试链恢复。
+  - 在不触碰生产 pass 目标与测试语义的前提下，恢复：
+    - 目标可构建
+    - `ctest -N` 可见
+    - 指定 `ctest -R` 可执行
+- Scope:
+  - 允许修改范围仅限：
+    - `/workspace/core/tests/passes/CMakeLists.txt`
+  - 允许验证范围仅限：
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/passes/CMakeLists.txt`
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+    - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+    - `/workspace/build_phase3/CMakeCache.txt`
+    - `/workspace/build_phase3` 下的 configure/build/ctest 结果
+  - 修补范围严格限制为这个 test registration/build blocker 及其直接回归面：
+    - `string_protection_pass_test`
+    - `core/tests/passes/CMakeLists.txt`
+    - `tests/passes` 子目录的 CTest 注册
+    - 现有 pass targets 的非回归验证
+- Non-Goals:
+  - 不扩到 `Phase 3` 其他测试注册缺口。
+  - 不修改任何生产代码或生产 `CMakeLists.txt`。
+  - 不重写 `string_protection_pass_test.cpp` 测试语义。
+  - 不处理 `ip_weaver_ir_opcode_mapper_test` 或其他 `TARGET LLVM` 相关历史问题。
+- Acceptance Criteria:
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja` 成功。
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test` 成功。
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test"` 必须命中：
+    - `string_protection_pass_test`
+    - `string_token_runtime_test`
+    - `user_mode_pipeline_test`
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'` 成功。
+  - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake` 成功，证明 `tests/passes` 子目录实际写入了测试注册。
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass` 成功，不得破坏已有 pass targets。
+  - 工程提交必须附带白名单 diff 证据：
+    - `git -C /workspace diff --name-only -- core/tests/passes/CMakeLists.txt core/tests/CMakeLists.txt core/passes/CMakeLists.txt core/tests/passes/string_protection_pass_test.cpp`
+    - reviewer 必须确认输出只允许包含 `core/tests/passes/CMakeLists.txt`
+- Constraints:
+  - PM 不改生产代码。
+  - 编码前必须先过 3 reviewer 审核。
+  - 编码 agent 不自行设计方案，只按本计划白名单与步骤执行。
+  - 修补点必须保持为 `core/tests/passes/CMakeLists.txt`，不得转移到生产模块或测试源文件。
+- Forbidden Shortcuts:
+  - 禁止修改 `/workspace/core/tests/CMakeLists.txt` 来绕过 `tests/passes` 子目录内部缺口。
+  - 禁止修改 `/workspace/core/passes/CMakeLists.txt` 来补测试注册问题。
+  - 禁止修改 `/workspace/core/tests/passes/string_protection_pass_test.cpp` 以掩盖构建/注册缺口。
+  - 禁止删除 `add_test(NAME string_protection_pass_test ...)` 或更改测试名。
+  - 禁止把问题降格成“当前环境不支持”然后继续静默跳过。
+- Sources Of Truth:
+  - `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+  - 真实复现命令：
+    - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string|user_mode|artifact_audit|android_so|post_link_mutator_user_mode"`
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+
+Main PM:
+- `main_agent`
+- 职责：持有编排权、冻结范围、发起独立审核、在三审通过后下发编码任务。
+
+Agent Roster:
+- PM / `main_agent`
+  - 职责：持有编排权、控制送审顺序、汇总 reviewer 结论、决定是否向 Engineer 发卡。
+- Architect / `Architect agent`
+  - 职责：产出本 test registration blocker 的最小 delta 技术计划，澄清边界、单写者 ownership 与 acceptance。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 职责：独立审核最小 delta 边界、文件所有权、`tests/passes` 内部修补是否足够且没有外扩。
+- Security Reviewer / 待分配独立 reviewer
+  - 职责：独立审核没有顺手改生产接线、没有扩大 `Phase 3` blast radius、没有把静默跳过保留下来。
+- Validation Reviewer / 待分配独立 reviewer
+  - 职责：独立审核 build/discovery/ctest/pass-target 非回归的证据链是否完整。
+- Engineer
+  - 职责：仅在三审全部 `PASS` 后，按单写者白名单实施修补并执行本地验证。
+
+Delegation Map:
+- PM / `main_agent`
+  - 负责真实多代理编排、发起三审、在三审全通过后签发 Engineer task card。
+- Architect / `Architect agent`
+  - 负责技术方案文本、范围冻结、对 reviewer 问题做计划层澄清。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 独立审核 Task Charter、Architecture Contract、Regression Perimeter 是否保持最小闭口。
+- Security Reviewer / 待分配独立 reviewer
+  - 独立审核方案是否坚持 fail-closed、没有把测试缺口转移到生产侧、没有保留静默跳过。
+- Validation Reviewer / 待分配独立 reviewer
+  - 独立审核 build/test discovery/ctest/pass-target 验收是否完整。
+- Engineer
+  - 仅在三审明确 `PASS` 后执行编码与验证，不参与计划审批。
+- PM takeover:
+  - 明确禁止。
+
+Architecture Contract:
+- Root Contract:
+  - 本 blocker 的根因只在 `core/tests/passes/CMakeLists.txt` 的测试目标注册条件与链接策略。
+  - `core/tests/CMakeLists.txt` 已经把 `passes` 子目录纳入构建图；本次不允许通过修改顶层 tests 接线补洞。
+  - `core/passes/CMakeLists.txt` 已经产出 `eippf_string_protection_pass` 与 `eippf_protection_suite_pass`；本次不允许通过修改生产 pass 接线补洞。
+  - `core/tests/passes/string_protection_pass_test.cpp` 已存在且语义稳定；本次不允许改测试源来规避注册问题。
+- 固定修法:
+  - 只允许修改 `/workspace/core/tests/passes/CMakeLists.txt`。
+  - 必须保留：
+    - 目标名 `string_protection_pass_test`
+    - 源文件列表中的 `string_protection_pass_test.cpp`
+    - 源文件列表中的 `"${CMAKE_SOURCE_DIR}/passes/src/StringProtectionPass.cpp"`
+    - 测试名 `string_protection_pass_test`
+  - 必须移除当前“整个测试目标被 `if(TARGET LLVM)` 静默包裹”的注册方式。
+  - 必须把链接策略改成仓库内已存在、已证明可用的 `ip_weaver_ir` 同款 fallback 结构：
+    - 先尝试 `if(TARGET LLVM)` -> `target_link_libraries(... PRIVATE LLVM)`
+    - 否则 `elseif(COMMAND llvm_map_components_to_libnames)` -> 使用该命令解析并链接下列固定组件库：
+      - `Core`
+      - `Support`
+      - `BitReader`
+      - `BitWriter`
+      - `IRReader`
+      - `Passes`
+      - `Analysis`
+      - `TransformUtils`
+    - 不允许继续保留“`TARGET LLVM` 不成立就整个测试不注册”的静默跳过路径
+  - LLVM include 路径继续沿用当前测试侧合同：
+    - `passes/include`
+    - `EIPPF_LLVM_INCLUDE_DIRS`
+- 明确回答 5 个问题:
+  - Q1 / 是否只改 `core/tests/passes/CMakeLists.txt`
+    - 是。
+    - 原因：顶层 tests 已纳入 `passes` 子目录，生产 pass targets 已存在，缺口集中在该文件内部的 guard 与 link strategy。
+  - Q2 / 是否需要改 `core/tests/CMakeLists.txt`
+    - 不需要。
+    - 原因：`core/tests/CMakeLists.txt` 已调用 `eippf_maybe_add_test_subdir(passes)`；`build_phase3/tests/passes/CTestTestfile.cmake` 为空说明子目录已进入图，但子目录自身没有产出测试条目。
+  - Q3 / 是否需要改 `core/passes/CMakeLists.txt`
+    - 不需要。
+    - 原因：`eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 已存在且可构建，当前 blocker 不是生产 pass target 缺失。
+  - Q4 / 是否允许改测试源 `core/tests/passes/string_protection_pass_test.cpp`
+    - 不允许。
+    - 原因：当前 evidence 只证明构建/注册缺口，没有任何测试语义或源码缺陷证据；改源码会扩大 blast radius 并掩盖根因。
+  - Q5 / 为什么修法边界要写死成上面这样
+    - 因为当前构建图中：
+      - `LLVM_DIR` 已存在
+      - `EIPPF_LLVM_INCLUDE_DIRS` 已存在
+      - pass targets 已存在
+      - 唯独 `TARGET LLVM` 不成立导致 `string_protection_pass_test` 整体不被定义
+    - 所以最小 delta 必须只修 `tests/passes` 的 guard 与 link fallback，不改顶层 tests、不改生产 pass、不改测试源码。
+
+Decision Log:
+- `DL-P3D-01`
+  - 决定：本 delta 只修 `core/tests/passes/CMakeLists.txt`
+  - 原因：这是唯一同时解释“target unknown”“ctest -N 不可见”“tests/passes/CTestTestfile.cmake 为空”的交汇点。
+- `DL-P3D-02`
+  - 决定：不修改 `core/tests/CMakeLists.txt`
+  - 原因：顶层 tests 已经包含 `passes` 子目录；问题不在 subdir 注册入口，而在 subdir 内部目标未创建。
+- `DL-P3D-03`
+  - 决定：不修改 `core/passes/CMakeLists.txt`
+  - 原因：已有 pass targets 正常存在，生产接线不是 blocker。
+- `DL-P3D-04`
+  - 决定：不修改 `string_protection_pass_test.cpp`
+  - 原因：当前 blocker 是 test registration/build 问题，不是测试实现问题。
+- `DL-P3D-05`
+  - 决定：修法必须复用仓库中已存在的 `ip_weaver_ir` LLVM fallback 模式
+  - 原因：这样可以把编码方案写死，避免编码 agent 自行设计新的 LLVM 链接策略。
+
+Regression Perimeter:
+- Root Cause:
+  - `/workspace/core/tests/passes/CMakeLists.txt` 用 `if(TARGET LLVM)` 包裹了整个 `string_protection_pass_test` 定义与 `add_test(...)`。
+  - 当前 build 中：
+    - `LLVM_DIR=/usr/lib/llvm-14/cmake`
+    - `EIPPF_LLVM_INCLUDE_DIRS` 已存在
+    - `eippf_string_protection_pass`、`eippf_protection_suite_pass` 已存在
+    - 但 `TARGET LLVM` 不成立
+  - 结果：
+    - `string_protection_pass_test` 目标未创建
+    - `ctest -N` 看不到该测试
+    - `build_phase3/tests/passes/CTestTestfile.cmake` 为空
+- Changed Path:
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+- Adjacent Paths:
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+- Unchanged Guarantees:
+  - `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 的生产接线不变。
+  - `string_protection_pass_test.cpp` 的测试语义不变。
+  - 顶层 tests 的子目录装配关系不变。
+  - `Phase 3c` 已冻结结果不回退。
+- Second-Order Risks:
+  - 若改顶层 `core/tests/CMakeLists.txt`，会把局部子目录缺口错误放大成全局 tests 结构改动。
+  - 若改 `core/passes/CMakeLists.txt`，会把 test registration blocker 误转成生产接线改动。
+  - 若改 `string_protection_pass_test.cpp`，会让 reviewer 无法证明根因确实在注册链。
+- Regression Matrix:
+  - Configure:
+    - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - Target build:
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+  - Test discovery:
+    - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test"`
+  - Generated CTest evidence:
+    - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+  - Test execution:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+  - Pass-target non-regression:
+    - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+  - File-scope audit:
+    - `git -C /workspace diff --name-only -- core/tests/passes/CMakeLists.txt core/tests/CMakeLists.txt core/passes/CMakeLists.txt core/tests/passes/string_protection_pass_test.cpp`
+
+Parallel Tracks:
+- Track A / Architecture Review
+  - Owner:
+    - `Architecture Reviewer / 待分配独立 reviewer`
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，只检查最小 delta 边界、单写者 ownership、5 个“是否需要改”的结论是否自洽。
+- Track B / Security Review
+  - Owner:
+    - `Security Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Architecture Contract` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认没有把测试缺口转嫁给生产侧，也没有保留静默跳过。
+- Track C / Validation Review
+  - Owner:
+    - `Validation Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Acceptance Criteria` 与 `Regression Matrix` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认 build/discovery/ctest/pass-target 证据链充分。
+- Track D / String Pass Test Registration Closure
+  - Owner:
+    - `Engineer`
+  - Dependencies:
+    - `Architecture Reviewer PASS`
+    - `Security Reviewer PASS`
+    - `Validation Reviewer PASS`
+    - `PM / main_agent` 发卡
+  - Output:
+    - `string_protection_pass_test` 重新进入构建图与测试图。
+
+File Ownership:
+- 单写者测试接线文件：
+  - `/workspace/core/tests/passes/CMakeLists.txt` -> `Engineer`
+- 只读验证文件：
+  - `/workspace/core/tests/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/core/passes/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp` -> `Engineer` 只读
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake` -> `Engineer` 只读
+  - `/workspace/build_phase3/CMakeCache.txt` -> `Engineer` 只读
+- 计划文件：
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt` -> `Architect / Architect agent`
+
+Dependencies:
+- 必须先通过本计划的 3 reviewer 审核，再允许编码。
+- `Engineer` 执行顺序固定：
+  1. 只读核对：
+     - `core/tests/passes/CMakeLists.txt`
+     - `core/tests/CMakeLists.txt`
+     - `core/passes/CMakeLists.txt`
+     - `core/tests/passes/string_protection_pass_test.cpp`
+  2. 只修改 `core/tests/passes/CMakeLists.txt`。
+  3. 先做 configure。
+  4. 再做 `string_protection_pass_test` 定向 build。
+  5. 再做 `ctest -N` 可见性验证。
+  6. 再做指定 `ctest -R` 执行验证。
+  7. 最后做 pass-target 非回归验证。
+- PM 必须先收齐以下三份独立结论，再允许进入编码：
+  - `Architecture Reviewer PASS`
+  - `Security Reviewer PASS`
+  - `Validation Reviewer PASS`
+
+Model Routing:
+- PM / 编排：
+  - `main_agent`
+  - 原因：当前环境支持真实多代理，PM 只持有编排权，不接管技术方案或实现。
+- Architect / 计划产出：
+  - `Architect agent`
+  - 原因：本轮需要由架构师给出最小 delta 技术方案。
+- Architecture Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认修补点没有从 `tests/passes` 外扩。
+- Security Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认没有把测试注册问题转嫁给生产接线。
+- Validation Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认 target/build/discovery/ctest/non-regression 证据完整。
+- Engineer / 后续执行：
+  - `独立 engineer`
+  - 原因：计划通过后只做单文件最小修补，禁止 PM 或 reviewer 越权实现。
+
+Context Packages:
+- `Architecture Reviewer` 可依赖：
+  - 本计划
+  - `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+- `Security Reviewer` 可依赖：
+  - 本计划
+  - `Architecture Contract`
+  - `Decision Log`
+  - `Regression Perimeter`
+- `Validation Reviewer` 可依赖：
+  - 本计划
+  - `Acceptance Criteria`
+  - `Regression Matrix`
+  - 真实失败命令与当前 build 证据
+- `Engineer` 可依赖：
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/core/ip_weaver_ir/CMakeLists.txt`
+  - 本计划规定的命令与验收
+- `Engineer` 不可依赖：
+  - 自行设计新的 LLVM 链接方案
+  - 自行改顶层 tests 接线
+  - 自行改生产 pass 接线
+  - 自行改测试源码
+- 三个 reviewer 在编码后可依赖：
+  - `Engineer` 的 diff
+  - 本计划 acceptance 与 regression matrix
+  - 实际 build / ctest 结果
+
+Quality Gates:
+- G1 / Scope Gate:
+  - 只允许 1 个写入点：`/workspace/core/tests/passes/CMakeLists.txt`
+- G2 / Diff Audit Gate:
+  - reviewer 必须核对：
+    - `git -C /workspace diff --name-only -- core/tests/passes/CMakeLists.txt core/tests/CMakeLists.txt core/passes/CMakeLists.txt core/tests/passes/string_protection_pass_test.cpp`
+  - 通过条件：
+    - 输出只允许包含 `core/tests/passes/CMakeLists.txt`
+- G3 / Configure Gate:
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+- G4 / Target Build Gate:
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+- G5 / Discovery Gate:
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test"`
+- G6 / CTest File Gate:
+  - `rg -n "string_protection_pass_test" /workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+- G7 / Test Execution Gate:
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+- G8 / Pass Non-Regression Gate:
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+- G9 / Review Gate:
+  - `Architecture Reviewer` 必须 `PASS`
+  - `Security Reviewer` 必须 `PASS`
+  - `Validation Reviewer` 必须 `PASS`
+  - `PM / main_agent` 在三审全通过前不得向 `Engineer` 发卡
+
+Assurance Scorecard:
+- architecture completeness:
+  - `PASS`
+- evidence coverage:
+  - `PASS`
+- blast radius coverage:
+  - `PASS`
+- PM boundary integrity:
+  - `PASS`
+- review independence:
+  - `PASS`
+- context integrity:
+  - `PASS`
+- delegation integrity:
+  - `PASS`
+- gate result:
+  - `PLAN READY FOR INDEPENDENT REVIEW`
+
+Open Risks:
+- 风险：
+  - 编码 agent 顺手改顶层 tests 或生产 pass 接线
+  - Owner：
+    - `Architecture Reviewer`
+    - `Security Reviewer`
+  - Mitigation：
+    - 白名单 diff gate 必须只看到 `core/tests/passes/CMakeLists.txt`
+- 风险：
+  - 编码 agent 只让 target 可构建，但忘了恢复 `ctest -N` 与 `add_test`
+  - Owner：
+    - `Validation Reviewer`
+  - Mitigation：
+    - `ctest -N` gate 与 `CTestTestfile.cmake` gate 必须同时通过
+- 风险：
+  - 修补后误伤已有 pass targets
+  - Owner：
+    - `Engineer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - 必跑 `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 非回归构建
+
+State Snapshot:
+- `Phase 3c` 已完成并冻结，执行记录在：
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+- 当前 `Phase 3 final integration` 新 blocker：
+  - `string_protection_pass_test` 没有被注册进构建/测试图
+- 已确认的真实事实：
+  - `ctest --test-dir /workspace/build_phase3 -N` 能看到：
+    - `string_token_runtime_test`
+    - `android_so_policy_test`
+    - `artifact_audit_user_mode_test`
+    - `user_mode_pipeline_test`
+  - 但看不到：
+    - `string_protection_pass_test`
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+    - 失败：`ninja: error: unknown target 'string_protection_pass_test'`
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+    - 用 `if(TARGET LLVM)` 包裹了 `add_executable(string_protection_pass_test ...)`
+    - 并 `target_link_libraries(string_protection_pass_test PRIVATE LLVM)`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+    - 为空，没有注册任何测试
+  - `/workspace/build_phase3/CMakeCache.txt`
+    - `LLVM_DIR=/usr/lib/llvm-14/cmake`
+    - `EIPPF_LLVM_INCLUDE_DIRS` 已存在
+  - `/workspace/build_phase3` 中：
+    - `eippf_string_protection_pass` 存在
+    - `eippf_protection_suite_pass` 存在
+- 下一动作：
+  - 先由 `PM / main_agent` 分发给 `Architecture Reviewer`、`Security Reviewer`、`Validation Reviewer` 独立审核本计划。
+  - 三审全部 `PASS` 后，PM 才向 `Engineer` 下发本计划中的单文件编码任务，不追加自由设计空间。

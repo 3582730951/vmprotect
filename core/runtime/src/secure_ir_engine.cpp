@@ -340,7 +340,8 @@ SecureIREngine::CompileResult SecureIREngine::compile(const Program& program) co
   MetadataScope metadata{};
   if (!runtime::MemoryHAL::runtime_dynamic_code_allowed()) {
     result.error = ErrorCode::kMemoryProtectFailed;
-    result.error_message_hash = hash_bytes(metadata.error_text(result.error));
+    result.gate_code = GateCode::kJitRouteForbiddenForTarget;
+    result.error_message_hash = hash_bytes("jit_route_forbidden_for_target");
     metadata.wipe();
     return result;
   }

@@ -6,6 +6,7 @@
 namespace {
 
 using eippf::contracts::ArtifactKind;
+using eippf::contracts::MutationProfileKind;
 using eippf::contracts::ProtectionManifestV2;
 using eippf::contracts::ProtectionTargetKind;
 using eippf::contracts::ReviewStatus;
@@ -54,6 +55,55 @@ int main() {
 
   if (!expect(!eippf::contracts::target_allows_jit(ProtectionTargetKind::kIosAppStore),
               "ios appstore should forbid jit")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::target_forbids_jit(ProtectionTargetKind::kUnknown),
+              "unknown target should forbid jit")) {
+    return 1;
+  }
+  if (!expect(!eippf::contracts::target_allows_jit(ProtectionTargetKind::kUnknown),
+              "unknown target should not allow jit")) {
+    return 1;
+  }
+
+  if (!expect(eippf::contracts::target_forbids_jit(ProtectionTargetKind::kAndroidDex),
+              "android dex should forbid jit")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::target_forbids_jit(ProtectionTargetKind::kShellEphemeral),
+              "shell ephemeral should forbid jit")) {
+    return 1;
+  }
+  if (!expect(!eippf::contracts::target_allows_jit(ProtectionTargetKind::kAndroidDex),
+              "android dex should not allow jit")) {
+    return 1;
+  }
+  if (!expect(!eippf::contracts::target_allows_jit(ProtectionTargetKind::kShellEphemeral),
+              "shell ephemeral should not allow jit")) {
+    return 1;
+  }
+
+  if (!expect(eippf::contracts::mutation_profile_for_target_artifact(
+                  ProtectionTargetKind::kDesktopNative, ArtifactKind::kPe) ==
+                  MutationProfileKind::kPeUserMode,
+              "desktop native + pe should map to pe_user_mode")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::mutation_profile_for_target_artifact(
+                  ProtectionTargetKind::kDesktopNative, ArtifactKind::kElf) ==
+                  MutationProfileKind::kElfUserMode,
+              "desktop native + elf should map to elf_user_mode")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::mutation_profile_for_target(ProtectionTargetKind::kDesktopNative) ==
+                  MutationProfileKind::kUnknown,
+              "desktop native default mutation profile should be unknown")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::mutation_profile_for_target_artifact(
+                  ProtectionTargetKind::kDesktopNative, ArtifactKind::kMachO) ==
+                  MutationProfileKind::kUnknown,
+              "desktop native + macho should map to unknown")) {
     return 1;
   }
 

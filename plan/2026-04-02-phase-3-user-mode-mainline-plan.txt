@@ -1,0 +1,358 @@
+# 2026-04-02 Phase 3 user-mode mainline detailed plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- `Phase 3` 只覆盖三条 user-mode 发布级主线：
+  - Windows `.exe/.dll`
+  - Linux `ELF/.so`
+  - Android `.so`
+- 目标不是给现有产物继续追加 trailer，而是把当前仓库推进到“可发布的 user-mode 保护主线”：
+  - 字符串保护与 lexical anchor 治理进入统一主线
+  - `PE/ELF` post-link mutate 从 `trailer-only` 升级到 publish-grade mutate baseline
+  - Android `.so` threat hardening baseline 进入真实计划与验收
+  - native artifact audit、平台证据、性能门完整闭环
+
+Task Charter:
+- Objective:
+  - 基于已冻结的 `Phase 2C`，完成 `Windows .exe/.dll`、`Linux ELF/.so`、`Android .so` 三条 user-mode 发布级主线的详细实施计划，并为后续工程轨提供无歧义 task cards。
+- Scope:
+  - `core/wrapper/`
+  - `core/passes/`
+  - `core/runtime/`
+  - `core/post_link_mutator/`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/`
+  - `plan/`
+- Non-Goals:
+  - 不扩到 `.sys/.ko`
+  - 不扩到 `.dex`
+  - 不扩到 `.sh`
+  - 不扩到 iOS
+  - 不把 `JITEnclavePass` 直接当作 `Phase 3` 的 release-grade protection body
+- Constraints:
+  - 先计划、再三审、再编码。
+  - PM 不接管实现代码。
+  - 工程 agent 只按固定文件白名单与步骤执行。
+  - `Windows/Linux/Android .so` 的最终性能预算 `<=10%`。
+- Acceptance Criteria:
+  - `build/test/perf_smoke` 通过。
+  - 产出至少一条 `Windows .exe/.dll` 证据、一条 `Linux ELF/.so` 证据、一条 `Android .so` 证据。
+  - `native artifact audit` 对样本产物给出可审计输出。
+  - `strings / lexical anchor / internal tutorial strings` 有统一治理门。
+  - Android `.so` threat hardening baseline 覆盖：
+    - `JNI symbol`
+    - `strings`
+    - `anti-hook`
+    - `anti-debug`
+  - `post_link_mutator` 不再只是 `trailer-only`。
+- Forbidden Shortcuts:
+  - 不能把 `trailer-only` 伪装成 publish-grade mutate。
+  - 不能把 `JITEnclavePass` 的 dummy payload 路径当成 release-grade body。
+  - 不能为通过性能门而降低 critical string / lexical anchor 保护强度。
+  - 不能删除 `smoke` 或把 audit 失败降格为 warning。
+  - 不能把 Android `.so` 风险留在“以后再测”。
+
+Architecture Contract Summary:
+- 发布级 user-mode 主线固定为：
+  - `wrapper -> passes -> runtime support -> post_link_mutator -> artifact_audit -> evidence`
+- `JITEnclavePass` 在 `Phase 3` 中只保留为 desktop-only gated experiment：
+  - 不能作为 release-grade 主 body
+  - 不能成为验收主证据
+  - 真实发布主线以 `StringProtection + CFF/MBA + IAT minimization + post-link mutate + audit` 为主
+- 字符串保护是一等目标，统一合同如下：
+  - 编译期抽取字符串候选
+  - lexical anchor denylist / tutorial-anchor denylist 必须进入主门禁
+  - 运行期只允许最短生命周期 decode
+  - Android JNI / exported symbol / tutorial strings 进入同一治理面
+- `PE/ELF` publish-grade mutate baseline 固定包含：
+  - 产物分类后的 user-mode only 路径
+  - import / dynamic symbol 审计与收敛
+  - section / note / metadata mutate baseline
+  - fail-closed mutation result
+  - manifest / audit 一致性
+- Android `.so` hardening baseline 固定包含：
+  - JNI export surface 收敛
+  - lexical anchor / strings residual gate
+  - 反调试与 hook 风险基线
+  - 至少一条 Android `.so` 证据样本
+
+Decision Log:
+- `DL-P3-01`
+  - 决定：`Phase 3` 不把 `JITEnclavePass` 作为 release-grade 主路径
+  - 原因：当前实现仍使用 dummy payload 路径，不能作为真实保护主体验收
+- `DL-P3-02`
+  - 决定：`StringProtectionPass` 与 lexical anchor audit 组成统一主线
+  - 原因：用户已明确字符串定位是第一攻击面，且当前仓库已有 pass 与 denylist/audit 基础
+- `DL-P3-03`
+  - 决定：`PE/ELF` mutate 与 `artifact_audit` 必须并行设计，不能先变异后补审计
+  - 原因：当前仓库已有 `post_link_mutator` 和 `artifact_audit`，但都还未形成发布级 user-mode 证据闭环
+- `DL-P3-04`
+  - 决定：Android `.so` 单独保留 threat hardening baseline 轨
+  - 原因：`JNI symbol / strings / anti-hook / anti-debug` 不能靠 Windows/Linux 轨顺带覆盖
+
+State Snapshot:
+- `Phase 2C` 已冻结，`post_link_mutator` 的模块边界已经建立。
+- 当前与 `Phase 3` 的真实差距：
+  - `post_link_mutator` 现在仍不是深度 rewriter，只具备 mutation baseline + audit sidecar 主线
+  - `JITEnclavePass` 仍有 dummy payload 路径
+  - `StringProtectionPass` 存在，但还未形成 “pass + runtime + audit + denylist” 统一主线
+  - `artifact_audit.py` 具备 strings / imports / sections 基础，但还缺针对 user-mode 发布样本的实证门
+  - Android `.so` threat hardening 还未形成独立 task card 与性能门
+
+Parallel Tracks:
+- Track A / String & Lexical Mainline
+  - Owner:
+    - `Engineer-String`
+  - Output:
+    - `StringProtectionPass + runtime decode support + lexical denylist gate` 的 user-mode 主线闭环
+  - Focus:
+    - string extraction
+    - residual string / lexical anchor gate
+    - tutorial-anchor denial
+- Track B / PE/ELF Mutate & Audit
+  - Owner:
+    - `Engineer-NativeMutator`
+  - Output:
+    - `PE/ELF` publish-grade mutate baseline
+    - user-mode artifact audit evidence
+  - Focus:
+    - user-mode only mutate path
+    - manifest/audit consistency
+    - sample evidence for Windows + Linux
+- Track C / Android .so Hardening
+  - Owner:
+    - `Engineer-AndroidSO`
+  - Output:
+    - Android `.so` hardening baseline
+    - JNI / anti-hook / anti-debug / strings residual gate
+  - Focus:
+    - JNI exports
+    - Android-specific lexical anchor gate
+    - anti-hook / anti-debug baseline
+- Track D / Validation, Perf, Evidence
+  - Owner:
+    - `Engineer-Validation`
+  - Output:
+    - user-mode pipeline tests
+    - platform evidence pack
+    - perf gate integration
+  - Focus:
+    - sample outputs
+    - repeated tests
+    - `<=10%` budget evidence
+
+File Ownership:
+- Track A / String & Lexical Mainline
+  - `core/passes/include/passes/StringProtectionPass.hpp`
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/passes/src/ProtectionSuitePassPlugin.cpp`
+  - `core/runtime/include/runtime/string_token_runtime.hpp`（新文件）
+  - `core/runtime/src/string_token_runtime.cpp`（新文件）
+  - `core/tests/passes/string_protection_pass_test.cpp`（新文件）
+  - `core/tests/runtime/security/string_token_runtime_test.cpp`（新文件）
+- Track B / PE/ELF Mutate & Audit
+  - `core/post_link_mutator/include/post_link_mutator/pe_user_mode_mutator.hpp`（新文件）
+  - `core/post_link_mutator/include/post_link_mutator/elf_user_mode_mutator.hpp`（新文件）
+  - `core/post_link_mutator/src/pe_user_mode_mutator.cpp`（新文件）
+  - `core/post_link_mutator/src/elf_user_mode_mutator.cpp`（新文件）
+  - `core/post_link_mutator/src/mutator_app.cpp`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/post_link_mutator/post_link_mutator_user_mode_contract_test.cpp`（新文件）
+  - `core/tests/tools/artifact_audit_user_mode_test.cpp`（新文件）
+- Track C / Android .so Hardening
+  - `core/runtime/include/runtime/environment_attestation.hpp`
+  - `core/runtime/include/runtime/android_so_policy.hpp`（新文件）
+  - `core/runtime/src/android_so_policy.cpp`（新文件）
+  - `core/wrapper/weaver_proxy.py`
+  - `core/tests/runtime/security/android_so_policy_test.cpp`（新文件）
+  - `core/tests/tools/android_so_pipeline_smoke_test.cpp`（新文件）
+- Track D / Validation, Perf, Evidence
+  - `core/tests/CMakeLists.txt`
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/user_mode_pipeline_fixture.cpp`（新文件）
+  - `core/tests/tools/user_mode_pipeline_test.cpp`（新文件）
+  - `core/tests/perf/user_mode_perf_smoke_test.cpp`（新文件）
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+Dependencies:
+- Track A 先于 Track B/Track C 的最终验收，因为 strings / lexical gate 是统一真相源。
+- Track B 与 Track C 可并行，但都依赖 Track A 的 denylist / residual policy 定义。
+- Track D 在 Track A/B/C 都有最小可运行产物后介入，不提前写死通过条件。
+
+Regression Perimeter:
+- Directly Changed Logic:
+  - string extraction / decode path
+  - `PE/ELF` mutate path
+  - Android `.so` JNI / anti-hook / anti-debug policy
+  - user-mode artifact audit outputs
+- Adjacent Paths:
+  - `ProtectionSuitePassPlugin`
+  - `SelectiveVMPass`
+  - `IATMinimizationPass`
+  - `environment_attestation`
+  - `perf_smoke`
+- Unchanged Guarantees:
+  - `Phase 2C` 的 thin entry / fault isolation / post-link contracts 不回退
+  - iOS / `.dex` / `.sh` / kernel 路径不混入 `Phase 3`
+  - `JITEnclavePass` 仍受 desktop-only gate 约束
+- Second-Order Risks:
+  - string 保护若只做 pass 不做 runtime/audit，会形成伪闭环
+  - mutate 若只增产物字段不改变 user-mode 表面，将继续停留在 trailer-only
+  - Android `.so` 若只测 Linux `.so` 等价路径，会漏掉 JNI / hook 攻击面
+  - `<=10%` 预算若未按平台样本实测，会出现“主机通过、平台失败”
+
+Quality Gates:
+- G1 / Configure
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+- G2 / Build
+  - `cmake --build /workspace/build_phase3 -j`
+- G3 / User-Mode Mainline Tests
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|post_link_mutator_user_mode_contract_test|artifact_audit_user_mode_test|android_so_policy_test|android_so_pipeline_smoke_test|user_mode_pipeline_test'`
+- G4 / Perf
+  - `cmake --build /workspace/build_phase3 --target perf_smoke`
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'user_mode_perf_smoke_test'`
+- G5 / Native Evidence
+  - 至少产出以下 3 组证据并通过 audit：
+    - `Windows .exe/.dll`
+    - `Linux ELF/.so`
+    - `Android .so`
+- G6 / Lexical Anchor Gate
+  - denylist / tutorial-anchor / internal test strings 不得残留于样本产物
+- G7 / Android .so Threat Gate
+  - JNI export surface 收敛检查通过
+  - anti-hook / anti-debug baseline 测试通过
+- G8 / Release-Grade Freeze Gate
+  - `JITEnclavePass` 不作为任何 `Phase 3` 通过证据
+  - `post_link_mutator` 不得仍停留在 `trailer-only`
+  - 3 reviewer 必须全部 `PASS`
+
+Merge Order:
+- `M1`: Track A / String & Lexical Mainline
+- `M2`: Track B / PE/ELF Mutate & Audit
+- `M3`: Track C / Android .so Hardening
+- `M4`: Track D / Validation, Perf, Evidence
+- `M5`: PM integration
+- `M6`: Phase 3 final reviews
+
+PM Task Card / Track A:
+- 目标：只把 string / lexical anchor 做成统一 user-mode 主线，不碰 mutate 或 Android-specific policy。
+- 只允许改：
+  - `core/passes/include/passes/StringProtectionPass.hpp`
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/passes/src/ProtectionSuitePassPlugin.cpp`
+  - `core/runtime/include/runtime/string_token_runtime.hpp`
+  - `core/runtime/src/string_token_runtime.cpp`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+  - `core/tests/runtime/security/string_token_runtime_test.cpp`
+- 严格动作顺序：
+  1. 先梳理 `StringProtectionPass.cpp` 当前候选抽取、解密注入、cleanup 行为。
+  2. 明确把 tutorial-anchor / lexical denylist 作为 pass 输出与 runtime decode 契约的一部分。
+  3. 新增最小 runtime token decode 支持，不允许长期明文缓存。
+  4. 更新 `ProtectionSuitePassPlugin.cpp`，确保 user-mode 主线能稳定挂上 string 保护。
+  5. 新增 3 类测试：
+     - success：候选字符串被抽取、运行期可最短生命周期解码
+     - failure：不允许的 tutorial-anchor 残留触发失败
+     - edge/security：解码后 cleanup 生效、denylist 命中失败
+  6. 只跑：
+     - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+     - `cmake --build /workspace/build_phase3 -j --target string_protection_pass_test string_token_runtime_test`
+  7. 交付时只回：
+     - changed files
+     - 两条命令结果
+     - 是否严格只改允许文件
+
+PM Task Card / Track B:
+- 目标：只把 `PE/ELF` user-mode mutate + audit 做成 publish-grade baseline，不碰 Android-specific threat logic。
+- 只允许改：
+  - `core/post_link_mutator/include/post_link_mutator/pe_user_mode_mutator.hpp`
+  - `core/post_link_mutator/include/post_link_mutator/elf_user_mode_mutator.hpp`
+  - `core/post_link_mutator/src/pe_user_mode_mutator.cpp`
+  - `core/post_link_mutator/src/elf_user_mode_mutator.cpp`
+  - `core/post_link_mutator/src/mutator_app.cpp`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/post_link_mutator/post_link_mutator_user_mode_contract_test.cpp`
+  - `core/tests/tools/artifact_audit_user_mode_test.cpp`
+- 严格动作顺序：
+  1. 先把 `mutator_app.cpp` 从 “统一追加 trailer” 升级为 “按 `pe/elf user-mode` 分派到专用 mutator”。
+  2. `pe_user_mode_mutator` 与 `elf_user_mode_mutator` 只负责 user-mode baseline mutate，不得引入 driver / iOS 语义。
+  3. `artifact_audit.py` 增补 user-mode 审计门，使 `Windows .exe/.dll` 与 `Linux ELF/.so` 样本可被独立验证。
+  4. 新增合同测试：
+     - success：`PE/ELF` user-mode 样本生成 mutate + manifest + audit
+     - failure：不匹配 artifact fail-closed
+     - security：imports / symbols / strings 残留门
+  5. 只跑：
+     - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+     - `cmake --build /workspace/build_phase3 -j --target post_link_mutator_user_mode_contract_test artifact_audit_user_mode_test`
+  6. 交付时只回：
+     - changed files
+     - 两条命令结果
+     - 是否严格只改允许文件
+
+PM Task Card / Track C:
+- 目标：只补 Android `.so` hardening baseline，不碰 `PE/ELF` mutate 实现。
+- 只允许改：
+  - `core/runtime/include/runtime/environment_attestation.hpp`
+  - `core/runtime/include/runtime/android_so_policy.hpp`
+  - `core/runtime/src/android_so_policy.cpp`
+  - `core/wrapper/weaver_proxy.py`
+  - `core/tests/runtime/security/android_so_policy_test.cpp`
+  - `core/tests/tools/android_so_pipeline_smoke_test.cpp`
+- 严格动作顺序：
+  1. 固定 Android `.so` baseline 范围：
+     - JNI export surface
+     - residual strings / lexical anchors
+     - anti-hook baseline
+     - anti-debug baseline
+  2. 在 `weaver_proxy.py` 明确 Android `.so` 的最小编译/链接策略，不允许工程 agent 自己发明 flags。
+  3. 在 runtime policy 中补 Android `.so` threat checks，但不得扩到 `.dex` 或 kernel。
+  4. 新增 3 类测试：
+     - success：Android `.so` baseline 配置和路径成立
+     - failure：JNI / lexical / hook 违规失败
+     - perf/smoke：Android `.so` 样本进入 pipeline 并生成 audit/evidence
+  5. 只跑：
+     - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+     - `cmake --build /workspace/build_phase3 -j --target android_so_policy_test android_so_pipeline_smoke_test`
+  6. 交付时只回：
+     - changed files
+     - 两条命令结果
+     - 是否严格只改允许文件
+
+PM Task Card / Track D:
+- 目标：只收口 user-mode 主线的 tests/perf/evidence，不改生产逻辑。
+- 只允许改：
+  - `core/tests/CMakeLists.txt`
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/user_mode_pipeline_fixture.cpp`
+  - `core/tests/tools/user_mode_pipeline_test.cpp`
+  - `core/tests/perf/user_mode_perf_smoke_test.cpp`
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+- 严格动作顺序：
+  1. 注册 user-mode pipeline fixture 与 evidence tests。
+  2. 固定至少 3 组样本：
+     - Windows `.exe/.dll`
+     - Linux `ELF/.so`
+     - Android `.so`
+  3. 把 `smoke + audit + perf` 门放进同一主验收链，不允许只跑其中一个。
+  4. 新增 `user_mode_perf_smoke_test`，显式记录 `<=10%` 预算。
+  5. 在执行记录中落盘证据，不替代代码或测试。
+  6. 只跑：
+     - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+     - `cmake --build /workspace/build_phase3 -j --target user_mode_pipeline_test user_mode_perf_smoke_test`
+  7. 交付时只回：
+     - changed files
+     - 两条命令结果
+     - 是否严格只改允许文件
+
+Phase 3 Freeze Gate:
+- 只有满足以下全部条件，`Phase 3` 才能冻结：
+  - Track A/B/C/D 全部完成并通过本地门禁
+  - `build/test/perf_smoke` 通过
+  - Windows `.exe/.dll`、Linux `ELF/.so`、Android `.so` 三条证据齐全
+  - lexical anchor / internal tutorial strings 门通过
+  - Android `.so` threat baseline 门通过
+  - 3 reviewer 最终 `PASS`

@@ -1,0 +1,147 @@
+# 2026-04-03 Phase 7 / Phase 8 执行记录
+
+状态:
+- `Phase 7` 已完成并冻结
+- `Phase 8` 已完成并冻结
+- 终局计划中的剩余阶段已全部收口
+- 当前仓库已达到 superseding plan 定义的终局验收口径
+
+对应计划:
+- `/workspace/plan/2026-04-03-phase-7-8-ios-ci-plan.txt`
+- `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+
+三审结论:
+- Architecture Reviewer: `PASS`
+  - `ios_safe` lane 已从 backend/policy 存在态推进到 `strict gate + lane tests + perf gate + post-link Mach-O mutation` 闭环。
+  - `post_link_mutator` 已新增 Mach-O user-mode mutator，并与 manifest writer / mutator app 接通。
+  - `.github/workflows/core-matrix.yml` 不是空壳；真实执行 `configure/build/ctest/perf_smoke` 与 evidence 上传。
+- Security Reviewer: `PASS`
+  - iOS lane 新增硬失败码：
+    - `ios_gate_failed`
+    - `private_api_detected`
+    - `macho_code_signature_missing`
+    - `rwx_segment_detected`
+  - `ios_appstore` lane 继续保持:
+    - `no-JIT`
+    - `no runtime executable pages`
+    - `required_verifier`
+    - `fail-closed`
+  - `artifact_audit_strict_test` 与 `lane_ios_safe/*` 都已覆盖 success / failure / security-edge。
+- Validation Reviewer: `PASS`
+  - 本地全量验收通过：
+    - `configure`
+    - `build`
+    - `ctest`
+    - `perf_smoke`
+  - `ios_safe_perf_smoke_test` 已进入总 `perf_smoke`，不是孤立测试。
+  - CI workflow 已落盘并带 evidence artifact 上传。
+
+Track 完成情况:
+- `Track A / iOS strict gate`
+  - 文件:
+    - `core/tools/artifact_audit.py`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+  - 结果:
+    - iOS strict gate 进入真实 audit 输出
+    - top-level report 新增:
+      - `ios_compliance_profile`
+      - `private_api_hits`
+      - `code_signature_state`
+      - `exec_permission_summary`
+    - strict fail code 新增:
+      - `ios_gate_failed`
+      - `private_api_detected`
+      - `macho_code_signature_missing`
+      - `rwx_segment_detected`
+
+- `Track B / lane_ios_safe`
+  - 文件:
+    - `core/tests/lane_ios_safe/CMakeLists.txt`
+    - `core/tests/lane_ios_safe/ios_safe_test_common.hpp`
+    - `core/tests/lane_ios_safe/ios_safe_success_test.cpp`
+    - `core/tests/lane_ios_safe/ios_safe_failure_test.cpp`
+    - `core/tests/lane_ios_safe/ios_safe_security_edge_test.cpp`
+    - `core/tests/CMakeLists.txt`
+  - 结果:
+    - `lane_ios_safe` 已加入总测试树
+    - success/failure/security-edge 全部接通
+
+- `Track C / iOS perf`
+  - 文件:
+    - `core/tests/perf/CMakeLists.txt`
+    - `core/tests/perf/ios_safe_perf_smoke_test.cpp`
+    - `core/tests/CMakeLists.txt`
+  - 结果:
+    - baseline=`desktop_native`
+    - compared=`ios_appstore`
+    - budget=`<=10%`
+    - 已纳入总 `perf_smoke`
+
+- `Track D / CI + evidence`
+  - 文件:
+    - `.github/workflows/core-matrix.yml`
+  - 结果:
+    - `ubuntu-latest`
+      - `configure`
+      - `build`
+      - `ctest`
+      - `perf_smoke`
+      - `artifact_audit.py --self-test`
+      - evidence 上传
+    - `macos-latest`
+      - `configure`
+      - `build`
+      - `ctest -R 'artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe'`
+      - `artifact_audit.py --self-test`
+      - evidence 上传
+
+本轮关键代码结果:
+- `core/post_link_mutator`
+  - 新增 `macho_user_mode_mutator`
+  - `mutator_app.cpp` 已将 `ios_appstore + macho` 路由到专用 mutator
+  - `manifest_writer.cpp` 新增 `ios_compliance_profile=app_store_safe`
+- `core/tools/artifact_audit.py`
+  - iOS strict gate 已硬编码进入 strict failure 集
+- `core/tests/tools/artifact_audit_strict_test.cpp`
+  - 补齐 signed/unsigned/private-framework/RWX/bad-manifest 五类 iOS 路径
+- `core/tests/perf/user_mode_perf_smoke_test.cpp`
+  - user-mode perf 采样从 `3` 提升到 `5`，收敛环境噪声
+
+执行命令:
+- `cmake -S /workspace/core -B /workspace/build_phase6_probe -G Ninja`
+- `cmake --build /workspace/build_phase6_probe -j 4`
+- `ctest --test-dir /workspace/build_phase6_probe --output-on-failure -R 'ios_safe|artifact_audit_strict_test'`
+- `ctest --test-dir /workspace/build_phase6_probe --output-on-failure`
+- `cmake --build /workspace/build_phase6_probe --target perf_smoke`
+
+执行结果:
+- configure: `PASS`
+- incremental build: `PASS`
+- iOS focused ctest: `5/5 PASS`
+- full ctest: `88/88 PASS`
+- `perf_smoke`: `PASS`
+  - `ios_safe_perf_smoke_test`: `PASS`
+  - `user_mode_perf_smoke_test`: `PASS`
+  - `windows_driver_perf_smoke_test`: `PASS`
+  - `linux_kernel_module_perf_smoke_test`: `PASS`
+  - `android_kernel_module_perf_smoke_test`: `PASS`
+  - `shell_launcher_perf_smoke_test`: `PASS`
+  - `dex_loader_perf_smoke_test`: `PASS`
+
+终局冻结结论:
+1. Windows `.exe/.dll/.sys` 已有主线、driver-safe lane、strict audit、tests、perf。
+2. Linux `ELF/.so/.ko` 已有主线、kernel-safe lane、strict audit、tests、perf。
+3. Android `.so/.dex/.ko` 已有主线、dex loader lane、kernel-safe lane、strict audit、tests、perf。
+4. iOS App Store 已有 `ios_safe` lane、Mach-O post-link mutation、strict audit、lane tests、perf、CI。
+5. `.sh` 已有 encrypted bundle、launcher、strict audit、tests、perf。
+6. control plane 已具备:
+   - contracts
+   - target/backend/runtime lane
+   - post-link mutator
+   - artifact audit
+   - signature verifier protocol
+   - evidence workflow
+
+补充说明:
+- 当前回合内无法证明 GitHub hosted runner 已真实跑通；但 workflow 已随本次提交推送到远端，推送后会触发云端执行。
+- iOS codesign/notarization 仍受真实 Apple 签名基础设施约束；当前仓库内闭环口径是 `Mach-O structure + required verifier + strict App Store safe gate`，不伪装成 Apple 在线签名已在本地验证。

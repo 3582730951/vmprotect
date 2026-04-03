@@ -1,0 +1,658 @@
+# 2026-04-02 完整终局目标 Superseding Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 目标是把当前仓库从“基础 native 主线 + artifact audit + 部分 bundle skeleton”推进到最初定义的完整终局目标。
+- 必须覆盖：
+  - Android `.so/.dex/.ko`
+  - Linux `ELF/.so/.ko`
+  - iOS App Store 程序保护
+  - Windows `.exe/.dll/.sys`
+  - `.sh`
+- 保护强度优先，性能不能明显劣化；字符串保护是一等目标。
+
+Task Charter:
+- Objective:
+  - 在当前 `/workspace` 仓库基础上完成完整平台矩阵保护能力，并通过架构、安全、验证三审后实施。
+- Scope:
+  - `core/wrapper/`
+  - `core/passes/`
+  - `core/ip_weaver_ir/`
+  - `core/runtime/`
+  - `core/post_link_mutator/`
+  - `core/dex_toolchain/`
+  - `core/script_guard/`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/`
+  - `plan/`
+- Non-Goals:
+  - 不把 `.dex` 伪装成由 `.so` 主线已完成支持。
+  - 不把 `.sh` 保护宣称为与 native 动态对抗同等级。
+  - 不把 iOS 建立在 JIT、`MAP_JIT`、私有 API、越狱前提上。
+- Constraints:
+  - 先计划、再三审、再实现。
+  - PM 负责切分、验收、重分配，不把设计决策留给工程 agent。
+  - 工程 agent 只按明确指令修改自己拥有的文件。
+- Acceptance Criteria:
+  - 所有目标平台都有明确 lane、runtime/backend、artifact audit、tests、evidence。
+  - `configure/build/ctest/perf_smoke` 维持通过。
+  - 发布级 lane 不允许 fail-open。
+  - driver/module/iOS 满足 no-JIT/no-RWX 约束。
+  - `.dex/.sh` 必须从 skeleton 进入可消费 loader/launcher 闭环。
+- Forbidden Shortcuts:
+  - 禁止用 smoke test 代替平台发布级能力。
+  - 禁止把 verifier/audit 失败降级放行。
+  - 禁止让工程 agent 自己发明架构。
+  - 禁止为了性能降低 critical path 保护强度。
+
+Current State Snapshot:
+- 已有基础主线：
+  - wrapper: [weaver_proxy.py](/workspace/core/wrapper/weaver_proxy.py)
+  - passes: [core/passes](/workspace/core/passes)
+  - IR weaving: [ip_weaver_ir.cpp](/workspace/core/ip_weaver_ir/src/ip_weaver_ir.cpp)
+  - runtime: [EippfRuntime.cpp](/workspace/core/runtime/src/EippfRuntime.cpp)
+  - contracts: [protection_contracts.hpp](/workspace/core/include/contracts/protection_contracts.hpp)
+  - audit: [artifact_audit.py](/workspace/core/tools/artifact_audit.py)
+- 当前已完成：
+  - strict artifact authenticity verifier
+  - `30/30 tests passed`
+  - `perf_smoke passed`
+  - remote push 完成
+- 当前主要 skeleton / placeholder：
+  - [JITEnclavePass.cpp](/workspace/core/passes/src/JITEnclavePass.cpp): dummy payload 路径
+  - [main.cpp](/workspace/core/dex_toolchain/src/main.cpp): bundle skeleton，不是 loader/VM
+  - [main.cpp](/workspace/core/script_guard/src/main.cpp): bundle skeleton，不是 launcher
+  - [main.cpp](/workspace/core/post_link_mutator/src/main.cpp): 仍不是深度 binary rewriter
+
+Terminal Gap List:
+- user-mode 主线还缺发布级 mutation 深化、平台特定 threat hardening、实机性能门。
+- kernel-safe 线还缺 `.sys/.ko` 的真实 sign-after-mutate、兼容 gate、热路径预算。
+- iOS 还缺完整 Mach-O mutate -> final codesign -> release gate。
+- Android `.dex` 还缺 `encrypted dex container + loader + method/native bridge`。
+- `.sh` 还缺匿名介质执行与 no-persistent-plaintext 闭环。
+- 字符串保护还不是统一跨平台主线。
+- CI/evidence 还不是完整发布级矩阵。
+
+Architecture Contract:
+- 统一控制面：
+  - `core/include/contracts/`
+  - `ProtectionManifestV2`
+  - `ArtifactAuditReport`
+  - `signature verifier`
+  - `evidence pack`
+- Runtime 分 5 大后端：
+  - `desktop_user_mode`
+  - `kernel_safe`
+  - `ios_safe`
+  - `dex_loader_vm`
+  - `shell_launcher`
+- 编译/发布主线：
+  - `wrapper -> passes -> ip_weaver_ir -> runtime backend -> post_link_mutator -> artifact_audit -> evidence`
+- 字符串保护：
+  - 默认必开
+  - 编译期抽取
+  - token 化
+  - 延迟物化
+  - 最短生命周期
+
+Platform Lanes:
+- Lane A: Windows `.exe/.dll`
+- Lane B: Linux `ELF/.so`
+- Lane C: Android `.so`
+- Lane D: Windows `.sys`
+- Lane E: Linux `.ko`
+- Lane F: Android `.ko`
+- Lane G: iOS App Store
+- Lane H: Android `.dex`
+- Lane I: `.sh`
+- Lane J: Control Plane / String Protection / CI / Evidence
+
+Threat Model:
+- Android `.so`
+  - 静态：`strings/readelf/objdump/Ghidra/IDA/JNI registration`
+  - 动态：Frida/Zygisk/ptrace/linker hook/inline hook
+  - 防护：JNI surface 收敛、导入导出最小化、字符串抽取、anti-hook
+- Android `.dex`
+  - 静态：JADX/apktool/baksmali/string pool/class name
+  - 动态：Frida/Xposed/JDWP/ClassLoader dump/dex dump
+  - 防护：encrypted container、loader、method bridge、no plaintext dex
+- Android `.ko`
+  - 静态：`modinfo/readelf/strings/exported symbols/vermagic`
+  - 动态：kprobe/eBPF/module dump/kallsyms
+  - 防护：kernel-safe AOT、sign-after-mutate、GKI/KMI gate
+- Linux `ELF/.so`
+  - 静态：ELF header/symbol table/strings/Ghidra/IDA
+  - 动态：`LD_PRELOAD`/ptrace/gdb/uprobe/hook
+  - 防护：symbol/import 最小化、section hardening、字符串抽取
+- Linux `.ko`
+  - 静态：module metadata/exported symbols/strings
+  - 动态：kprobe/ftrace/eBPF/module dump
+  - 防护：AOT-only、sign-after-mutate、vermagic gate
+- iOS
+  - 静态：Mach-O sections/Hopper/Ghidra/class-dump/strings
+  - 动态：LLDB/Frida/越狱 hook
+  - 防护：AOT/解释执行、Mach-O hardening、codesign-aware mutate
+- Windows user-mode
+  - 静态：PE imports/exports/resources/strings/IDA/Ghidra
+  - 动态：x64dbg/WinDbg/ETW/IAT hook/user hook
+  - 防护：PE mutate、import 延迟解析、anti-debug/anti-hook、字符串抽取
+- Windows `.sys`
+  - 静态：dispatch table/IOCTL contract/strings/IDA/Ghidra
+  - 动态：KD/WinDbg/Driver Verifier
+  - 防护：kernel-safe AOT、dispatch/IOCTL surface 收敛、sign-after-mutate
+- `.sh`
+  - 静态：文本 grep/教程定位/关键锚点搜索
+  - 动态：`set -x`/`source`/子 shell/环境变量泄漏/临时文件恢复
+  - 防护：encrypted bundle、launcher、匿名 fd/pipe/memfd、擦除
+
+Hard Constraints:
+- iOS App Store
+  - 禁止 JIT
+  - 禁止 `MAP_JIT`
+  - 禁止 RWX
+  - 禁止私有 API
+  - 禁止自修改代码
+- `.sys/.ko`
+  - 禁止 JIT
+  - 禁止 RWX
+  - 禁止自修改代码
+  - 必须 sign-after-mutate
+- `.dex/.sh`
+  - 当前不是终局态，必须进入真实 loader/launcher 闭环后才可宣称完成
+
+Performance Strategy:
+- 允许：
+  - selective virtualization
+  - AOT encrypted block
+  - direct-threaded interpreter
+  - superinstructions
+  - resolver cache
+  - arena/page pool
+- 禁止：
+  - 降低 critical 保护强度换性能
+  - driver/iOS 使用 JIT/RWX
+  - 长期缓存明文字符串、明文 dex、明文脚本
+  - 以测试特判绕过安全门
+- 预算：
+  - user-mode 发布线 `<=10%`
+  - iOS 发布线 `<=10%`
+  - `.sys/.ko` hot path `<=8%`，整体 `<=12%`
+  - `.dex/.sh` 未达预算不得宣称终局完成
+
+Agent Roster:
+- Agent 1 / PM / `main_agent`
+  - 负责：计划、分配、验收、重派、push
+- Agent 2 / Product Security Architect / `gpt-5.4`
+  - 负责：架构、lane、contracts、不变量
+- Agent 3 / Architecture Reviewer / `gpt-5.4`
+  - 负责：审架构可行性与边界
+- Agent 4 / Security Reviewer / `gpt-5.4`
+  - 负责：审威胁模型、fail-open、平台硬约束
+- Agent 5 / Validation Reviewer / `gpt-5.2`
+  - 负责：审测试矩阵、evidence、false-pass
+- Agent 6+ / Engineers / `gpt-5.3-codex`
+  - 负责：按 PM 指令落地指定文件
+
+Parallel Tracks:
+- Track 1 / Contracts + String Policy Freeze
+- Track 2 / Native User-Mode Mainline
+- Track 3 / Android `.so` Hardening
+- Track 4 / Kernel-Safe `.sys/.ko`
+- Track 5 / Shell Launcher
+- Track 6 / Dex Loader VM
+- Track 7 / iOS App Store Safe Lane
+- Track 8 / CI + Evidence + Perf
+
+Phase Plan:
+- Phase 1
+  - 冻结终局 contracts、lane、quality gates、string policy
+- Phase 2
+  - 实现统一字符串保护主线
+- Phase 3
+  - 完成 Windows `.exe/.dll`、Linux `ELF/.so`、Android `.so`
+- Phase 4
+  - 完成 Windows `.sys`、Linux `.ko`、Android `.ko`
+- Phase 5
+  - 完成 `.sh` launcher
+- Phase 6
+  - 完成 Android `.dex` loader/VM
+- Phase 7
+  - 完成 iOS App Store lane
+- Phase 8
+  - 完成 CI / evidence / multi-platform perf
+
+Phase Deliverables:
+- Phase 1
+  - superseding plan
+  - updated contracts
+  - lexical policy
+- Phase 2
+  - string extraction pass
+  - runtime token decode API
+  - audit string residual checks
+- Phase 3
+  - publish-grade PE/ELF mutate
+  - Android `.so` threat hardening
+  - anti-debug/anti-hook baseline
+- Phase 4
+  - `kernel_safe` backend
+  - `.sys/.ko` mutate + sign-after-mutate metadata
+  - HVCI/GKI/KMI/vermagic gates
+- Phase 5
+  - `.sh` encrypted bundle v3
+  - launcher
+  - no-persistent-plaintext evidence
+- Phase 6
+  - encrypted dex container v3
+  - loader + bridge
+  - anti-dump baseline
+- Phase 7
+  - `ios_safe` backend
+  - Mach-O mutator
+  - final codesign-aware gate
+- Phase 8
+  - GitHub Actions matrix
+  - artifact audit artifacts
+  - perf reports
+  - evidence pack
+
+Single-Writer File Ownership And Merge Order:
+- Rule:
+  - 在 `Phase 2.5` 合并前，`core/runtime/*` 只有 `Runtime Extraction Track` 可以写。
+  - 在 `Phase 2.5` 合并前，`core/post_link_mutator/*` 只有 `Mutator Split Track` 可以写。
+  - 在 `Phase 2.5` 合并前，`core/passes/*` 只有 `Passes Track` 可以写。
+  - 在 `Phase 2.5` 合并前，`core/tools/artifact_audit.py` 只有 `Audit Track` 可以写。
+  - 其他 track 只能提交接口需求，不得并发改同一文件。
+- Owner:
+  - `Plan/Contracts Track`
+    - `plan/*`
+    - `core/include/contracts/protection_contracts.hpp`
+    - `core/CMakeLists.txt`
+    - `core/cmake/HardenTarget.cmake`
+  - `Runtime Extraction Track`
+    - `core/runtime/include/runtime/backend_policy.hpp`
+    - `core/runtime/include/runtime/memory_hal.hpp`
+    - `core/runtime/include/runtime/secure_ir_engine.hpp`
+    - `core/runtime/include/runtime/backends/backend_registry.hpp`
+    - `core/runtime/src/backend_policy.cpp`
+    - `core/runtime/src/EippfRuntime.cpp`
+    - `core/runtime/src/secure_ir_engine.cpp`
+    - `core/runtime/src/backends/backend_registry.cpp`
+  - `Passes Track`
+    - `core/passes/include/passes/StringProtectionPass.hpp`
+    - `core/passes/include/passes/SelectiveVMPass.hpp`
+    - `core/passes/include/passes/JITEnclavePass.hpp`
+    - `core/passes/src/StringProtectionPass.cpp`
+    - `core/passes/src/SelectiveVMPass.cpp`
+    - `core/passes/src/JITEnclavePass.cpp`
+    - `core/passes/src/ProtectionSuitePassPlugin.cpp`
+  - `Mutator Split Track`
+    - `core/post_link_mutator/CMakeLists.txt`
+    - `core/post_link_mutator/src/main.cpp`
+    - `core/tests/post_link_mutator/*`
+  - `Audit Track`
+    - `core/tools/artifact_audit.py`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+    - `core/tests/tools/signature_verifier_fixture.py`
+    - `core/tests/tools/CMakeLists.txt`
+  - `Dex Track`
+    - `core/dex_toolchain/*`
+    - `core/tests/dex_toolchain/*`
+  - `Shell Track`
+    - `core/script_guard/*`
+    - `core/tests/script_guard/*`
+  - `Validation/CI Track`
+    - `core/tests/CMakeLists.txt`
+    - `.github/workflows/*`
+    - `plan/*evidence*`
+- Post-Phase-2.5 Reassignment:
+  - `core/runtime/common/*` -> `Runtime Common Track`
+  - `core/runtime/desktop_user_mode/*` -> `Native User-Mode Track`
+  - `core/runtime/kernel_safe/*` -> `Kernel Track`
+  - `core/runtime/ios_safe/*` -> `iOS Track`
+  - `core/runtime/dex_loader_vm/*` -> `Dex Track`
+  - `core/runtime/shell_launcher/*` -> `Shell Track`
+  - `core/post_link_mutator/common/*` -> `Mutator Common Track`
+  - `core/post_link_mutator/pe/*` -> `Windows User-Mode Track`
+  - `core/post_link_mutator/elf/*` -> `Linux/Android Native Track`
+  - `core/post_link_mutator/macho/*` -> `iOS Track`
+- Merge Order:
+  - `M0`: plan/contracts freeze
+  - `M1`: `Phase 2.5` runtime extraction + JIT confinement + mutator split
+  - `M2`: string protection mainline
+  - `M3`: Lane A/B/C
+  - `M4`: Lane D/E/F
+  - `M5`: Lane I
+  - `M6`: Lane H
+  - `M7`: Lane G
+  - `M8`: CI/evidence/perf consolidation
+
+Updated Phase Plan:
+- Phase 1
+  - 冻结终局 contracts、lane、quality gates、string policy
+- Phase 2
+  - 实现统一字符串保护主线
+- Phase 2.5
+  - 完成 `runtime backend extraction + JITEnclave desktop-only confinement + post_link_mutator abstraction split`
+- Phase 3
+  - 完成 Windows `.exe/.dll`、Linux `ELF/.so`、Android `.so`
+- Phase 4
+  - 完成 Windows `.sys`、Linux `.ko`、Android `.ko`
+- Phase 5
+  - 完成 `.sh` launcher
+- Phase 6
+  - 完成 Android `.dex` loader/VM
+- Phase 7
+  - 完成 iOS App Store lane
+- Phase 8
+  - 完成 CI / evidence / multi-platform perf
+
+Mandatory Phase 2.5:
+- Objective:
+  - 先建立单写者 seam，再允许 Phase 3-7 并行。
+- Must-Add Types:
+  - `RuntimeLaneKind`
+  - `MutationProfileKind`
+  - `SignaturePolicyKind`
+- Must-Add Manifest Fields:
+  - `runtime_lane`
+  - `mutation_profile`
+  - `signature_policy`
+  - `string_policy_version`
+  - `loader_format_version`
+  - `kernel_compat_profile`
+  - `ios_compliance_profile`
+- Must-Add Functions:
+  - `runtime_lane_for_target_kind(...)`
+  - `mutation_profile_for_target_kind(...)`
+  - `signature_policy_for_target_kind(...)`
+  - `target_kind_supports_desktop_jit(...)`
+  - `target_kind_requires_sign_after_mutate(...)`
+- Runtime Extraction Requirements:
+  - 从现有 `memory_hal.hpp`、`EippfRuntime.cpp`、`secure_ir_engine.cpp` 中抽出 `desktop_user_mode`、`kernel_safe`、`ios_safe` 的选择边界。
+  - `ios_safe` 和 `kernel_safe` 必须编译期固定 `allow_jit=false`。
+  - `desktop_user_mode` 才允许承载 JIT 执行路径。
+- JIT Confinement Requirements:
+  - `JITEnclavePass` 只能对 `target_kind=desktop_native` 生效。
+  - `android_so`、`ios_appstore`、`windows_driver`、`linux_kernel_module`、`android_kernel_module` 命中 JIT route 时，必须 fail-closed。
+  - 必须新增 gate code: `jit_route_forbidden_for_target`
+- Mutator Split Requirements:
+  - 把 `core/post_link_mutator/src/main.cpp` 拆成逻辑层：
+    - `artifact_classifier`
+    - `mutation_plan_builder`
+    - `mutation_executor`
+    - `manifest_writer`
+  - `mutation_plan_builder` 必须按 `MutationProfileKind` 生成计划，不能继续用单一 trailer 语义代表“已完成保护”。
+- Phase 2.5 Tests:
+  - `runtime_backend_extraction_contract_test`
+  - `jit_desktop_only_confinement_test`
+  - `post_link_mutator_plan_builder_test`
+- Phase 2.5 Exit Rule:
+  - 未完成前，Phase 3-7 不得并发进入实现。
+
+PM Dispatch Task Cards:
+- Task Card 1 / Phase 2.5 Runtime Extraction
+  - 只改 `core/include/contracts/protection_contracts.hpp`、`core/runtime/*`、`core/tests/runtime/*`。
+  - 在 contracts 中新增 `RuntimeLaneKind`、`MutationProfileKind`、`SignaturePolicyKind`。
+  - 给 `ProtectionManifestV2` 新增字段：`runtime_lane`、`mutation_profile`、`signature_policy`、`string_policy_version`、`loader_format_version`、`kernel_compat_profile`、`ios_compliance_profile`。
+  - 在 `backend_policy` 中新增 `runtime_lane_for_target_kind(...)`、`target_kind_supports_desktop_jit(...)`、`target_kind_requires_sign_after_mutate(...)`。
+  - 在 `memory_hal.hpp` 和 `EippfRuntime.cpp` 中把 JIT 允许条件统一收口到 `target_kind_supports_desktop_jit(...)`。
+  - 为 `ios_safe` 和 `kernel_safe` 路径补 compile-time fail-closed。
+  - 新增测试文件：`core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`。
+  - 新增测试文件：`core/tests/runtime/backend/jit_desktop_only_confinement_test.cpp`。
+  - 失败时必须输出 gate code：`jit_route_forbidden_for_target`。
+  - 运行：`cmake -S core -B build_pm -G Ninja && cmake --build build_pm -j && ctest --test-dir build_pm -R 'runtime_backend_extraction_contract_test|jit_desktop_only_confinement_test'`
+- Task Card 2 / Phase 2.5 Mutator Split
+  - 只改 `core/post_link_mutator/*`、`core/tests/post_link_mutator/*`。
+  - 从 `main.cpp` 抽出 `classify_artifact(...)`、`build_mutation_plan(...)`、`execute_mutation_plan(...)`、`write_manifest(...)`。
+  - `build_mutation_plan(...)` 必须输出 `MutationProfileKind`，不允许继续把 trailer 复制行为当成最终变异。
+  - `manifest` 必须新增 `mutation_profile` 和 `signature_policy`。
+  - 新增测试文件：`core/tests/post_link_mutator/post_link_mutator_plan_builder_test.cpp`。
+  - 保留现有 smoke test，但把它降级为“基本 CLI/manifest 正常性”。
+  - 新增 failure case：artifact/target mismatch。
+  - 失败时必须输出 gate code：`mutation_plan_unresolved`。
+  - 运行：`cmake --build build_pm -j --target post_link_mutator_plan_builder_test && ctest --test-dir build_pm -R 'post_link_mutator_smoke_test|post_link_mutator_plan_builder_test'`
+- Task Card 3 / String Protection Mainline
+  - 只改 `core/passes/*`、`core/runtime/include/runtime/constexpr_obfuscated_string.hpp`、`core/tests/runtime/security/*`。
+  - 在 `StringProtectionPass` 中新增统一字符串抽取统计。
+  - 在 manifest 中新增 `string_policy_version`、`protected_string_count`、`residual_string_count`。
+  - 运行时只允许短寿命解码 API，不允许长期常驻明文缓存。
+  - 新增 audit gate code：`string_residual_violation`。
+  - 新增测试文件：`core/tests/runtime/security/string_policy_contract_test.cpp`。
+  - 新增测试文件：`core/tests/runtime/security/string_residual_audit_test.cpp`。
+  - 失败时必须输出 gate code：`string_residual_violation`。
+  - 运行：`ctest --test-dir build_pm -R 'constexpr_obfuscated_string_test|string_policy_contract_test|string_residual_audit_test'`
+- Task Card 4 / Lane A+B Native User-Mode
+  - 只改 `core/post_link_mutator/*`、`core/runtime/desktop_user_mode/*`、`core/tests/lane_windows_usermode/*`、`core/tests/lane_linux_usermode/*`。
+  - `pe_user_mode` 必须新增 import/IAT hardening 计划节点。
+  - `elf_user_mode` 必须新增 dynsym/symtab hardening 计划节点。
+  - `desktop_native` lane 不允许写出 `writable+executable` section。
+  - 不允许把 desktop JIT 路径带入 `linux .so` 非 JIT route。
+  - 新增 manifest 字段：`mutation_profile=pe_user_mode|elf_user_mode`。
+  - 新增 gate code：`iat_surface_violation`、`elf_symbol_surface_violation`。
+  - 新增测试文件：`core/tests/lane_windows_usermode/windows_usermode_pe_success_test.cpp`、`windows_usermode_pe_failure_test.cpp`、`windows_usermode_pe_security_edge_test.cpp`。
+  - 新增测试文件：`core/tests/lane_linux_usermode/linux_usermode_elf_success_test.cpp`、`linux_usermode_elf_failure_test.cpp`、`linux_usermode_elf_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'windows_usermode_|linux_usermode_'`
+- Task Card 5 / Lane C Android .so
+  - 只改 `core/post_link_mutator/elf/*`、`core/runtime/desktop_user_mode/*`、`core/tests/lane_android_so/*`。
+  - `target_kind=android_so` 必须独立于 `desktop_native` 处理，不允许借用桌面默认策略。
+  - 新增 JNI surface 收敛规则：禁止 tutorial/internal anchor 暴露到 exported symbol/JNI registration surface。
+  - 新增 anti-hook 基线报告字段：`jni_surface_count`、`hook_surface_count`。
+  - 新增 gate code：`jni_surface_violation`、`android_so_hook_surface_detected`。
+  - 新增测试文件：`core/tests/lane_android_so/android_so_success_test.cpp`、`android_so_failure_test.cpp`、`android_so_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'android_so_'`
+- Task Card 6 / Lane D+E+F Kernel Safe
+  - 只改 `core/runtime/kernel_safe/*`、`core/post_link_mutator/*`、`core/tests/lane_windows_driver/*`、`core/tests/lane_linux_kernel/*`、`core/tests/lane_android_kernel/*`。
+  - `kernel_safe` backend 必须 compile-time 固定 `allow_jit=false`、`allow_rwx=false`。
+  - `.sys/.ko` mutation 只能生成 `sign-after-mutate` 所需 metadata，不允许 runtime codegen。
+  - manifest 必须新增 `kernel_compat_profile`、`sign_after_mutate_required=true`。
+  - `.sys` 增加 `hvci_profile` gate；`.ko` 增加 `vermagic_profile`；Android `.ko` 增加 `gki_kmi_profile`。
+  - 新增 gate code：`kernel_gate_failed`、`vermagic_mismatch`、`gki_kmi_mismatch`。
+  - 新增测试文件：`core/tests/lane_windows_driver/windows_driver_success_test.cpp`、`windows_driver_failure_test.cpp`、`windows_driver_security_edge_test.cpp`。
+  - 新增测试文件：`core/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp`、`linux_kernel_module_failure_test.cpp`、`linux_kernel_module_security_edge_test.cpp`。
+  - 新增测试文件：`core/tests/lane_android_kernel/android_kernel_module_success_test.cpp`、`android_kernel_module_failure_test.cpp`、`android_kernel_module_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'windows_driver_|linux_kernel_module_|android_kernel_module_'`
+- Task Card 7 / Lane I Shell Launcher
+  - 只改 `core/script_guard/*`、`core/tests/lane_shell/*`。
+  - bundle 版本升级为 `v3`，新增 `launcher_format_version`、`anonymous_exec_mode`。
+  - launcher 必须消费 bundle，不允许只生成 bundle 不执行。
+  - 明文脚本不得长期落盘。
+  - 必须支持匿名 fd/pipe/memfd 中至少一种，并在 manifest 中报告实际模式。
+  - 新增 gate code：`shell_plaintext_leak_detected`、`launcher_metadata_missing`、`anonymous_exec_unavailable`。
+  - 新增测试文件：`core/tests/lane_shell/shell_bundle_success_test.cpp`、`shell_bundle_failure_test.cpp`、`shell_bundle_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'shell_bundle_'`
+- Task Card 8 / Lane H Dex Loader VM
+  - 只改 `core/dex_toolchain/*`、`core/tests/lane_android_dex/*`、必要 contracts。
+  - 保留现有 `key_provider_protocol`，升级 container 版本到 `v3`。
+  - 必须新增 `loader_format_version`、`external_key_required=true`、`plaintext_output=false`。
+  - 必须输出 loader 可消费 metadata，不能继续停留在 bundle skeleton。
+  - 明文 dex 不得长期写盘。
+  - 新增 gate code：`dex_plaintext_leak_detected`、`loader_metadata_missing`、`loader_gate_unresolved`。
+  - 新增测试文件：`core/tests/lane_android_dex/android_dex_success_test.cpp`、`android_dex_failure_test.cpp`、`android_dex_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'android_dex_'`
+- Task Card 9 / Lane G iOS App Store
+  - 只改 `core/runtime/ios_safe/*`、`core/post_link_mutator/macho/*`、`core/tests/lane_ios_safe/*`。
+  - `ios_safe` 必须明确禁止 `JIT`、`MAP_JIT`、`RWX`、`private API`、`self-modifying code`。
+  - manifest 必须新增 `ios_compliance_profile=app_store_safe_v1`。
+  - Mach-O mutation 必须发生在 final codesign 前。
+  - audit 必须新增 `private_api_hits`、`code_signature_state`、`exec_permission_summary`。
+  - 新增 gate code：`private_api_detected`、`macho_code_signature_missing`、`rwx_segment_detected`。
+  - 新增测试文件：`core/tests/lane_ios_safe/ios_safe_success_test.cpp`、`ios_safe_failure_test.cpp`、`ios_safe_security_edge_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'ios_safe_'`
+- Task Card 10 / Audit + CI + Evidence
+  - 只改 `core/tools/artifact_audit.py`、`core/tests/tools/*`、`.github/workflows/*`。
+  - 将新 gate code 接入 `strict_failures`，不得出现“新 lane 只有 manifest 没有 strict gate”。
+  - 为每个 lane 增加 mandatory report field 校验。
+  - 为每个 lane 增加 evidence artifact 上传规则。
+  - verifier `failed/untrusted/policy_unresolved` 必须保持红灯。
+  - 产物上传至少包含：manifest、audit report、perf report、ctest log、gate summary。
+  - 新增测试文件：`core/tests/tools/lane_report_contract_test.cpp`。
+  - 运行：`ctest --test-dir build_pm -R 'artifact_audit_|lane_report_contract_test'`
+
+Lane Acceptance Matrix:
+- Lane A | target_kind=`desktop_native` | artifact_kind=`pe` | strict_failures must exclude `denylist_unavailable`,`unknown_artifact_kind`,`denylisted_strings_present`,`imports_policy_failed`,`symbols_policy_failed`,`writable_executable_native_region_detected`,`iat_surface_violation` | signature authenticity=`optional in dev, required external_verifier when manifest.signature_policy=required` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,string_policy_version,imports_summary,symbol_summary,section_permission_scan_passed,signature_details.validation_mode` | perf=`<=10%`
+- Lane B | target_kind=`desktop_native` | artifact_kind=`elf` | strict_failures must exclude `denylist_unavailable`,`unknown_artifact_kind`,`denylisted_strings_present`,`imports_policy_failed`,`symbols_policy_failed`,`writable_executable_native_region_detected`,`elf_symbol_surface_violation` | signature authenticity=`optional in dev, required external_verifier when manifest.signature_policy=required` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,string_policy_version,imports_summary,symbol_summary,section_permission_scan_passed,signature_details.validation_mode` | perf=`<=10%`
+- Lane C | target_kind=`android_so` | artifact_kind=`elf` | strict_failures must exclude `denylist_unavailable`,`unknown_artifact_kind`,`denylisted_strings_present`,`imports_policy_failed`,`symbols_policy_failed`,`writable_executable_native_region_detected`,`jni_surface_violation`,`android_so_hook_surface_detected` | signature authenticity=`artifact-level optional, package-level signing outside lane, external_verifier only when manifest.signature_policy=required` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,string_policy_version,jni_surface_count,hook_surface_count,imports_summary,symbol_summary` | perf=`<=10%`
+- Lane D | target_kind=`windows_driver` | artifact_kind=`windows_driver_sys` | strict_failures must exclude `signature_policy_unresolved`,`signature_missing`,`signature_format_invalid`,`signature_authenticity_missing`,`signature_verifier_untrusted`,`signature_verifier_failed`,`signature_verifier_digest_mismatch`,`signature_authenticity_rejected`,`kernel_gate_failed` | signature authenticity=`required external_verifier` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,signature_details.validation_mode,sign_after_mutate_required,kernel_compat_profile,hvci_profile` | perf=`hot path <=8%, overall <=12%`
+- Lane E | target_kind=`linux_kernel_module` | artifact_kind=`linux_kernel_module_ko` | strict_failures must exclude `signature_policy_unresolved`,`signature_missing`,`signature_format_invalid`,`signature_authenticity_missing`,`signature_verifier_untrusted`,`signature_verifier_failed`,`signature_verifier_digest_mismatch`,`signature_authenticity_rejected`,`kernel_gate_failed`,`vermagic_mismatch` | signature authenticity=`required external_verifier` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,signature_details.validation_mode,sign_after_mutate_required,kernel_compat_profile,vermagic_profile` | perf=`hot path <=8%, overall <=12%`
+- Lane F | target_kind=`android_kernel_module` | artifact_kind=`linux_kernel_module_ko` | strict_failures must exclude `signature_policy_unresolved`,`signature_missing`,`signature_format_invalid`,`signature_authenticity_missing`,`signature_verifier_untrusted`,`signature_verifier_failed`,`signature_verifier_digest_mismatch`,`signature_authenticity_rejected`,`kernel_gate_failed`,`gki_kmi_mismatch` | signature authenticity=`required external_verifier` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,signature_details.validation_mode,sign_after_mutate_required,kernel_compat_profile,gki_kmi_profile` | perf=`hot path <=8%, overall <=12%`
+- Lane G | target_kind=`ios_appstore` | artifact_kind=`macho` | strict_failures must exclude `signature_policy_unresolved`,`signature_missing`,`signature_format_invalid`,`signature_authenticity_missing`,`signature_verifier_untrusted`,`signature_verifier_failed`,`signature_verifier_digest_mismatch`,`signature_authenticity_rejected`,`private_api_detected`,`macho_code_signature_missing`,`rwx_segment_detected`,`jit_route_forbidden_for_target` | signature authenticity=`required external_verifier` | required report fields=`target_kind,artifact_kind,runtime_lane,mutation_profile,ios_compliance_profile,private_api_hits,code_signature_state,exec_permission_summary,signature_details.validation_mode` | perf=`<=10%`
+- Lane H | target_kind=`android_dex_research` | artifact_kind=`dex_bundle` | strict_failures must exclude `dex_plaintext_leak_detected`,`loader_metadata_missing`,`loader_gate_unresolved`,`key_provider_protocol_invalid`,`bundle_invariant_violation` | signature authenticity=`not_applicable; require external_key_required=true` | required report fields=`target_kind,artifact_kind,runtime_lane,loader_format_version,key_provider_protocol,external_key_required,plaintext_output,bundle_invariants_passed` | perf=`<=12% before terminal completion`
+- Lane I | target_kind=`shell_ephemeral` | artifact_kind=`shell_bundle` | strict_failures must exclude `shell_plaintext_leak_detected`,`launcher_metadata_missing`,`anonymous_exec_unavailable`,`key_provider_protocol_invalid`,`bundle_invariant_violation` | signature authenticity=`not_applicable; require external_key_required=true` | required report fields=`target_kind,artifact_kind,runtime_lane,launcher_format_version,anonymous_exec_mode,key_provider_protocol,external_key_required,plaintext_output` | perf=`steady-state <=10%, startup <=250ms`
+
+Lane Test Matrix:
+- Lane A | success | `windows_usermode_pe_success_test` | `core/tests/lane_windows_usermode/windows_usermode_pe_success_test.cpp` | assert `artifact_kind=pe`,`mutation_profile=pe_user_mode`,`strict_failures=[]` | run `ctest --test-dir build_pm -R windows_usermode_pe_success_test`
+- Lane A | failure | `windows_usermode_pe_failure_test` | `core/tests/lane_windows_usermode/windows_usermode_pe_failure_test.cpp` | assert `iat_surface_violation` or `writable_executable_native_region_detected` | run `ctest --test-dir build_pm -R windows_usermode_pe_failure_test`
+- Lane A | security-edge | `windows_usermode_pe_security_edge_test` | `core/tests/lane_windows_usermode/windows_usermode_pe_security_edge_test.cpp` | assert suspicious import or denylisted string triggers strict red | run `ctest --test-dir build_pm -R windows_usermode_pe_security_edge_test`
+- Lane B | success | `linux_usermode_elf_success_test` | `core/tests/lane_linux_usermode/linux_usermode_elf_success_test.cpp` | assert `artifact_kind=elf`,`mutation_profile=elf_user_mode`,`strict_failures=[]` | run `ctest --test-dir build_pm -R linux_usermode_elf_success_test`
+- Lane B | failure | `linux_usermode_elf_failure_test` | `core/tests/lane_linux_usermode/linux_usermode_elf_failure_test.cpp` | assert `elf_symbol_surface_violation` or `writable_executable_native_region_detected` | run `ctest --test-dir build_pm -R linux_usermode_elf_failure_test`
+- Lane B | security-edge | `linux_usermode_elf_security_edge_test` | `core/tests/lane_linux_usermode/linux_usermode_elf_security_edge_test.cpp` | assert denylisted string or symbol leak redlights | run `ctest --test-dir build_pm -R linux_usermode_elf_security_edge_test`
+- Lane C | success | `android_so_success_test` | `core/tests/lane_android_so/android_so_success_test.cpp` | assert `target_kind=android_so`,`jni_surface_count` within policy, `strict_failures=[]` | run `ctest --test-dir build_pm -R android_so_success_test`
+- Lane C | failure | `android_so_failure_test` | `core/tests/lane_android_so/android_so_failure_test.cpp` | assert `jni_surface_violation` | run `ctest --test-dir build_pm -R android_so_failure_test`
+- Lane C | security-edge | `android_so_security_edge_test` | `core/tests/lane_android_so/android_so_security_edge_test.cpp` | assert `android_so_hook_surface_detected` or tutorial anchor leakage redlights | run `ctest --test-dir build_pm -R android_so_security_edge_test`
+- Lane D | success | `windows_driver_success_test` | `core/tests/lane_windows_driver/windows_driver_success_test.cpp` | assert `target_kind=windows_driver`,`validation_mode=external_verifier`,`sign_after_mutate_required=true` | run `ctest --test-dir build_pm -R windows_driver_success_test`
+- Lane D | failure | `windows_driver_failure_test` | `core/tests/lane_windows_driver/windows_driver_failure_test.cpp` | assert `signature_authenticity_missing` or `signature_verifier_failed` | run `ctest --test-dir build_pm -R windows_driver_failure_test`
+- Lane D | security-edge | `windows_driver_security_edge_test` | `core/tests/lane_windows_driver/windows_driver_security_edge_test.cpp` | assert `kernel_gate_failed` or forbidden JIT route redlights | run `ctest --test-dir build_pm -R windows_driver_security_edge_test`
+- Lane E | success | `linux_kernel_module_success_test` | `core/tests/lane_linux_kernel/linux_kernel_module_success_test.cpp` | assert `artifact_kind=linux_kernel_module_ko`,`validation_mode=external_verifier`,`vermagic_profile` reported | run `ctest --test-dir build_pm -R linux_kernel_module_success_test`
+- Lane E | failure | `linux_kernel_module_failure_test` | `core/tests/lane_linux_kernel/linux_kernel_module_failure_test.cpp` | assert `signature_missing` or `vermagic_mismatch` | run `ctest --test-dir build_pm -R linux_kernel_module_failure_test`
+- Lane E | security-edge | `linux_kernel_module_security_edge_test` | `core/tests/lane_linux_kernel/linux_kernel_module_security_edge_test.cpp` | assert `kernel_gate_failed` for forbidden JIT/RWX | run `ctest --test-dir build_pm -R linux_kernel_module_security_edge_test`
+- Lane F | success | `android_kernel_module_success_test` | `core/tests/lane_android_kernel/android_kernel_module_success_test.cpp` | assert `target_kind=android_kernel_module`,`gki_kmi_profile` reported, signature passes | run `ctest --test-dir build_pm -R android_kernel_module_success_test`
+- Lane F | failure | `android_kernel_module_failure_test` | `core/tests/lane_android_kernel/android_kernel_module_failure_test.cpp` | assert `gki_kmi_mismatch` or `signature_missing` | run `ctest --test-dir build_pm -R android_kernel_module_failure_test`
+- Lane F | security-edge | `android_kernel_module_security_edge_test` | `core/tests/lane_android_kernel/android_kernel_module_security_edge_test.cpp` | assert forbidden JIT/RWX redlights | run `ctest --test-dir build_pm -R android_kernel_module_security_edge_test`
+- Lane G | success | `ios_safe_success_test` | `core/tests/lane_ios_safe/ios_safe_success_test.cpp` | assert `target_kind=ios_appstore`,`ios_compliance_profile=app_store_safe_v1`,`validation_mode=external_verifier` | run `ctest --test-dir build_pm -R ios_safe_success_test`
+- Lane G | failure | `ios_safe_failure_test` | `core/tests/lane_ios_safe/ios_safe_failure_test.cpp` | assert `macho_code_signature_missing` or `private_api_detected` | run `ctest --test-dir build_pm -R ios_safe_failure_test`
+- Lane G | security-edge | `ios_safe_security_edge_test` | `core/tests/lane_ios_safe/ios_safe_security_edge_test.cpp` | assert `jit_route_forbidden_for_target` or `rwx_segment_detected` | run `ctest --test-dir build_pm -R ios_safe_security_edge_test`
+- Lane H | success | `android_dex_success_test` | `core/tests/lane_android_dex/android_dex_success_test.cpp` | assert `artifact_kind=dex_bundle`,`loader_format_version=v3`,`plaintext_output=false` | run `ctest --test-dir build_pm -R android_dex_success_test`
+- Lane H | failure | `android_dex_failure_test` | `core/tests/lane_android_dex/android_dex_failure_test.cpp` | assert `loader_metadata_missing` or provider rejection redlights | run `ctest --test-dir build_pm -R android_dex_failure_test`
+- Lane H | security-edge | `android_dex_security_edge_test` | `core/tests/lane_android_dex/android_dex_security_edge_test.cpp` | assert `dex_plaintext_leak_detected` or `loader_gate_unresolved` | run `ctest --test-dir build_pm -R android_dex_security_edge_test`
+- Lane I | success | `shell_bundle_success_test` | `core/tests/lane_shell/shell_bundle_success_test.cpp` | assert `artifact_kind=shell_bundle`,`launcher_format_version=v3`,`anonymous_exec_mode` non-empty | run `ctest --test-dir build_pm -R shell_bundle_success_test`
+- Lane I | failure | `shell_bundle_failure_test` | `core/tests/lane_shell/shell_bundle_failure_test.cpp` | assert `launcher_metadata_missing` or provider rejection redlights | run `ctest --test-dir build_pm -R shell_bundle_failure_test`
+- Lane I | security-edge | `shell_bundle_security_edge_test` | `core/tests/lane_shell/shell_bundle_security_edge_test.cpp` | assert `shell_plaintext_leak_detected` or `anonymous_exec_unavailable` | run `ctest --test-dir build_pm -R shell_bundle_security_edge_test`
+
+CI / Evidence Spec:
+- Workflow:
+  - `.github/workflows/ci-linux-usermode.yml`
+  - `.github/workflows/ci-android-native.yml`
+  - `.github/workflows/ci-windows-usermode.yml`
+  - `.github/workflows/ci-windows-driver.yml`
+  - `.github/workflows/ci-linux-kernel.yml`
+  - `.github/workflows/ci-android-kernel.yml`
+  - `.github/workflows/ci-macos-ios-safe.yml`
+  - `.github/workflows/ci-android-dex.yml`
+  - `.github/workflows/ci-shell.yml`
+  - `.github/workflows/ci-evidence-pack.yml`
+- Runner OS:
+  - `ci-linux-usermode.yml` -> `ubuntu-24.04`
+  - `ci-android-native.yml` -> `ubuntu-24.04`
+  - `ci-windows-usermode.yml` -> `windows-2022`
+  - `ci-windows-driver.yml` -> `windows-2022`
+  - `ci-linux-kernel.yml` -> `ubuntu-24.04`
+  - `ci-android-kernel.yml` -> `ubuntu-24.04`
+  - `ci-macos-ios-safe.yml` -> `macos-14`
+  - `ci-android-dex.yml` -> `ubuntu-24.04`
+  - `ci-shell.yml` -> `ubuntu-24.04`
+  - `ci-evidence-pack.yml` -> `ubuntu-24.04`
+- Required Jobs:
+  - `configure`
+  - `build`
+  - `ctest`
+  - `strict_audit`
+  - `perf_smoke`
+  - `lane_specific_gate`
+  - `upload_evidence`
+- Lane-Specific Gate Job:
+  - Lane A -> `windows_pe_gate`
+  - Lane B -> `linux_elf_gate`
+  - Lane C -> `android_so_gate`
+  - Lane D -> `windows_driver_metadata_gate`
+  - Lane E -> `linux_ko_vermagic_gate`
+  - Lane F -> `android_ko_gki_gate`
+  - Lane G -> `ios_private_api_and_codesign_gate`
+  - Lane H -> `dex_loader_plaintext_gate`
+  - Lane I -> `shell_launcher_plaintext_gate`
+- Must Upload Artifacts:
+  - `configure.log`
+  - `build.log`
+  - `ctest.log`
+  - `perf.log`
+  - `manifest.json`
+  - `artifact_audit.json`
+  - `gate_summary.json`
+  - `evidence_pack.zip`
+- Red-Light Conditions:
+  - 任一 required job 失败
+  - 任一 lane 缺少 mandatory report fields
+  - 任一 lane `strict_failures` 非空
+  - 任一 required signed lane 不是 `validation_mode=external_verifier`
+  - 任一 iOS lane 命中 `private_api_detected`、`rwx_segment_detected`、`jit_route_forbidden_for_target`
+  - 任一 kernel lane 命中 `kernel_gate_failed`
+  - 任一 dex/shell lane 命中 plaintext leak gate
+  - 任一 perf 超过该 lane 阈值
+  - 任一 evidence artifact 缺失
+- Capability Skip Rule:
+  - 只允许环境能力缺失时 `SKIP`
+  - `SKIP` 必须在 `gate_summary.json` 中带 `reason` 字段
+  - 业务逻辑失败不得标记为 `SKIP`
+
+Updated Quality Gates:
+- G1: 方案必须经 3 reviewer PASS
+- G2: `Phase 2.5` 完成前不得进入 Phase 3-7 实现
+- G3: 每个 lane 必须具备 success/failure/security-edge 三类测试
+- G4: 每个 lane 必须满足 `Lane Acceptance Matrix`
+- G5: `configure/build/ctest/perf_smoke` 全绿
+- G6: required signed lane 必须是 `validation_mode=external_verifier`
+- G7: `.sys/.ko` 必须 no-JIT/no-RWX/sign-after-mutate
+- G8: iOS 必须 no-JIT/no-MAP_JIT/no-private-API/no-self-modifying-code
+- G9: `.dex/.sh` 必须具备 no-persistent-plaintext evidence
+- G10: evidence pack 齐全且 CI 红线生效
+
+Phase 3-7 Release-Grade DoD:
+- Phase 3
+  - Lane A/B/C 的 `mutation_profile` 已落到 manifest 和 audit report。
+  - `JITEnclavePass` 对 `android_so` 不再可用，只允许 `desktop_native`。
+  - `post_link_mutator` 的 PE/ELF 路径不再只是 trailer copy，必须有 `mutation_plan_builder` 生成非空计划节点。
+  - Lane A/B/C 的 9 个测试全部为绿。
+  - Lane A/B/C 的 strict audit 报告字段完整。
+  - Lane A/B/C 的 perf 达到矩阵阈值。
+- Phase 4
+  - `kernel_safe` backend 已独立，且 `.sys/.ko` 路径 compile-time `allow_jit=false`。
+  - `.sys/.ko` 产物 manifest 必须包含 `sign_after_mutate_required=true`。
+  - `.sys` 有 `hvci_profile`，Linux `.ko` 有 `vermagic_profile`，Android `.ko` 有 `gki_kmi_profile`。
+  - Lane D/E/F 的 9 个测试全部为绿。
+  - `signature_details.validation_mode` 对 Lane D/E/F 必须恒为 `external_verifier`。
+  - Lane D/E/F 的 perf 达到矩阵阈值。
+- Phase 5
+  - `script_guard` 不再只是 bundle skeleton，必须存在 launcher 可消费格式。
+  - manifest 必须包含 `launcher_format_version`、`anonymous_exec_mode`。
+  - strict audit 必须能报告 `shell_plaintext_leak_detected`、`launcher_metadata_missing`、`anonymous_exec_unavailable`。
+  - Lane I 的 3 个测试全部为绿。
+  - `.sh` lane 有 no-persistent-plaintext evidence artifact。
+  - startup 和 steady-state 达到矩阵阈值。
+- Phase 6
+  - `dex_toolchain` 不再只是 bundle skeleton，必须存在 loader 可消费格式。
+  - manifest 必须包含 `loader_format_version`、`external_key_required=true`、`plaintext_output=false`。
+  - strict audit 必须能报告 `dex_plaintext_leak_detected`、`loader_metadata_missing`、`loader_gate_unresolved`。
+  - Lane H 的 3 个测试全部为绿。
+  - `.dex` lane 有 no-persistent-plaintext evidence artifact。
+  - perf 达到矩阵阈值。
+- Phase 7
+  - `ios_safe` backend 独立完成，`JIT/MAP_JIT/RWX/private API/self-modifying code` 全部 fail-closed。
+  - Mach-O mutation 路径已独立，不再共用桌面默认 mutate 逻辑。
+  - manifest 必须包含 `ios_compliance_profile=app_store_safe_v1`。
+  - audit report 必须包含 `private_api_hits`、`code_signature_state`、`exec_permission_summary`。
+  - Lane G 的 3 个测试全部为绿。
+  - `ci-macos-ios-safe.yml` 全绿且 evidence 上传完整。
+  - perf 达到矩阵阈值。
+
+Open Risks:
+- `dex_toolchain`、`script_guard` 当前仍是 skeleton 级。
+- `post_link_mutator` 当前不是深度 binary rewriter。
+- `JITEnclavePass` 当前仍有 dummy payload 语义。
+- iOS 最大风险是 App Store 合规，不是编译通过。
+- driver 最大风险是签名兼容与平台硬约束，不是 manifest 输出。
+- verifier 目前是外部真实性协议，不是系统信任链最终态。

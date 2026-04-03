@@ -32,6 +32,116 @@ int main() {
     return 1;
   }
 
+  const Policy dex_policy =
+      eippf::runtime::backend::default_policy_for_target(ProtectionTargetKind::kAndroidDex);
+  if (!expect(!dex_policy.allow_jit, "android dex policy should disable jit")) {
+    return 1;
+  }
+
+  const Policy linux_kernel_policy = eippf::runtime::backend::default_policy_for_target(
+      ProtectionTargetKind::kLinuxKernelModule);
+  if (!expect(eippf::runtime::backend::validate_policy(linux_kernel_policy) == PolicyError::kOk,
+              "linux kernel module policy should validate")) {
+    return 1;
+  }
+  if (!expect(!linux_kernel_policy.allow_jit,
+              "linux kernel module policy should disable jit")) {
+    return 1;
+  }
+  if (!expect(!linux_kernel_policy.allow_runtime_executable_pages,
+              "linux kernel module policy should disable runtime executable pages")) {
+    return 1;
+  }
+
+  const auto linux_kernel_dispatch =
+      eippf::runtime::backend::dispatch_for_target(ProtectionTargetKind::kLinuxKernelModule);
+  if (!expect(linux_kernel_dispatch.backend == RuntimeBackendKind::kKernelSafeAot,
+              "linux kernel module dispatch backend should be kernel_safe_aot")) {
+    return 1;
+  }
+  const auto linux_kernel_backend = eippf::runtime::backends::default_backend_for_target(
+      ProtectionTargetKind::kLinuxKernelModule);
+  if (!expect(linux_kernel_backend == RuntimeBackendKind::kKernelSafeAot,
+              "linux kernel module default backend should be kernel_safe_aot")) {
+    return 1;
+  }
+  if (!expect(eippf::runtime::backend::target_kind_requires_sign_after_mutate(
+                  ProtectionTargetKind::kLinuxKernelModule),
+              "linux kernel module should require sign-after-mutate")) {
+    return 1;
+  }
+
+  const Policy android_kernel_policy = eippf::runtime::backend::default_policy_for_target(
+      ProtectionTargetKind::kAndroidKernelModule);
+  if (!expect(eippf::runtime::backend::validate_policy(android_kernel_policy) == PolicyError::kOk,
+              "android kernel module policy should validate")) {
+    return 1;
+  }
+  if (!expect(!android_kernel_policy.allow_jit,
+              "android kernel module policy should disable jit")) {
+    return 1;
+  }
+  if (!expect(!android_kernel_policy.allow_runtime_executable_pages,
+              "android kernel module policy should disable runtime executable pages")) {
+    return 1;
+  }
+
+  const auto android_kernel_dispatch =
+      eippf::runtime::backend::dispatch_for_target(ProtectionTargetKind::kAndroidKernelModule);
+  if (!expect(android_kernel_dispatch.backend == RuntimeBackendKind::kKernelSafeAot,
+              "android kernel module dispatch backend should be kernel_safe_aot")) {
+    return 1;
+  }
+  const auto android_kernel_backend = eippf::runtime::backends::default_backend_for_target(
+      ProtectionTargetKind::kAndroidKernelModule);
+  if (!expect(android_kernel_backend == RuntimeBackendKind::kKernelSafeAot,
+              "android kernel module default backend should be kernel_safe_aot")) {
+    return 1;
+  }
+  if (!expect(eippf::runtime::backend::target_kind_requires_sign_after_mutate(
+                  ProtectionTargetKind::kAndroidKernelModule),
+              "android kernel module should require sign-after-mutate")) {
+    return 1;
+  }
+
+  if (!expect(eippf::runtime::backend::target_forbids_runtime_executable_pages(
+                  ProtectionTargetKind::kUnknown),
+              "unknown target should forbid runtime executable pages")) {
+    return 1;
+  }
+  if (!expect(!eippf::runtime::backend::dispatch_for_target(ProtectionTargetKind::kUnknown)
+                   .allow_runtime_executable_pages,
+              "unknown dispatch must disable runtime executable pages")) {
+    return 1;
+  }
+  if (!expect(!eippf::runtime::backend::dispatch_for_target(ProtectionTargetKind::kUnknown)
+                   .allow_jit,
+              "unknown dispatch must disable jit")) {
+    return 1;
+  }
+  if (!expect(eippf::contracts::target_forbids_jit(ProtectionTargetKind::kUnknown),
+              "unknown target should forbid jit in contracts")) {
+    return 1;
+  }
+  if (!expect(eippf::runtime::backend::dispatch_for_target(ProtectionTargetKind::kUnknown)
+                      .allow_jit ==
+                  !eippf::contracts::target_forbids_jit(ProtectionTargetKind::kUnknown),
+              "unknown dispatch jit should match contracts forbid-jit rule")) {
+    return 1;
+  }
+
+  if (!expect(eippf::runtime::backend::target_kind_supports_desktop_jit(
+                  ProtectionTargetKind::kAndroidSo),
+              "android so should support desktop jit lane")) {
+    return 1;
+  }
+
+  if (!expect(eippf::runtime::backend::target_kind_requires_sign_after_mutate(
+                  ProtectionTargetKind::kWindowsDriver),
+              "windows driver should require sign-after-mutate")) {
+    return 1;
+  }
+
   const auto ios_backend = eippf::runtime::backends::default_backend_for_target(
       ProtectionTargetKind::kIosAppStore);
   const auto* ios_descriptor = eippf::runtime::backends::get_backend_descriptor(ios_backend);
@@ -48,6 +158,15 @@ int main() {
   if (!expect(eippf::runtime::backend::validate_policy(invalid_driver) ==
                   PolicyError::kRuntimeExecutablePagesForbidden,
               "kernel-safe driver must reject runtime executable pages")) {
+    return 1;
+  }
+
+  Policy invalid_linux_kernel = eippf::runtime::backend::default_policy_for_target(
+      ProtectionTargetKind::kLinuxKernelModule);
+  invalid_linux_kernel.allow_runtime_executable_pages = true;
+  if (!expect(eippf::runtime::backend::validate_policy(invalid_linux_kernel) ==
+                  PolicyError::kRuntimeExecutablePagesForbidden,
+              "linux kernel module must reject runtime executable pages")) {
     return 1;
   }
 

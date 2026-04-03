@@ -1,0 +1,514 @@
+# 2026-04-02 Phase 3f / string pass link closure plan
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt`。
+- 本文件只关闭 `string_protection_pass_test` 的 LLVM link closure blocker，不扩展到其他 LLVM 链路问题。
+
+Execution Mode:
+- `real-multi-agent`
+- 当前环境有真实 subagents；本计划按真实多代理流程送审。
+- PM / `main_agent` 持有编排权与 task card 下发权。
+- Architect / `Architect agent` 负责产出本最小 delta 技术计划；后续由独立 reviewer 审核，Engineer 仅在计划通过后执行。
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 只修补 `string_protection_pass_test` 当前暴露出的 LLVM 链接闭口。
+  - 在不回退 `Phase 3d` 注册修补和 `Phase 3e` 源码 compile 修补的前提下，使：
+    - `string_protection_pass_test` target 可链接
+    - `ctest -N` 继续可见
+    - 指定 `ctest -R` 可执行
+    - 现有 pass targets 不回退
+- Scope:
+  - 允许修改范围仅限：
+    - `/workspace/core/tests/passes/CMakeLists.txt`
+  - 允许验证范围仅限：
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/passes/CMakeLists.txt`
+    - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+    - `/workspace/build_phase3` 下的 build/ctest/ninja commands 结果
+  - 修补范围严格限制为这个 LLVM link closure blocker 及其直接回归面：
+    - `string_protection_pass_test`
+    - `core/tests/passes/CMakeLists.txt`
+    - `tests/passes` 子目录的最终 link line
+    - 现有 pass targets 的非回归验证
+- Non-Goals:
+  - 不扩到 `ip_weaver_ir` 或其他 LLVM 链路重构。
+  - 不修改任何生产代码或生产 `CMakeLists.txt`。
+  - 不再修改 `/workspace/core/tests/passes/string_protection_pass_test.cpp`。
+  - 不修改其他测试文件。
+  - 不处理 `TARGET LLVM` 缺失的全局建模问题，只关闭当前测试目标的可链接性。
+- Acceptance Criteria:
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test` 成功。
+  - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test` 必须给出最终 link line 证据。
+  - reviewer 必须确认该 link line：
+    - 不再出现 `-lLLVMCore`
+    - 不再出现 `-lLLVMSupport`
+    - 不再出现 `-lLLVMBitReader`
+    - 不再出现 `-lLLVMBitWriter`
+    - 不再出现 `-lLLVMIRReader`
+    - 不再出现 `-lLLVMPasses`
+    - 不再出现 `-lLLVMAnalysis`
+    - 不再出现 `-lLLVMTransformUtils`
+    - 必须出现 monolithic LLVM 库的绝对路径证据，形状对齐 `ip_weaver_ir` 已知可用样式
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"` 命中。
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'` 成功。
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass` 成功。
+  - PM 必须执行内容哈希基线审计：
+    - 发卡前记录一次：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_pre.txt`
+    - Engineer 完工后再次记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_post.txt`
+    - reviewer 必须执行固定比较命令：
+      - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_pre.txt | sort) <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+    - 通过条件：该比较命令输出只允许 `core/tests/passes/CMakeLists.txt`
+  - PM 还必须保留全仓 `git diff --name-only` 前后基线作为辅助证据：
+    - 发卡前记录一次：`git -C /workspace diff --name-only`
+    - Engineer 完工后再次记录：`git -C /workspace diff --name-only`
+  - 工程提交必须附带文件级 diff 证据：
+    - `git -C /workspace diff -- core/tests/passes/CMakeLists.txt`
+    - reviewer 必须确认该文件 diff 符合固定链接结构
+- Constraints:
+  - PM 不改代码。
+  - 编码前必须先过 3 reviewer 审核。
+  - 编码 agent 不自行设计方案，只按本计划白名单与固定 CMake 结构执行。
+  - `Phase 3d` 的注册修补与 `Phase 3e` 的源码修补视为已批准基线，不允许回退或重做。
+- Forbidden Shortcuts:
+  - 禁止再次修改 `/workspace/core/tests/passes/string_protection_pass_test.cpp`。
+  - 禁止修改 `/workspace/core/tests/CMakeLists.txt`。
+  - 禁止修改 `/workspace/core/passes/CMakeLists.txt`。
+  - 禁止修改任何生产 pass 源文件或其他测试源文件。
+  - 禁止把 `ip_weaver_ir` 拉入重构，只允许引用它的已知可用 link line 作为证据样式。
+- Sources Of Truth:
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt`
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - 真实复现命令：
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+    - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+    - `llvm-config --libs core support bitreader bitwriter irreader passes analysis transformutils`
+    - `llvm-config --libdir`
+    - `ninja -C /workspace/build_phase3 -t commands ip_weaver_ir`
+
+Main PM:
+- `main_agent`
+- 职责：持有编排权、冻结范围、发起独立审核、在三审通过后下发编码任务。
+
+Agent Roster:
+- PM / `main_agent`
+  - 职责：持有编排权、控制送审顺序、汇总 reviewer 结论、决定是否向 Engineer 发卡。
+- Architect / `Architect agent`
+  - 职责：产出本 link blocker 的最小 delta 技术计划，澄清边界、单写者 ownership 与 acceptance。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 职责：独立审核单文件修补边界、固定 CMake 结构和 diff 白名单是否自洽。
+- Security Reviewer / 待分配独立 reviewer
+  - 职责：独立审核没有把测试问题转嫁给生产侧、没有改动 3d/3e 基线、没有扩大 blast radius。
+- Validation Reviewer / 待分配独立 reviewer
+  - 职责：独立审核 target build、link line 证据、ctest 执行与 pass-target 非回归证据链是否完整。
+- Engineer
+  - 职责：仅在三审全部 `PASS` 后，按单写者白名单实施修补并执行本地验证。
+
+Delegation Map:
+- PM / `main_agent`
+  - 负责真实多代理编排、发起三审、在三审全通过后签发 Engineer task card。
+- Architect / `Architect agent`
+  - 负责技术方案文本、范围冻结、对 reviewer 问题做计划层澄清。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 独立审核 Task Charter、Architecture Contract、Regression Perimeter 是否保持最小闭口。
+- Security Reviewer / 待分配独立 reviewer
+  - 独立审核方案是否坚持 fail-closed、没有动生产侧、没有回退 3d/3e 已批准修补。
+- Validation Reviewer / 待分配独立 reviewer
+  - 独立审核 build/link-line/discovery/ctest/pass-target 验收是否完整。
+- Engineer
+  - 仅在三审明确 `PASS` 后执行编码与验证，不参与计划审批。
+- PM takeover:
+  - 明确禁止。
+
+Architecture Contract:
+- Root Contract:
+  - `Phase 3d` 已把 `string_protection_pass_test` 注册回 build/test 图。
+  - `Phase 3e` 已把测试源码的 GEP 二义性 compile blocker 收口。
+  - 当前唯一 blocker 是 `/workspace/core/tests/passes/CMakeLists.txt` 的 fallback 链接策略把测试目标接成了组件名 `-lLLVMCore`、`-lLLVMSupport` 等，但当前环境下这些组件库名无法直接被链接器解析。
+  - 已知可用样式证据：
+    - `llvm-config --libs core support bitreader bitwriter irreader passes analysis transformutils` 输出 `-lLLVM-14`
+    - `llvm-config --libdir` 输出 `/usr/lib/llvm-14/lib`
+    - `ip_weaver_ir` 当前最终 link line 使用 `/usr/lib/llvm-14/lib/libLLVM-14.so.1`
+- 固定修法:
+  - 只允许修改 `/workspace/core/tests/passes/CMakeLists.txt`。
+  - 必须保持以下现状不变：
+    - `add_executable(string_protection_pass_test ...)`
+    - `add_test(NAME string_protection_pass_test ...)`
+    - `string_protection_pass_test.cpp` 与 `passes/src/StringProtectionPass.cpp` 源列表
+    - `EIPPF_LLVM_INCLUDE_DIRS` include 接线
+  - `if(TARGET LLVM)` 分支保留不动。
+  - `elseif(COMMAND llvm_map_components_to_libnames)` 分支不允许继续使用 `llvm_map_components_to_libnames(...)` 的结果去链接组件名。
+  - 该 fallback 分支必须改成如下固定结构，不允许 Engineer 自己选择其他方案：
+    1. 保留 `elseif(COMMAND llvm_map_components_to_libnames)` 这个分支壳，不新增新的顶层条件分支。
+    2. 在该分支内新增：
+       - `find_program(EIPPF_LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)`
+    3. 在该分支内新增：
+       - `execute_process(COMMAND "${EIPPF_LLVM_CONFIG_EXECUTABLE}" --libdir OUTPUT_VARIABLE EIPPF_STRING_PROTECTION_TEST_LLVM_LIBDIR OUTPUT_STRIP_TRAILING_WHITESPACE)`
+    4. 在该分支内新增：
+       - `find_library(EIPPF_STRING_PROTECTION_TEST_LLVM_MONOLITHIC NAMES LLVM-14 LLVM HINTS "${EIPPF_STRING_PROTECTION_TEST_LLVM_LIBDIR}" NO_DEFAULT_PATH REQUIRED)`
+    5. 在该分支内把原来的 component `target_link_libraries(...)` 替换为：
+       - `target_link_libraries(string_protection_pass_test PRIVATE "${EIPPF_STRING_PROTECTION_TEST_LLVM_MONOLITHIC}")`
+    6. 不允许在该计划范围内使用：
+       - `llvm-config --libs` 的输出直接做字符串拆分链接
+       - `target_link_directories(...)`
+       - 修改 `ip_weaver_ir`
+       - 修改任何生产模块
+  - 这次修法的目标是让 `string_protection_pass_test` 的 fallback link line 改成 monolithic LLVM 库的绝对路径形式，对齐当前 `ip_weaver_ir` 的已知可用样式。
+- 明确回答 4 个问题:
+  - Q1 / 是否只改 `core/tests/passes/CMakeLists.txt`
+    - 是。
+    - 原因：当前 link blocker 只落在该文件的 fallback 链接策略。
+  - Q2 / 是否允许再改 `string_protection_pass_test.cpp`
+    - 不允许。
+    - 原因：3e 的源码修补已在位，当前失败发生在链接阶段，不在编译阶段。
+  - Q3 / 是否需要改 `core/tests/CMakeLists.txt` / `core/passes/CMakeLists.txt`
+    - 不需要。
+    - 原因：测试注册已恢复，生产 pass targets 也正常存在；这次不是子目录接入问题，也不是生产接线问题。
+  - Q4 / 具体链接修法是什么
+    - 修法已写死为：
+      - 保留 `if(TARGET LLVM)` 分支
+      - 在现有 `elseif(COMMAND llvm_map_components_to_libnames)` 分支内改用：
+        - `find_program(... llvm-config ...)`
+        - `execute_process(... --libdir ...)`
+        - `find_library(... NAMES LLVM-14 LLVM HINTS <libdir> NO_DEFAULT_PATH REQUIRED)`
+        - `target_link_libraries(... PRIVATE "<绝对路径 monolithic LLVM 库>")`
+      - 不允许 Engineer 自行改成其他 CMake 结构
+
+Decision Log:
+- `DL-P3F-01`
+  - 决定：本 delta 只修 `/workspace/core/tests/passes/CMakeLists.txt`
+  - 原因：真实失败只落在当前 fallback 链接策略产出的 link line。
+- `DL-P3F-02`
+  - 决定：不允许再改 `string_protection_pass_test.cpp`
+  - 原因：compile blocker 已由 3e 收口，当前失败是纯链接问题。
+- `DL-P3F-03`
+  - 决定：不改 `core/tests/CMakeLists.txt` / `core/passes/CMakeLists.txt`
+  - 原因：当前不是测试注册问题，也不是生产 pass target 问题。
+- `DL-P3F-04`
+  - 决定：fallback 修法固定为 `llvm-config --libdir` + `find_library(...)` + monolithic LLVM 绝对路径链接
+  - 原因：这是当前证据里最接近 `ip_weaver_ir` 已知可用样式的最小闭口。
+
+Regression Perimeter:
+- Root Cause:
+  - 当前 `string_protection_pass_test` 的 fallback link line 结尾是：
+    - `-lLLVMCore -lLLVMSupport -lLLVMBitReader -lLLVMBitWriter -lLLVMIRReader -lLLVMPasses -lLLVMAnalysis -lLLVMTransformUtils`
+  - 链接器错误：
+    - `cannot find -lLLVMCore`
+    - `cannot find -lLLVMSupport`
+    - `cannot find -lLLVMBitReader`
+    - `cannot find -lLLVMBitWriter`
+    - `cannot find -lLLVMIRReader`
+    - `cannot find -lLLVMPasses`
+    - `cannot find -lLLVMAnalysis`
+    - `cannot find -lLLVMTransformUtils`
+  - 同时：
+    - `llvm-config --libs ...` 输出 `-lLLVM-14`
+    - `llvm-config --libdir` 输出 `/usr/lib/llvm-14/lib`
+    - `ip_weaver_ir` 的最终 link line 使用 `/usr/lib/llvm-14/lib/libLLVM-14.so.1`
+- Changed Path:
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+- Adjacent Paths:
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake`
+- Unchanged Guarantees:
+  - `Phase 3d` 的测试注册修补不回退。
+  - `Phase 3e` 的源码 compile 修补不回退。
+  - `string_protection_pass_test` 的测试名与 target 名不变。
+  - `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 的生产接线不变。
+- Second-Order Risks:
+  - 若再次改测试源码，会把 link blocker 错误扩大成 source blocker。
+  - 若改顶层 tests 或生产 pass CMake，会把局部链接问题错误扩大成 build graph 改动。
+  - 若 Engineer 自己选择别的链接方案，reviewer 将无法证明改动仍是最小 delta。
+- Regression Matrix:
+  - Target build:
+    - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+  - Link-line evidence:
+    - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+  - Test discovery:
+    - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"`
+  - Test execution:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+  - Pass-target non-regression:
+    - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+  - Content-hash baseline audit:
+    - PM 发卡前记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_pre.txt`
+    - PM 在 Engineer 完工后再次记录：
+      - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_post.txt`
+    - reviewer 执行固定比较命令：
+      - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_pre.txt | sort) <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+    - 输出只允许 `core/tests/passes/CMakeLists.txt`
+  - Full-repo diff baseline audit:
+    - PM 发卡前记录：`git -C /workspace diff --name-only`
+    - PM 在 Engineer 完工后再次记录：`git -C /workspace diff --name-only`
+  - File-content audit:
+    - `git -C /workspace diff -- core/tests/passes/CMakeLists.txt`
+    - reviewer 核对该文件 diff 是否符合固定链接结构
+
+Parallel Tracks:
+- Track A / Architecture Review
+  - Owner:
+    - `Architecture Reviewer / 待分配独立 reviewer`
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，只检查单文件边界、固定 CMake 结构和 diff 白名单是否自洽。
+- Track B / Security Review
+  - Owner:
+    - `Security Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Architecture Contract` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认没有把问题转移到生产侧、源码侧或其他测试。
+- Track C / Validation Review
+  - Owner:
+    - `Validation Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Acceptance Criteria` 与 `Regression Matrix` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认 build/link-line/discovery/ctest/pass-target 证据链充分。
+- Track D / String Pass Link Closure
+  - Owner:
+    - `Engineer`
+  - Dependencies:
+    - `Architecture Reviewer PASS`
+    - `Security Reviewer PASS`
+    - `Validation Reviewer PASS`
+    - `PM / main_agent` 发卡
+  - Output:
+    - `string_protection_pass_test` 重新可链接并通过指定测试链。
+
+File Ownership:
+- 单写者测试接线文件：
+  - `/workspace/core/tests/passes/CMakeLists.txt` -> `Engineer`
+- 只读验证文件：
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp` -> `Engineer` 只读
+  - `/workspace/core/tests/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/core/passes/CMakeLists.txt` -> `Engineer` 只读
+  - `/workspace/build_phase3/tests/passes/CTestTestfile.cmake` -> `Engineer` 只读
+- 计划文件：
+  - `/workspace/plan/2026-04-02-phase-3f-string-pass-link-closure-plan.txt` -> `Architect / Architect agent`
+
+Dependencies:
+- 必须先通过本计划的 3 reviewer 审核，再允许编码。
+- PM 发卡前必须先记录一次 `/workspace/core` 内容哈希基线：
+  - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_pre.txt`
+- PM 发卡前还必须记录一次全仓 diff 基线作为辅助证据：
+  - `git -C /workspace diff --name-only`
+- `Engineer` 执行顺序固定：
+  1. 只读核对：
+     - `core/tests/passes/CMakeLists.txt`
+     - `core/tests/passes/string_protection_pass_test.cpp`
+     - `core/tests/CMakeLists.txt`
+     - `core/passes/CMakeLists.txt`
+  2. 只修改 `core/tests/passes/CMakeLists.txt`。
+  3. 在该文件中只做固定 CMake 结构改动：
+     - 保留 `if(TARGET LLVM)` 分支
+     - 在现有 `elseif(COMMAND llvm_map_components_to_libnames)` 分支中新增 `find_program(... llvm-config ...)`
+     - 在该分支中新增 `execute_process(... --libdir ...)`
+     - 在该分支中新增 `find_library(... NAMES LLVM-14 LLVM HINTS <libdir> NO_DEFAULT_PATH REQUIRED)`
+     - 在该分支中用 monolithic 库绝对路径替换原组件 `target_link_libraries(...)`
+  4. 先做 `string_protection_pass_test` 定向 build。
+  5. 再记录 `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test` 证据。
+  6. 再做 `ctest -N` 可见性验证。
+  7. 再做指定 `ctest -R` 执行验证。
+  8. 最后做 pass-target 非回归验证。
+- Engineer 完工后，PM 必须再次记录一次 `/workspace/core` 内容哈希基线：
+  - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_post.txt`
+- Engineer 完工后，PM 还必须再次记录一次全仓 diff 作为辅助证据：
+  - `git -C /workspace diff --name-only`
+- reviewer 必须执行固定比较命令核对两次内容哈希基线的变化路径：
+  - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_pre.txt | sort) <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+- 通过条件：
+  - 该比较命令输出只允许 `core/tests/passes/CMakeLists.txt`
+- PM 必须先收齐以下三份独立结论，再允许进入编码：
+  - `Architecture Reviewer PASS`
+  - `Security Reviewer PASS`
+  - `Validation Reviewer PASS`
+
+Model Routing:
+- PM / 编排：
+  - `main_agent`
+  - 原因：当前环境支持真实多代理，PM 只持有编排权，不接管技术方案或实现。
+- Architect / 计划产出：
+  - `Architect agent`
+  - 原因：本轮需要由架构师给出最小 delta 技术方案。
+- Architecture Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认修补点没有从单个 tests/passes CMake 外扩。
+- Security Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认没有把 link blocker 转嫁给源码或生产侧。
+- Validation Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认 build/link-line/discovery/ctest/non-regression 证据完整。
+- Engineer / 后续执行：
+  - `独立 engineer`
+  - 原因：计划通过后只做单文件最小修补，禁止 PM 或 reviewer 越权实现。
+
+Context Packages:
+- `Architecture Reviewer` 可依赖：
+  - 本计划
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt`
+  - 真实链接错误文本
+- `Security Reviewer` 可依赖：
+  - 本计划
+  - `Architecture Contract`
+  - `Decision Log`
+  - `Regression Perimeter`
+- `Validation Reviewer` 可依赖：
+  - 本计划
+  - `Acceptance Criteria`
+  - `Regression Matrix`
+  - 当前 build、`ninja -t commands` 与 `ctest -N` 证据
+- `Engineer` 可依赖：
+  - `/workspace/core/tests/passes/CMakeLists.txt`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/ip_weaver_ir/CMakeLists.txt`
+  - 本计划规定的命令与验收
+- `Engineer` 不可依赖：
+  - 自行设计其他链接方案
+  - 自行改测试源码
+  - 自行改顶层 tests
+  - 自行改生产 pass
+  - 自行改 `ip_weaver_ir`
+- 三个 reviewer 在编码后可依赖：
+  - `Engineer` 的 diff
+  - 本计划 acceptance 与 regression matrix
+  - 实际 build / ctest / `ninja -t commands` 结果
+
+Quality Gates:
+- G1 / Scope Gate:
+  - 只允许 1 个写入点：`/workspace/core/tests/passes/CMakeLists.txt`
+- G2 / Content Hash Baseline Gate:
+  - PM 发卡前必须记录一次 `/workspace/core` 内容哈希基线：
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_pre.txt`
+  - Engineer 完工后，PM 必须再次记录一次 `/workspace/core` 内容哈希基线：
+    - `cd /workspace && rg --files core -g '*.cpp' -g '*.hpp' -g '*.h' -g 'CMakeLists.txt' -g '*.cmake' | sort | xargs sha256sum > /tmp/phase3f_core_hash_post.txt`
+  - reviewer 必须执行固定比较命令：
+    - `join -a 1 -a 2 -o 0,1.2,2.2 <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_pre.txt | sort) <(awk '{print $2" "$1}' /tmp/phase3f_core_hash_post.txt | sort) | awk '$2 != $3 {print $1}'`
+  - 通过条件：
+    - 该比较命令输出只允许 `core/tests/passes/CMakeLists.txt`
+- G3 / Full-Repo Baseline Audit Gate:
+  - PM 发卡前必须记录一次全仓 diff 基线：
+    - `git -C /workspace diff --name-only`
+  - Engineer 完工后，PM 必须再次记录一次全仓 diff：
+    - `git -C /workspace diff --name-only`
+  - 该 gate 只作为辅助证据，不得替代 `G2 / Content Hash Baseline Gate`
+- G4 / File Diff Shape Gate:
+  - reviewer 必须核对：
+    - `git -C /workspace diff -- core/tests/passes/CMakeLists.txt`
+  - reviewer 必须确认该文件 diff 中同时出现：
+    - `find_program(EIPPF_LLVM_CONFIG_EXECUTABLE NAMES llvm-config REQUIRED)`
+    - `execute_process(COMMAND "${EIPPF_LLVM_CONFIG_EXECUTABLE}" --libdir OUTPUT_VARIABLE EIPPF_STRING_PROTECTION_TEST_LLVM_LIBDIR OUTPUT_STRIP_TRAILING_WHITESPACE)`
+    - `find_library(EIPPF_STRING_PROTECTION_TEST_LLVM_MONOLITHIC NAMES LLVM-14 LLVM HINTS "${EIPPF_STRING_PROTECTION_TEST_LLVM_LIBDIR}" NO_DEFAULT_PATH REQUIRED)`
+    - `target_link_libraries(string_protection_pass_test PRIVATE "${EIPPF_STRING_PROTECTION_TEST_LLVM_MONOLITHIC}")`
+- G5 / Target Build Gate:
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+- G6 / Link-Line Evidence Gate:
+  - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+  - 通过条件：
+    - 最终 link line 不再出现 `-lLLVMCore`、`-lLLVMSupport`、`-lLLVMBitReader`、`-lLLVMBitWriter`、`-lLLVMIRReader`、`-lLLVMPasses`、`-lLLVMAnalysis`、`-lLLVMTransformUtils`
+    - 最终 link line 必须出现 monolithic LLVM 库绝对路径
+- G7 / Discovery Gate:
+  - `ctest --test-dir /workspace/build_phase3 -N | rg -n "string_protection_pass_test"`
+- G8 / Test Execution Gate:
+  - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'string_protection_pass_test|string_token_runtime_test|user_mode_pipeline_test'`
+- G9 / Pass Non-Regression Gate:
+  - `cmake --build /workspace/build_phase3 --target eippf_string_protection_pass eippf_protection_suite_pass`
+- G10 / Review Gate:
+  - `Architecture Reviewer` 必须 `PASS`
+  - `Security Reviewer` 必须 `PASS`
+  - `Validation Reviewer` 必须 `PASS`
+  - `PM / main_agent` 在三审全通过前不得向 `Engineer` 发卡
+
+Assurance Scorecard:
+- architecture completeness:
+  - `PASS`
+- evidence coverage:
+  - `PASS`
+- blast radius coverage:
+  - `PASS`
+- PM boundary integrity:
+  - `PASS`
+- review independence:
+  - `PASS`
+- context integrity:
+  - `PASS`
+- delegation integrity:
+  - `PASS`
+- gate result:
+  - `PLAN READY FOR INDEPENDENT REVIEW`
+
+Open Risks:
+- 风险：
+  - 编码 agent 顺手再改 3e 的测试源码
+  - Owner：
+    - `Architecture Reviewer`
+    - `Security Reviewer`
+  - Mitigation：
+    - 内容哈希基线与 diff 白名单只允许 `core/tests/passes/CMakeLists.txt`
+- 风险：
+  - 编码 agent 继续保留 component link 方案，只额外加 `-L`
+  - Owner：
+    - `Architecture Reviewer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - `File Diff Shape Gate` 必须核对 monolithic `find_library(...)` 固定结构
+    - `Link-Line Evidence Gate` 必须确认组件 `-lLLVM*` 已消失
+- 风险：
+  - `string_protection_pass_test` 修好后，现有 pass targets 被误伤
+  - Owner：
+    - `Engineer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - 必跑 `eippf_string_protection_pass` 与 `eippf_protection_suite_pass` 非回归构建
+
+State Snapshot:
+- `Phase 3c` 已冻结：
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-execution.txt`
+- `Phase 3d` 已把 `string_protection_pass_test` 注册进 build/test 图：
+  - `/workspace/plan/2026-04-02-phase-3d-string-pass-test-registration-plan.txt`
+- `Phase 3e` 已把测试源码的 GEP 二义性 compile blocker 暴露并计划化：
+  - `/workspace/plan/2026-04-02-phase-3e-string-pass-compile-closure-plan.txt`
+- 当前工作区已确认事实：
+  - `/workspace/core/tests/passes/CMakeLists.txt` 已有 3d 的 fallback 结构
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp` 已有 3e 的 `std::array` / `ArrayRef` 形状修补
+- 当前新 blocker：
+  - `cmake --build /workspace/build_phase3 --target string_protection_pass_test`
+    - 链接失败
+    - 报错：
+      - `cannot find -lLLVMCore`
+      - `cannot find -lLLVMSupport`
+      - `cannot find -lLLVMBitReader`
+      - `cannot find -lLLVMBitWriter`
+      - `cannot find -lLLVMIRReader`
+      - `cannot find -lLLVMPasses`
+      - `cannot find -lLLVMAnalysis`
+      - `cannot find -lLLVMTransformUtils`
+  - `ninja -C /workspace/build_phase3 -t commands string_protection_pass_test`
+    - 当前 link line 结尾是 component `-lLLVM*`
+  - `llvm-config --libs core support bitreader bitwriter irreader passes analysis transformutils`
+    - 输出：`-lLLVM-14`
+  - `llvm-config --libdir`
+    - 输出：`/usr/lib/llvm-14/lib`
+  - `ninja -C /workspace/build_phase3 -t commands ip_weaver_ir`
+    - 当前 link line 结尾是：
+      - `/usr/lib/llvm-14/lib/libLLVM-14.so.1`
+- 下一动作：
+  - 先由 `PM / main_agent` 分发给 `Architecture Reviewer`、`Security Reviewer`、`Validation Reviewer` 独立审核本计划。
+  - 三审全部 `PASS` 后，PM 才向 `Engineer` 下发本计划中的单文件编码任务，不追加自由设计空间。

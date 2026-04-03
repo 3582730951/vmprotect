@@ -1,0 +1,416 @@
+# 2026-04-02 Phase 3c / runtime linkage closure plan
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`。
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`。
+- 本文件只关闭 `Phase 3` 首次 PM 全量构建暴露出的 runtime linkage blocker，不扩展到其他未阻塞项。
+
+Execution Mode:
+- `real-multi-agent`
+- 当前环境有真实 subagents；本计划按真实多代理流程送审。
+- PM / `main_agent` 持有编排权与 task card 下发权。
+- Architect 负责产出本最小 delta 技术计划；后续由独立 reviewer 审核，Engineer 仅在计划通过后执行。
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 只修补 `tests/vm_runtime_bridge_vm2_test` 的链接失败根因，使 `Phase 3` 全量构建重新闭合。
+  - 只修补 `eippf_vm_rt` 对 backend policy helper 的实现闭包缺口，不引入新的运行时行为。
+- Scope:
+  - 允许修改范围仅限：
+    - `/workspace/core/runtime/CMakeLists.txt`
+  - 允许验证范围仅限：
+    - `/workspace/core/tests/CMakeLists.txt`
+    - `/workspace/core/runtime/include/runtime/memory_hal.hpp`
+    - `/workspace/core/runtime/src/backend_policy.cpp`
+    - `/workspace/core/runtime/src/secure_ir_engine.cpp`
+    - `/workspace/build_phase3` 下的 configure/build/test 结果
+  - 修补范围严格限制为这个 linker blocker 及其直接回归面：
+    - `eippf_vm_rt`
+    - `vm_runtime_bridge_vm2_test`
+    - `secure_ir_engine`
+    - `MemoryHAL::runtime_dynamic_code_allowed()`
+    - backend policy 的 JIT / executable-page gate
+- Non-Goals:
+  - 不扩到 `Phase 3` 其他功能缺口。
+  - 不重构 runtime 模块边界。
+  - 不新建共享子库。
+  - 不修改 `memory_hal.hpp`、`backend_policy.cpp`、`secure_ir_engine.cpp` 的业务语义。
+  - 不通过修改测试链接方式掩盖生产目标缺口。
+- Acceptance Criteria:
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja` 成功。
+  - `cmake --build /workspace/build_phase3 -j` 成功，表示全量 build 恢复。
+  - 相关测试恢复：
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'runtime_vm_runtime_bridge_vm2_test|runtime_secure_ir_engine_test|runtime_memory_hal_test|backend_policy_test|runtime_backend_extraction_contract_test|runtime_secure_ir_engine_ios_appstore_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_android_dex_safe_test|runtime_secure_ir_engine_shell_ephemeral_safe_test|runtime_secure_ir_engine_unknown_safe_test|runtime_memory_hal_ios_appstore_safe_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_android_dex_safe_test|runtime_memory_hal_shell_ephemeral_safe_test|runtime_memory_hal_unknown_safe_test'`
+  - `cmake --build /workspace/build_phase3 --target perf_smoke` 成功，避免 `perf_smoke` 再次因同一链接面失效。
+  - `eippf_vm_rt` 自闭合证据必须显式提交并通过 reviewer 审核：
+    - `cmake --build /workspace/build_phase3 --target vm_runtime_bridge_vm2_test --verbose`
+    - reviewer 必须保留 `tests/vm_runtime_bridge_vm2_test` 的最终 link line 证据，并确认其中不得出现 `libeippf_runtime.a`
+  - 生产写入白名单审计证据必须显式提交并通过 reviewer 审核：
+    - `git -C /workspace diff --name-only -- core/runtime/CMakeLists.txt core/runtime/include/runtime/memory_hal.hpp core/runtime/src/backend_policy.cpp core/runtime/src/secure_ir_engine.cpp core/tests/CMakeLists.txt`
+    - reviewer 必须确认输出只允许包含 `core/runtime/CMakeLists.txt`
+  - 不得引入新的 JIT 放宽：
+    - `backend_policy_test`
+    - `runtime_backend_extraction_contract_test`
+    - 以上 safe-target 测试结果必须与修补前合同一致。
+  - 不得引入新的 safe-target 回归：
+    - `ios_appstore`
+    - `windows_driver`
+    - `android_dex`
+    - `shell_ephemeral`
+    - `unknown`
+- Constraints:
+  - PM 不改生产代码。
+  - 编码前必须先过 3 角色审核。
+  - 编码 agent 不自行设计方案，只按本计划白名单与步骤执行。
+  - 生产修补只能落在 `eippf_vm_rt` 的 link surface，不得向测试目标转移依赖。
+- Forbidden Shortcuts:
+  - 禁止给 `vm_runtime_bridge_vm2_test` 额外链接 `eippf_runtime` 作为补丁。
+  - 禁止把 `eippf_vm_rt` 直接改成依赖 `eippf_runtime` 的宽表面补丁。
+  - 禁止修改 `backend_policy.cpp` 中 JIT / runtime executable pages 的判定逻辑来“顺便修过”链接问题。
+  - 禁止修改 `memory_hal.hpp` 以绕开 backend policy helper。
+  - 禁止顺手处理其他 `Phase 3` blocker。
+- Sources Of Truth:
+  - `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`
+  - `/workspace/core/runtime/CMakeLists.txt`
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/runtime/src/secure_ir_engine.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - 真实复现命令：
+    - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+    - `cmake --build /workspace/build_phase3 -j --target vm_runtime_bridge_vm2_test`
+
+Main PM:
+- `main_agent`
+- 职责：持有编排权、冻结范围、发起独立审核、在三审通过后下发编码任务。
+
+Agent Roster:
+- PM / `main_agent`
+  - 职责：持有编排权、控制送审顺序、汇总 reviewer 结论、决定是否向 Engineer 发卡。
+- Architect / `Architect agent`
+  - 职责：产出本 linker blocker 的最小 delta 技术计划，澄清边界、单写者 ownership 与 acceptance。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 职责：独立审核最小 delta 边界、link surface 归属、`tests/CMakeLists.txt` 不应背锅的合同完整性。
+- Security Reviewer / 待分配独立 reviewer
+  - 职责：独立审核没有新增 JIT 放宽、没有 safe-target 回归、没有通过消费者或测试侧掩盖生产缺口。
+- Validation Reviewer / 待分配独立 reviewer
+  - 职责：独立审核 configure/build/ctest/perf_smoke 验收矩阵是否足以覆盖该 blocker 及其直接回归面。
+- Engineer
+  - 职责：仅在 Architecture Reviewer、Security Reviewer、Validation Reviewer 三审全部 `PASS` 后，按单写者白名单实施修补并执行本地验证。
+
+Delegation Map:
+- PM / `main_agent`
+  - 负责真实多代理编排、发起三审、在三审全通过后签发 Engineer task card。
+- Architect / `Architect agent`
+  - 负责技术方案文本、范围冻结、对 reviewer 问题做计划层澄清。
+- Architecture Reviewer / 待分配独立 reviewer
+  - 独立审核 Task Charter、Architecture Contract、Regression Perimeter 是否保持最小闭口。
+- Security Reviewer / 待分配独立 reviewer
+  - 独立审核方案是否坚持 fail-closed、安全 target 不回退、JIT gate 不放宽。
+- Validation Reviewer / 待分配独立 reviewer
+  - 独立审核 build/test/perf_smoke 验收是否完整且未把验证责任转嫁给未来自由发挥。
+- Engineer
+  - 仅在三审明确 `PASS` 后执行编码与验证，不参与计划审批。
+- PM takeover:
+  - 明确禁止。
+
+Architecture Contract:
+- `eippf_vm_rt` 是独立可消费的 VM runtime 静态库。
+- 凡是被编入 `eippf_vm_rt` 的对象文件，其直接链接期实现闭包必须由 `eippf_vm_rt` 自己闭合。
+- 本次明确修 `eippf_vm_rt` 的 link surface：
+  - 修补位置：`/workspace/core/runtime/CMakeLists.txt`
+  - 修补方式：在 `eippf_vm_rt` 自身目标定义里补齐 `backend_policy` 实现闭包。
+  - 本次固定方案：把 `src/backend_policy.cpp` 纳入 `eippf_vm_rt`，不要求编码 agent 自行比较其他方案。
+- 本次明确不修 `tests/CMakeLists.txt`：
+  - 原因 1：`/workspace/core/tests/CMakeLists.txt` 中 `vm_runtime_bridge_vm2_test -> eippf_vm_rt` 的链接关系本身是正确的消费者合同。
+  - 原因 2：若改测试去额外链接 `eippf_runtime`，只会让测试通过，但生产库 `eippf_vm_rt` 仍然不是自闭合 runtime 交付物。
+  - 原因 3：把缺口补在测试侧会掩盖真实发布面回归，违反 fail-closed。
+- 本次明确不采用 `eippf_vm_rt -> eippf_runtime` 的宽表面修法：
+  - 原因 1：这会把 VM runtime 依赖面扩到整个 `eippf_runtime`，不属于最小 delta。
+  - 原因 2：`eippf_runtime` 已自带 `secure_ir_engine.cpp`，宽链接会放大耦合与未来重复接线风险。
+  - 原因 3：当前 blocker 只缺 `backend_policy.cpp`，不应引入更大依赖图。
+- 本次保持以下不变：
+  - `MemoryHAL::runtime_dynamic_code_allowed()` 的语义不变。
+  - `backend_policy.cpp` 的 target dispatch / JIT / executable-pages gate 语义不变。
+  - `secure_ir_engine.cpp` 的运行时行为不变。
+
+Decision Log:
+- `DL-P3C-01`
+  - 决定：根因定位为 `eippf_vm_rt` 的生产目标未闭合 backend policy helper 的实现。
+  - 原因：`secure_ir_engine.cpp` 通过 `MemoryHAL::runtime_dynamic_code_allowed()` 依赖 `target_kind_supports_desktop_jit()` 与 `target_forbids_runtime_executable_pages()`，而这两个符号只在 `backend_policy.cpp` 中定义。
+- `DL-P3C-02`
+  - 决定：本 delta 必须修 `eippf_vm_rt` 的 link surface。
+  - 原因：blocker 发生在生产库 `eippf_vm_rt` 被消费者链接时，不在测试入口本身。
+- `DL-P3C-03`
+  - 决定：本 delta 不修 `/workspace/core/tests/CMakeLists.txt`。
+  - 原因：现有测试已经正确暴露生产库 contract 缺口；改测试会把生产问题伪装成测试问题。
+- `DL-P3C-04`
+  - 决定：本 delta 不采用 `eippf_vm_rt -> eippf_runtime` 的宽表面连接。
+  - 原因：这不是最小闭口，会扩大依赖面，并把本应由 `eippf_vm_rt` 自身承担的实现闭包外包给上层库。
+- `DL-P3C-05`
+  - 决定：安全验收必须显式覆盖 JIT gate 与 safe-target。
+  - 原因：本 blocker 正好穿过 `MemoryHAL` 与 backend policy helper，若只看“链接能过”不足以证明安全合同未回退。
+
+Regression Perimeter:
+- Root Cause:
+  - `/workspace/core/runtime/CMakeLists.txt` 中：
+    - `eippf_runtime` 含 `src/backend_policy.cpp`
+    - `eippf_vm_rt` 只含 `src/secure_ir_engine.cpp` 与 `src/vm_runtime_bridge.cpp`
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp` 的 `runtime_dynamic_code_allowed()` 需要 backend policy helper 实现。
+  - `vm_runtime_bridge_vm2_test` 只链接 `eippf_vm_rt`，因此暴露出 `eippf_vm_rt` 未闭合的实现缺口。
+- Changed Path:
+  - `eippf_vm_rt` 在 `/workspace/core/runtime/CMakeLists.txt` 的源文件接线。
+- Adjacent Paths:
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/runtime/src/secure_ir_engine.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - `perf_smoke`
+- Unchanged Guarantees:
+  - 目标类型到 backend 的映射不变。
+  - safe-target 对 JIT / executable pages 的禁止关系不变。
+  - `vm_runtime_bridge_vm2_test` 的消费者链接方式不变。
+  - `Phase 3` 其他模块、其他平台主线、其他 CMake 接线不变。
+- Second-Order Risks:
+  - 若错误地改成“测试额外链接 `eippf_runtime`”，将留下发布面隐患。
+  - 若错误地改成“`eippf_vm_rt` 宽依赖 `eippf_runtime`”，会扩大依赖面并弱化最小交付物边界。
+  - 若顺手改动 backend policy 逻辑，可能引入 JIT 放宽或 safe-target 误放行。
+- Regression Matrix:
+  - Build closure:
+    - `cmake --build /workspace/build_phase3 -j --target vm_runtime_bridge_vm2_test`
+    - `cmake --build /workspace/build_phase3 -j`
+  - `eippf_vm_rt` self-closure evidence:
+    - `cmake --build /workspace/build_phase3 --target vm_runtime_bridge_vm2_test --verbose`
+    - reviewer 记录 `tests/vm_runtime_bridge_vm2_test` 的最终 link line，并确认不得出现 `libeippf_runtime.a`
+  - Write-surface audit:
+    - `git -C /workspace diff --name-only -- core/runtime/CMakeLists.txt core/runtime/include/runtime/memory_hal.hpp core/runtime/src/backend_policy.cpp core/runtime/src/secure_ir_engine.cpp core/tests/CMakeLists.txt`
+    - reviewer 确认输出只允许包含 `core/runtime/CMakeLists.txt`
+  - Runtime bridge:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'runtime_vm_runtime_bridge_vm2_test'`
+  - Core engine:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'runtime_secure_ir_engine_test|runtime_memory_hal_test'`
+  - Policy contract:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'backend_policy_test|runtime_backend_extraction_contract_test'`
+  - Safe-target:
+    - `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'runtime_secure_ir_engine_ios_appstore_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_android_dex_safe_test|runtime_secure_ir_engine_shell_ephemeral_safe_test|runtime_secure_ir_engine_unknown_safe_test|runtime_memory_hal_ios_appstore_safe_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_android_dex_safe_test|runtime_memory_hal_shell_ephemeral_safe_test|runtime_memory_hal_unknown_safe_test'`
+  - Perf smoke closure:
+    - `cmake --build /workspace/build_phase3 --target perf_smoke`
+
+Parallel Tracks:
+- Track A / Architecture Review
+  - Owner:
+    - `Architecture Reviewer / 待分配独立 reviewer`
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，只检查最小 delta 边界、link surface 归属、单写者 ownership 是否正确。
+- Track B / Security Review
+  - Owner:
+    - `Security Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Architecture Contract` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认不存在 JIT 放宽、safe-target 回退、测试侧背锅方案。
+- Track C / Validation Review
+  - Owner:
+    - `Validation Reviewer / 待分配独立 reviewer`
+  - Dependencies:
+    - `Acceptance Criteria` 与 `Regression Matrix` 已冻结
+  - Output:
+    - 对本文件给出 `PASS/FAIL`，确认 configure/build/ctest/perf_smoke 验收闭环充分。
+- Track D / Link Surface Closure
+  - Owner:
+    - `Engineer`
+  - Dependencies:
+    - `Architecture Reviewer PASS`
+    - `Security Reviewer PASS`
+    - `Validation Reviewer PASS`
+    - `PM / main_agent` 发卡
+  - Output:
+    - `eippf_vm_rt` 自身完成 backend policy 实现闭口。
+
+File Ownership:
+- 单写者生产文件：
+  - `/workspace/core/runtime/CMakeLists.txt` -> `Engineer`
+- 只读验证文件：
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp` -> `Engineer` 只读
+  - `/workspace/core/runtime/src/backend_policy.cpp` -> `Engineer` 只读
+  - `/workspace/core/runtime/src/secure_ir_engine.cpp` -> `Engineer` 只读
+  - `/workspace/core/tests/CMakeLists.txt` -> `Engineer` 只读
+- 计划文件：
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-plan.txt` -> `Architect / Architect agent`
+
+Dependencies:
+- 必须先通过本计划的 3 角色审核，再允许编码。
+- `Engineer` 执行顺序固定：
+  1. 只读核对上述 4 个上下文文件。
+  2. 修改 `/workspace/core/runtime/CMakeLists.txt`。
+  3. 先做定向 build。
+  4. 再做全量 build。
+  5. 再跑本计划规定的回归测试。
+- 不允许在第 2 步之外增加新的生产文件编辑点。
+- PM 必须先收齐以下三份独立结论，再允许进入编码：
+  - `Architecture Reviewer PASS`
+  - `Security Reviewer PASS`
+  - `Validation Reviewer PASS`
+
+Model Routing:
+- PM / 编排：
+  - `main_agent`
+  - 原因：当前环境支持真实多代理，PM 只持有编排权，不接管技术方案或实现。
+- Architect / 计划产出：
+  - `Architect agent`
+  - 原因：本轮需要由架构师给出最小 delta 技术方案。
+- Architecture Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要确认 link surface 归属和边界没有扩散。
+- Security Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：本 blocker 经过 JIT / executable-page policy 边界，必须独立审查。
+- Validation Reviewer / 独立审核：
+  - `待分配独立 reviewer`
+  - 原因：需要独立确认 build/test/perf_smoke 验收矩阵充分。
+- Engineer / 后续执行：
+  - `独立 engineer`
+  - 原因：计划通过后只做单文件最小修补，禁止 PM 或 reviewer 越权实现。
+
+Context Packages:
+- `Architecture Reviewer` 可依赖：
+  - 本计划
+  - 3 份既有 `Phase 3/3a/3b` 计划
+  - 真实失败命令与错误文本
+- `Security Reviewer` 可依赖：
+  - 本计划
+  - `Architecture Contract`
+  - `Decision Log`
+  - `Regression Perimeter`
+- `Validation Reviewer` 可依赖：
+  - 本计划
+  - `Acceptance Criteria`
+  - `Regression Matrix`
+  - 真实失败命令与错误文本
+- `Engineer` 可依赖：
+  - `/workspace/core/runtime/CMakeLists.txt`
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp`
+  - `/workspace/core/runtime/src/backend_policy.cpp`
+  - `/workspace/core/runtime/src/secure_ir_engine.cpp`
+  - `/workspace/core/tests/CMakeLists.txt`
+  - 本计划规定的命令与验收
+- `Engineer` 不可依赖：
+  - 自行重设计 runtime 分层
+  - 自行改测试链接策略
+  - 自行扩 scope 到其他 `Phase 3` 项
+- 三个 reviewer 在编码后可依赖：
+  - `Engineer` 的 diff
+  - 本计划 acceptance 与 regression matrix
+  - 实际 build / ctest / perf_smoke 结果
+
+Quality Gates:
+- G1 / Scope Gate:
+  - 只允许 1 个生产文件写入点：`/workspace/core/runtime/CMakeLists.txt`
+- G2 / Write Audit Gate:
+  - reviewer 必须核对工程提交的 diff 证据：
+    - `git -C /workspace diff --name-only -- core/runtime/CMakeLists.txt core/runtime/include/runtime/memory_hal.hpp core/runtime/src/backend_policy.cpp core/runtime/src/secure_ir_engine.cpp core/tests/CMakeLists.txt`
+  - 通过条件：输出只允许包含 `core/runtime/CMakeLists.txt`
+- G3 / Consumer Contract Gate:
+  - `vm_runtime_bridge_vm2_test` 仍只链接 `eippf_vm_rt`
+- G4 / `eippf_vm_rt` Self-Closure Gate:
+  - reviewer 必须核对工程提交的 verbose build / link line 证据：
+    - `cmake --build /workspace/build_phase3 --target vm_runtime_bridge_vm2_test --verbose`
+  - 通过条件：
+    - 证据中存在 `tests/vm_runtime_bridge_vm2_test` 的最终 link line
+    - 该 link line 不得出现 `libeippf_runtime.a`
+- G5 / Build Gate:
+  - 定向 build 恢复
+  - 全量 build 恢复
+- G6 / Security Gate:
+  - backend policy contract 测试通过
+  - safe-target 测试通过
+  - `unknown` safe-target 测试显式通过：
+    - `runtime_secure_ir_engine_unknown_safe_test`
+    - `runtime_memory_hal_unknown_safe_test`
+- G7 / Perf Gate:
+  - `perf_smoke` 成功
+- G8 / Review Gate:
+  - `Architecture Reviewer` 必须 `PASS`
+  - `Security Reviewer` 必须 `PASS`
+  - `Validation Reviewer` 必须 `PASS`
+  - reviewer 必须显式核对并记录：
+    - `eippf_vm_rt` 自闭合 link line 证据
+    - 生产写入白名单 diff 证据
+  - `PM / main_agent` 在三审全通过前不得向 `Engineer` 发卡
+
+Assurance Scorecard:
+- architecture completeness:
+  - `PASS`
+- evidence coverage:
+  - `PASS`
+- blast radius coverage:
+  - `PASS`
+- PM boundary integrity:
+  - `PASS`
+- review independence:
+  - `PASS`，已映射为 Architect 与 3 个独立 reviewer，Engineer 不参与计划审批
+- context integrity:
+  - `PASS`
+- delegation integrity:
+  - `PASS`，本计划要求按 `real-multi-agent` 流程编排与送审
+- gate result:
+  - `PLAN READY FOR INDEPENDENT REVIEW`
+
+Open Risks:
+- 风险：
+  - 编码 agent 误把补丁下沉到测试链接侧
+  - Owner：
+    - `Architecture Reviewer`
+    - `Security Reviewer`
+  - Mitigation：
+    - 审核 diff 中 `core/tests/CMakeLists.txt` 必须无修改
+- 风险：
+  - 编码 agent 误把 `eippf_vm_rt` 宽链接到 `eippf_runtime`
+  - Owner：
+    - `Architecture Reviewer`
+    - `Security Reviewer`
+  - Mitigation：
+    - 审核 `core/runtime/CMakeLists.txt` 只能补 `backend_policy.cpp` 到 `eippf_vm_rt`
+- 风险：
+  - 链接恢复后，safe-target 行为被无意改变
+  - Owner：
+    - `Engineer`
+    - `Security Reviewer`
+    - `Validation Reviewer`
+  - Mitigation：
+    - 必跑 backend policy + safe-target 回归矩阵
+
+State Snapshot:
+- 当前总目标仍为 `Phase 3`：
+  - `Windows .exe/.dll`
+  - `Linux ELF/.so`
+  - `Android .so`
+- 已通过的计划文件：
+  - `/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt`
+  - `/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt`
+  - `/workspace/plan/2026-04-02-phase-3b-build-registration-delta.txt`
+- 2026-04-02 实际复现结果：
+  - `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja` 成功
+  - `cmake --build /workspace/build_phase3 -j --target vm_runtime_bridge_vm2_test` 失败
+  - 失败目标：
+    - `tests/vm_runtime_bridge_vm2_test`
+  - 真实 undefined reference：
+    - `eippf::runtime::backend::target_kind_supports_desktop_jit(...)`
+    - `eippf::runtime::backend::target_forbids_runtime_executable_pages(...)`
+- 当前代码事实：
+  - `/workspace/core/runtime/include/runtime/memory_hal.hpp` 的 `runtime_dynamic_code_allowed()` 直接调用上述 helper。
+  - `/workspace/core/runtime/src/backend_policy.cpp` 提供上述 helper 的唯一实现。
+  - `/workspace/core/runtime/CMakeLists.txt` 中：
+    - `eippf_runtime` 已包含 `src/backend_policy.cpp`
+    - `eippf_vm_rt` 尚未包含 `src/backend_policy.cpp`
+  - `/workspace/core/tests/CMakeLists.txt` 中：
+    - `vm_runtime_bridge_vm2_test` 只链接 `eippf_vm_rt`
+- 下一动作：
+  - 先由 `PM / main_agent` 分发给 `Architecture Reviewer`、`Security Reviewer`、`Validation Reviewer` 独立审核本计划。
+  - 三审全部 `PASS` 后，PM 才向 `Engineer` 下发本计划中的单文件编码任务，不追加自由设计空间。

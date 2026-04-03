@@ -1,0 +1,75 @@
+# 2026-04-02 Phase 2B.1b Deterministic Plan Sync Validation Delta 微计划
+
+执行模式：`real-multi-agent`
+角色：`Agent 1 (Planner)`、`Agent 2 (Engineer)`、`Agent 3 (Security Reviewer)`
+
+基线输入：
+1. `/workspace/plan/2026-04-02-phase-2b1a-validation-closure-plan.txt`
+2. `/workspace/plan/2026-04-02-phase-2b1-gate-token-fix-plan.txt`
+3. `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+4. `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+唯一目标：
+- 仅修复 `Phase 2B.1a` 的文档同步验证命令，使其 deterministic，并消除 `wc -l == 2`、`! rg ...` 带来的假阳性/假通过。
+
+硬边界：
+1. 只允许修复文档同步验证命令，不改工程实现范围。
+2. 不改 `JITEnclavePass` 行为，不改 `core/passes/**`、`core/runtime/**`、`core/wrapper/**`、`core/mutator/**`、`core/tests/**`。
+3. 不新增功能、不扩测试矩阵、不改构建链路。
+4. 不扩 scope 到 `Phase 2A/2C` 或其他里程碑。
+
+允许改动文件（本 delta 执行时）：
+1. `/workspace/plan/2026-04-02-phase-2b1a-validation-closure-plan.txt`
+
+禁止改动文件：
+1. `/workspace/core/**`
+2. `/workspace/plan/2026-04-02-phase-2b1-gate-token-fix-plan.txt`
+3. `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+4. `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+## Phase 1：范围冻结与替换点定位（Agent 1）
+1. 保留 `Phase 2B.1a` 的步骤 1-4（configure/build/ctest/ctest）不变。
+2. 仅替换 `Phase 2B.1a` 中原步骤 5-6 的命令形态。
+3. 固定同步对象仍为两份文档：
+   - `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+   - `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+## Phase 2：Deterministic 固定验收命令（Agent 2）
+以下命令按序执行，不可删减。
+
+1. `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+2. `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+3. `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+4. `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+
+逐文件正向校验命令（替代 `wc -l == 2`）：
+5. `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+6. `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+鲁棒旧措辞清理命令（替代 `! rg ...`，显式区分无匹配/命中/读失败）：
+7. `f=/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt; p='stderr 首 token|stderr contains jit_route_forbidden_for_target|stderr contains gate code|contains 即可|stderr 中稳定含|stderr 包含'; rg -n -e "$p" "$f"; rc=$?; if [ "$rc" -eq 1 ]; then echo "legacy-clean:$f"; elif [ "$rc" -eq 0 ]; then echo "legacy-phrase-detected:$f"; exit 1; else echo "read-failed:$f"; exit 2; fi`
+8. `f=/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt; p='stderr 首 token|stderr contains jit_route_forbidden_for_target|stderr contains gate code|contains 即可|stderr 中稳定含|stderr 包含'; rg -n -e "$p" "$f"; rc=$?; if [ "$rc" -eq 1 ]; then echo "legacy-clean:$f"; elif [ "$rc" -eq 0 ]; then echo "legacy-phrase-detected:$f"; exit 1; else echo "read-failed:$f"; exit 2; fi`
+
+## Phase 3：评审准入标准（Agent 3）
+Architecture Reviewer：
+1. 命令中不再出现 `wc -l == 2`。
+2. 命令中不再出现 `! rg` 作为判定逻辑。
+3. 仅 `plan` 文档命令层变更，`core/**` 零改动。
+
+Security Reviewer：
+1. 黑名单覆盖旧措辞及变体：`stderr 首 token`、`stderr contains ...`、`stderr contains gate code`、`contains 即可`、`stderr 中稳定含`、`stderr 包含`。
+2. 清理命令对 `rg` 返回码实现 fail-closed：
+   - `1` 视为无匹配通过；
+   - `0` 视为命中失败；
+   - `2` 视为读失败并失败。
+
+Validation Reviewer：
+1. 两条逐文件正向校验命令均返回 `0`。
+2. 两条旧措辞清理命令均输出 `legacy-clean:<file>` 并返回 `0`。
+3. 两次 `ctest` 均 `PASS`，满足同机重复一致性。
+
+关闭条件：
+1. `Architecture Reviewer = PASS`
+2. `Security Reviewer = PASS`
+3. `Validation Reviewer = PASS`
+4. 状态置为 `ready_to_reopen_phase_2b1a_validation_closure_with_deterministic_plan_sync`

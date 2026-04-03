@@ -1,0 +1,75 @@
+# 2026-04-02 Phase 2B.1a Validation Closure Delta 微计划
+
+执行模式：`real-multi-agent`
+角色：`Agent 1 (Planner/PM)`、`Agent 2 (Engineer)`、`Agent 3 (Security Reviewer)`
+
+问题定位：
+- Validation Reviewer 在 `Phase 2B.1 Plan Review` 的唯一 `FAIL` 只剩 2 条：
+1. 固定 3 条命令未覆盖“两份计划文档口径同步”的验证闭环。
+2. 计划要求“同机重复执行一致”，但仅执行 1 次 `ctest`。
+
+硬边界：
+1. 仅补验证闭环，不改工程实现范围。
+2. 不改 `JITEnclavePass` 行为，不改 pass/runtime/wrapper/mutator 代码。
+3. 不新增功能、不扩测试矩阵、不改构建链路。
+
+允许改动文件（仅计划文档）：
+1. `/workspace/plan/2026-04-02-phase-2b1-gate-token-fix-plan.txt`
+2. `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+3. `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+4. `/workspace/plan/2026-04-02-phase-2b1a-validation-closure-plan.txt`
+
+禁止改动文件（显式冻结）：
+1. `/workspace/core/passes/src/JITEnclavePass.cpp`
+2. `/workspace/core/passes/include/passes/JITEnclavePass.hpp`
+3. `/workspace/core/runtime/**`
+4. `/workspace/core/wrapper/**`
+5. `/workspace/core/mutator/**`
+6. `/workspace/core/tests/**`
+
+## Phase 1：Delta 范围冻结（Agent 1 / Planner）
+1. 保留 `Phase 2B.1` 原工程任务不变，唯一补丁为“验收步骤补全”。
+2. 口径基线固定为：`stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:`。
+3. 两份计划文档同步闭环固定对象：
+   - `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+   - `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+## Phase 2：更新版固定验收步骤（PM 可直接下发）
+执行要求：必须同一台机器、同一构建目录、按序执行，不可删减。
+
+1. `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+2. `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+3. `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+4. `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+5. `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+6. `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+7. `f=/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt; p='stderr 首 token|stderr contains jit_route_forbidden_for_target|stderr contains gate code|contains 即可|stderr 中稳定含|stderr 包含'; rg -n -e "$p" "$f"; rc=$?; if [ "$rc" -eq 1 ]; then echo "legacy-clean:$f"; elif [ "$rc" -eq 0 ]; then echo "legacy-phrase-detected:$f"; exit 1; else echo "read-failed:$f"; exit 2; fi`
+8. `f=/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt; p='stderr 首 token|stderr contains jit_route_forbidden_for_target|stderr contains gate code|contains 即可|stderr 中稳定含|stderr 包含'; rg -n -e "$p" "$f"; rc=$?; if [ "$rc" -eq 1 ]; then echo "legacy-clean:$f"; elif [ "$rc" -eq 0 ]; then echo "legacy-phrase-detected:$f"; exit 1; else echo "read-failed:$f"; exit 2; fi`
+
+固定核对步骤（与命令绑定）：
+1. 第 3、4 步都必须 `PASS`，且都显示 `jit_enclave_pipeline_gate_test` 的执行通过。
+2. 第 5、6 步都必须返回成功，表示两份文档逐文件落地同一新口径。
+3. 第 7、8 步都必须输出 `legacy-clean:<file>` 并返回 `0`，表示旧口径与歧义措辞已从两份文档清理。
+
+## Phase 3：三角审查清单（不变更角色，仅补验证闭环）
+Architecture Reviewer Checklist：
+1. Diff 仅出现在 `plan/**`，无任何 `core/**` 代码改动。
+2. `JITEnclavePass` 相关源文件零变更，行为边界不变。
+3. 不引入新任务卡与新模块。
+
+Security Reviewer Checklist：
+1. fail-closed 语义仅做验证补强，无行为放宽。
+2. 口径从“contains”歧义收敛为“首个非空行前缀”，且两份文档一致。
+3. 无 runtime/wrapper/mutator 侧影响。
+
+Validation Reviewer Checklist：
+1. 固定验收步骤包含文档口径同步闭环（步骤 5、6）。
+2. 固定验收步骤包含同机重复 `ctest`（步骤 3、4）。
+3. 固定验收步骤包含逐文件旧措辞清理闭环（步骤 7、8）。
+4. 以上 8 步可在同机复现并全部通过。
+
+关闭条件：
+1. `Architecture Reviewer = PASS`
+2. `Security Reviewer = PASS`
+3. `Validation Reviewer = PASS`
+4. 状态置为 `ready_to_reopen_phase_2b1_gate_token_alignment`

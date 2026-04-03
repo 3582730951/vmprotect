@@ -1,0 +1,99 @@
+# 2026-04-02 Phase 2B JITEnclave Desktop-Only Confinement Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 只收口 `JITEnclavePass` / plugin / pipeline gate。
+- 目标：只有 `desktop_native` 允许 JITEnclave rewrite；其他 target 命中 JIT route 必须 pass/pipeline fail-closed。
+
+Task Charter:
+- Objective:
+  - 在 pass/pipeline 层完成 `JITEnclave` 的 desktop-only confinement，不依赖 runtime。
+- Scope:
+  - `core/passes/include/passes/JITEnclavePass.hpp`
+  - `core/passes/src/JITEnclavePass.cpp`
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- Non-Goals:
+  - 不改 runtime
+  - 不改 mutator
+  - 不改 wrapper
+  - 不改 artifact audit
+- Constraints:
+  - 只允许 1 个新增测试源文件
+  - gate code 必须进入编译诊断
+- Acceptance Criteria:
+  - `desktop_native + jit route` 编译通过
+  - forbidden/unknown/missing target-kind + jit route` 编译失败
+  - `stderr` 首个非空行前缀为 `error: jit_route_forbidden_for_target:`
+  - `forbidden + non-jit route` 编译通过
+- Forbidden Shortcuts:
+  - 禁止静默跳过
+  - 禁止 warning 后继续
+  - 禁止缺失 target-kind 默认成 desktop
+
+Design Decisions:
+- `JITEnclavePass` target 判定唯一输入：
+  - `-mllvm -eippf-target-kind=<name>`
+- target 缺失时：
+  - 视为 `unknown`
+- 仅 `desktop_native` 允许 rewrite
+- 非 desktop 命中 JIT route 时：
+  - `emitError("jit_route_forbidden_for_target ...")`
+  - pass fail-closed
+- 非 desktop 且未命中 JIT route 时：
+  - 允许通过
+
+File Ownership:
+- PM:
+  - `plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+- Engineer:
+  - `core/passes/include/passes/JITEnclavePass.hpp`
+  - `core/passes/src/JITEnclavePass.cpp`
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- Reviewers:
+  - read-only
+
+Engineer Task Card:
+- 文件 `[JITEnclavePass.cpp](/workspace/core/passes/src/JITEnclavePass.cpp)`
+  - 解析 `-eippf-target-kind`
+  - 默认 `unknown`
+  - `jit_targets` 非空且 target 不是 `desktop_native`：
+    - `emitError("jit_route_forbidden_for_target ...")`
+    - fail-closed
+  - `desktop_native` 继续沿用现有 rewrite 逻辑
+- 文件 `[JITEnclavePass.hpp](/workspace/core/passes/include/passes/JITEnclavePass.hpp)`
+  - 只加最小声明，支撑 target-kind 与 gate 逻辑
+- 文件 `[core/tests/tools/CMakeLists.txt](/workspace/core/tests/tools/CMakeLists.txt)`
+  - 新增 `jit_enclave_pipeline_gate_test`
+  - 注入 clang 路径和 `eippf_jit_enclave_pass` 插件路径
+  - 注册 `add_test(NAME jit_enclave_pipeline_gate_test COMMAND jit_enclave_pipeline_gate_test)`
+- 文件 `[jit_enclave_pipeline_gate_test.cpp](/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp)`
+  - 构造最小 jit-route 源和 non-jit-route 源
+  - 子进程调用 clang + pass plugin + `-mllvm -eippf-target-kind=...`
+  - 覆盖矩阵：
+    - `desktop_native + jit route -> success`
+    - `android_so/ios_appstore/windows_driver/linux_kernel_module/android_kernel_module/android_dex/shell_ephemeral/unknown + jit route -> fail + stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:`
+    - `missing target-kind + jit route -> fail + stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:`
+    - `forbidden target + non-jit route -> success`
+- 固定命令：
+  - `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+  - `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+  - `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+
+Reviewer Checklist:
+- Architecture Reviewer:
+  - desktop-only confinement 已完全落在 pass/pipeline 层
+  - gate 只针对 JIT route
+- Security Reviewer:
+  - forbidden/unknown/missing target-kind 命中 JIT route 必然失败
+  - `stderr` 首个非空行前缀为 `error: jit_route_forbidden_for_target:`
+- Validation Reviewer:
+  - 单测矩阵覆盖 allow / forbid / missing / non-jit allow
+  - 固定命令可复现

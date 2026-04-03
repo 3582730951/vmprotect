@@ -1,0 +1,152 @@
+# 2026-04-02 Phase 3b / build registration delta
+
+依附关系:
+- 本文件依附于 [2026-04-02-phase-3-user-mode-mainline-plan.txt](/workspace/plan/2026-04-02-phase-3-user-mode-mainline-plan.txt)。
+- 本文件依附于 [2026-04-02-phase-3a-plan-closure-delta.txt](/workspace/plan/2026-04-02-phase-3a-plan-closure-delta.txt)。
+- 本文件只修补 `Phase 3/3a` 的 CMake 接线所有权与顺序，不替代主计划与 `3a` delta。
+
+Task Charter Delta:
+- Objective:
+  - 只关闭 `Phase 3` 的执行级 blocker：新增生产源与测试源虽然已在 `Phase 3` 中获得文件所有权，但对应的 `CMakeLists.txt` 接线所有权与修改顺序尚未显式定义，直接开工会导致“代码落地后无法接入构建”。
+- Scope:
+  - 只补 `CMakeLists.txt` 接线所有权与顺序。
+  - 不改变 `Phase 3/3a` 的 scope、安全门、freeze gate。
+  - 不新增或删除工程轨。
+- Non-Goals:
+  - 不重写 `Phase 3/3a`。
+  - 不改变 `Track A/B/C/D` 的总体职责。
+  - 不让 PM 接管实现代码。
+
+Architecture Contract Delta:
+- 新增生产源的接线规则：
+  - `Track A` 新增 `string_token_runtime.cpp/.hpp`，其生产接线由：
+    - `core/passes/CMakeLists.txt`
+    - `core/runtime/CMakeLists.txt`
+    负责。
+  - `Track B` 新增 `pe_user_mode_mutator.cpp` / `elf_user_mode_mutator.cpp`，其生产接线由：
+    - `core/post_link_mutator/CMakeLists.txt`
+    负责。
+  - `Track C` 新增 `android_so_policy.cpp/.hpp`，其生产接线由：
+    - `core/runtime/CMakeLists.txt`
+    负责。
+- 新增测试源的接线规则：
+  - `Track A` 测试源：
+    - `core/tests/passes/string_protection_pass_test.cpp`
+    - `core/tests/runtime/security/string_token_runtime_test.cpp`
+    - 其测试注册由 `Track D` 统一拥有：
+      - `core/tests/CMakeLists.txt`
+      - `core/tests/passes/CMakeLists.txt`（新文件）
+      - `core/tests/runtime/security/CMakeLists.txt`（新文件）
+  - `Track B` 测试源：
+    - `core/tests/post_link_mutator/post_link_mutator_user_mode_contract_test.cpp`
+    - `core/tests/tools/artifact_audit_user_mode_test.cpp`
+    - 其测试注册由 `Track D` 统一拥有：
+      - `core/tests/post_link_mutator/CMakeLists.txt`
+      - `core/tests/tools/CMakeLists.txt`
+  - `Track C` 测试源：
+    - `core/tests/runtime/security/android_so_policy_test.cpp`
+    - `core/tests/tools/android_so_pipeline_smoke_test.cpp`
+    - 其测试注册由 `Track D` 统一拥有：
+      - `core/tests/runtime/security/CMakeLists.txt`
+      - `core/tests/tools/CMakeLists.txt`
+  - `Track D` 自身测试源：
+    - `core/tests/tools/user_mode_pipeline_test.cpp`
+    - `core/tests/perf/user_mode_perf_smoke_test.cpp`
+    - 其测试注册由 `Track D` 统一拥有：
+      - `core/tests/tools/CMakeLists.txt`
+      - `core/tests/perf/CMakeLists.txt`（新文件）
+      - `core/tests/CMakeLists.txt`
+- 唯一共享生产 `CMakeLists.txt` seam：
+  - `core/runtime/CMakeLists.txt` 是唯一允许的 PM 顺序共享文件。
+  - 顺序固定：
+    1. `Track A` 先修改 `core/runtime/CMakeLists.txt`，只接入 `string_token_runtime.cpp`
+    2. `Track A` 合并并通过最小生产构建后，`Track C` 才允许修改同一文件，只接入 `android_so_policy.cpp`
+  - 禁止并发修改；若 `Track C` 在 `Track A` 之前改动该文件，视为越权。
+- 其余 `CMakeLists.txt` 仍保持单写者，不允许共享并发。
+
+State Snapshot Delta:
+- `Phase 3/3a` 的架构方向、scope、安全门、freeze gate 已通过 reviewer。
+- 当前新增 blocker 只剩“接线权未显式分配”。
+- 解决原则：
+  - 生产接线跟随生产轨所有权
+  - 测试接线统一归 `Track D`
+  - 仅 `core/runtime/CMakeLists.txt` 允许 PM 顺序共享
+
+File Ownership Delta:
+- `Track A` 新增拥有：
+  - `core/passes/CMakeLists.txt`
+  - `core/runtime/CMakeLists.txt`（先手 owner，限 `string_token_runtime.cpp` 接线）
+- `Track B` 新增拥有：
+  - `core/post_link_mutator/CMakeLists.txt`
+- `Track C` 新增拥有：
+  - `core/runtime/CMakeLists.txt`（后手 owner，限 `android_so_policy.cpp` 接线；仅在 `Track A` 合并后可编辑）
+- `Track D` 新增拥有：
+  - `core/tests/CMakeLists.txt`
+  - `core/tests/passes/CMakeLists.txt`（新文件）
+  - `core/tests/runtime/security/CMakeLists.txt`（新文件）
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/perf/CMakeLists.txt`（新文件）
+
+Dependencies Delta:
+- `Track A`
+  - 可立即开始；其最小本地构建依赖自身生产接线完成。
+- `Track B`
+  - 可立即开始；其最小本地构建依赖自身生产接线完成。
+- `Track C`
+  - 生产代码可先写，但不得先于 `Track A` 修改 `core/runtime/CMakeLists.txt`。
+  - 本地最小构建前提是 `Track A` 已完成 `core/runtime/CMakeLists.txt` 先手接线并合并。
+- `Track D`
+  - 只能在 `Track A/B/C` 的测试源与生产源均落地后统一接测试注册。
+  - `Track D` 不得代替 `A/B/C` 修改生产模块 `CMakeLists.txt`。
+
+Merge Order Delta:
+- `M1`: Track A 生产源 + `core/passes/CMakeLists.txt` + `core/runtime/CMakeLists.txt`（先手）
+- `M2`: Track B 生产源 + `core/post_link_mutator/CMakeLists.txt`
+- `M3`: Track C 生产源 + `core/runtime/CMakeLists.txt`（后手）
+- `M4`: Track D 测试注册 + tests/perf/evidence
+- `M5`: PM integration
+- `M6`: Phase 3 final reviews
+
+PM Task Card Delta:
+- `Track A`
+  - 在原白名单基础上新增：
+    - `core/passes/CMakeLists.txt`
+    - `core/runtime/CMakeLists.txt`
+  - 强制步骤补充：
+    1. 在 `core/passes/CMakeLists.txt` 接入本轨新增 pass / include 依赖。
+    2. 在 `core/runtime/CMakeLists.txt` 只接入 `string_token_runtime.cpp`。
+    3. 不得提前接入 `android_so_policy.cpp`。
+- `Track B`
+  - 在原白名单基础上新增：
+    - `core/post_link_mutator/CMakeLists.txt`
+  - 强制步骤补充：
+    1. 在 `core/post_link_mutator/CMakeLists.txt` 接入 `pe_user_mode_mutator.cpp` 与 `elf_user_mode_mutator.cpp` 到 `eippf_post_link_mutator_core`。
+    2. 不得接触任何 `tests` CMake 文件。
+- `Track C`
+  - 在原白名单基础上新增：
+    - `core/runtime/CMakeLists.txt`
+  - 强制步骤补充：
+    1. 先完成 `android_so_policy.cpp/.hpp` 实现。
+    2. 只有在 PM 明确宣布 `Track A` 已合并后，才允许修改 `core/runtime/CMakeLists.txt`。
+    3. 在 `core/runtime/CMakeLists.txt` 只接入 `android_so_policy.cpp`，不得改动 `Track A` 已接入项。
+- `Track D`
+  - 在原白名单基础上新增：
+    - `core/tests/passes/CMakeLists.txt`
+    - `core/tests/runtime/security/CMakeLists.txt`
+    - `core/tests/perf/CMakeLists.txt`
+  - 强制步骤补充：
+    1. 统一注册 `Track A/B/C/D` 新增测试源。
+    2. 在 `core/tests/CMakeLists.txt` 增加新子目录或注册入口。
+    3. 在 `core/tests/tools/CMakeLists.txt` 统一接入：
+       - `artifact_audit_user_mode_test.cpp`
+       - `android_so_pipeline_smoke_test.cpp`
+       - `user_mode_pipeline_test.cpp`
+    4. 在 `core/tests/runtime/security/CMakeLists.txt` 统一接入：
+       - `string_token_runtime_test.cpp`
+       - `android_so_policy_test.cpp`
+    5. 在 `core/tests/passes/CMakeLists.txt` 接入：
+       - `string_protection_pass_test.cpp`
+    6. 在 `core/tests/perf/CMakeLists.txt` 接入：
+       - `user_mode_perf_smoke_test.cpp`
+    7. 不得代替 `Track A/B/C` 修改生产模块 `CMakeLists.txt`。

@@ -1,0 +1,81 @@
+# 2026-04-02 Phase 2B.1 Gate Token Assertion Alignment 最小微计划
+
+执行模式：`real-multi-agent`
+角色：`Agent 1 (Planner/PM)`、`Agent 2 (Engineer)`、`Agent 3 (Security Reviewer)`
+
+唯一 Blocker：
+- 安全审 `FAIL` 的唯一原因是计划口径写“`stderr 首 token`”，但当前自动化仅断言 `stderr` 包含 `jit_route_forbidden_for_target` 子串。
+- 已知真实首行：`error: jit_route_forbidden_for_target: target_kind=android_so`
+
+硬边界：
+1. 只允许修复测试断言和必要计划口径对齐。
+2. 不改 `JITEnclavePass` 行为，不改其诊断文本生成逻辑。
+3. 不改 `runtime/wrapper/mutator`。
+4. 不新增功能，不扩测试矩阵，不改构建链路。
+
+允许改动文件：
+1. `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+2. `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+3. `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+
+禁止改动文件：
+1. `/workspace/core/passes/src/JITEnclavePass.cpp`
+2. `/workspace/core/runtime/**`
+3. `/workspace/core/wrapper/**`
+4. `/workspace/core/mutator/**`
+
+## Phase 1：验收口径冻结（PM）
+1. gate 失败用例统一口径为：`stderr` 首个非空行必须以前缀 `error: jit_route_forbidden_for_target:` 开头。
+2. 同时保留 `stderr` 包含子串 `jit_route_forbidden_for_target` 的断言。
+3. “首 token”术语在本仓统一解释为“首个非空行的 gate 前缀 token（含 `error:`）”。
+
+## Phase 2：工程任务卡（PM 可直接下发 Agent 2）
+任务标题：`Phase 2B.1 / tighten gate stderr prefix assertion`
+任务边界：仅编辑 `/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp`。
+
+执行步骤（不可自由发挥）：
+1. 新增常量：`kGateErrorLinePrefix = "error: jit_route_forbidden_for_target:"`。
+2. 在 `expect_compile_gate_failure(...)` 中保留原有两项断言：退出码非 0；`stderr` 包含 `jit_route_forbidden_for_target`。
+3. 新增严格断言：提取 `stderr` 首个非空行，断言其以 `kGateErrorLinePrefix` 开头（prefix match，不是 contains）。
+4. 失败提示文案固定为：`expected first non-empty stderr line to start with error: jit_route_forbidden_for_target:`。
+5. 不改测试矩阵，不改 clang 调用参数，不改用例数量。
+
+固定验证命令：
+1. `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+2. `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+3. `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+
+提交标准：
+1. 仅 1 个代码文件改动：`jit_enclave_pipeline_gate_test.cpp`。
+2. 上述 3 条命令全部 `PASS`。
+
+## Phase 3：计划口径对齐（PM）
+1. 在 `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt` 将“`stderr 首 token`”改为“`stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:`”。
+2. 在 `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt` 的 `Phase 2B Final Review` 与 `Phase 2B.1` 段落同步同一口径，删除“contains 即可”的歧义表述。
+3. 不改其他 phase 内容。
+
+## Reviewer Checklists
+
+Architecture Reviewer Checklist：
+1. Diff 仅出现在允许文件集合内。
+2. `JITEnclavePass.cpp` 无改动，pass 行为无变化。
+3. 未触碰 runtime/wrapper/mutator。
+4. 计划文本与测试断言使用同一诊断口径，无双重定义。
+
+Security Reviewer Checklist：
+1. 所有 gate 失败场景仍是 fail-closed（退出码非 0）。
+2. 失败场景断言已从“contains”收紧为“首个非空 stderr 行 prefix”。
+3. `jit_route_forbidden_for_target` 仍有显式子串断言。
+4. `missing target-kind + jit route` 受同一严格前缀断言约束。
+
+Validation Reviewer Checklist：
+1. 固定 3 条命令可复现并全部通过。
+2. `jit_enclave_pipeline_gate_test` 用例数量与矩阵未变化。
+3. 失败日志首行形态匹配：`error: jit_route_forbidden_for_target: target_kind=<...>`。
+4. 无新增 flaky 行为（同机重复执行一致）。
+
+关闭条件：
+1. `Architecture Reviewer = PASS`
+2. `Security Reviewer = PASS`
+3. `Validation Reviewer = PASS`
+4. 状态置为 `ready_to_unblock_phase_2b_security_gate`

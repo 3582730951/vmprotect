@@ -1,8 +1,12 @@
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #ifndef EIPPF_HARDENED_FIXTURE_PATH
 #error "EIPPF_HARDENED_FIXTURE_PATH must be defined"
@@ -22,6 +26,8 @@
 
 namespace {
 
+constexpr std::string_view kMutationTrailerMagic = "EIPPFMT1";
+
 bool expect(bool condition, const char* message) {
   if (!condition) {
     std::cerr << "[FAIL] " << message << '\n';
@@ -36,6 +42,35 @@ bool expect(bool condition, const char* message) {
     return {};
   }
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::vector<std::uint8_t> read_binary_file(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {};
+  }
+  return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(in),
+                                   std::istreambuf_iterator<char>());
+}
+
+bool expect_trailer_magic_and_version(const std::vector<std::uint8_t>& bytes) {
+  if (!expect(bytes.size() > kMutationTrailerMagic.size(),
+              "fixture must include trailer payload")) {
+    return false;
+  }
+  const auto magic_begin = std::search(bytes.begin(),
+                                       bytes.end(),
+                                       kMutationTrailerMagic.begin(),
+                                       kMutationTrailerMagic.end());
+  if (!expect(magic_begin != bytes.end(), "fixture trailer magic missing")) {
+    return false;
+  }
+  const auto version_it =
+      magic_begin + static_cast<std::ptrdiff_t>(kMutationTrailerMagic.size());
+  if (!expect(version_it != bytes.end(), "fixture trailer version byte missing")) {
+    return false;
+  }
+  return expect(*version_it == 1u, "fixture trailer version mismatch");
 }
 
 }  // namespace
@@ -72,6 +107,19 @@ int main() {
   }
   if (!expect(manifest.find("\"target_kind\": \"desktop_native\"") != std::string::npos,
               "manifest target kind mismatch")) {
+    return 1;
+  }
+  if (!expect(manifest.find("\"target_kind_source\": \"explicit_cli\"") != std::string::npos,
+              "manifest target kind source mismatch")) {
+    return 1;
+  }
+  if (!expect(manifest.find("\"signing_profile\": \"unsigned_dev_or_sign_after_mutation\"") !=
+                  std::string::npos,
+              "manifest signing profile mismatch")) {
+    return 1;
+  }
+
+  if (!expect_trailer_magic_and_version(read_binary_file(fixture_path))) {
     return 1;
   }
 

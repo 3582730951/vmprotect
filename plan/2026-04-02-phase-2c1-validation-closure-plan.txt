@@ -1,0 +1,147 @@
+# 2026-04-02 Phase 2C1 Validation Closure Delta 微计划
+
+执行模式:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+## Delta 目标（仅补验证闭环）
+1. 仅针对 `Phase 2C` 的 Validation FAIL 做最小重规划，不改变原阶段目标与边界。
+2. 把以下 4 个 blocker 变为可执行、可复验、可拒绝的硬验收：
+- `library + thin main` 与模块边界证明。
+- 退出码 `2..11` 与 trailer `magic/version` 硬断言。
+- `target_kind_source = derived_from_target_label` 路径验证。
+- 新增测试与 pipeline 补强与验收项强绑定（缺一即 FAIL）。
+
+## 范围与非目标（继承 Phase 2C）
+1. 允许修改目录：
+- `core/post_link_mutator/**`
+- `core/tests/post_link_mutator/**`
+- `core/tests/tools/hardened_target_pipeline_test.cpp`
+- `core/tests/post_link_mutator/CMakeLists.txt`
+- `core/post_link_mutator/CMakeLists.txt`（仅测试装配所需最小改动）
+2. 明确非目标：
+- 不扩展到 `runtime/wrapper/passes`。
+- 不新增 Phase 3+ 语义，不做深度二进制重写。
+
+## Phase 2C1-A：薄入口与模块边界可执行证明
+
+PM Task Card 2C1-A.1（新增结构证明测试）
+1. 新增文件：
+- `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+2. 在该测试中固定实现以下断言（全部必须）：
+- 读取 `core/post_link_mutator/src/main.cpp`，硬断言包含且仅包含入口委派语义：
+  - 必含：`return run_mutator(argc, argv, std::cout, std::cerr);`
+- 读取 `main.cpp`，硬断言不包含以下核心逻辑标识（任一出现即失败）：
+  - `detect_base_artifact_kind(`
+  - `classify_target_kind(`
+  - `target_kind_matches_artifact_kind(`
+  - `mutate_artifact(`
+  - `build_mutation_trailer(`
+  - `write_manifest(`
+- 读取 `core/post_link_mutator/CMakeLists.txt`，硬断言存在 `library + thin main` 装配：
+  - 必含 `add_library(eippf_post_link_mutator_core`。
+  - 必含 `add_executable(eippf_post_link_mutator` 且该 executable 仅编译 `src/main.cpp`。
+  - 必含 `target_link_libraries(eippf_post_link_mutator PRIVATE eippf_post_link_mutator_core)`。
+3. CMake 装配要求：
+- 在 `core/tests/post_link_mutator/CMakeLists.txt` 注册：
+  - `add_executable(post_link_mutator_thin_entry_proof_test ...)`
+  - `add_test(NAME post_link_mutator_thin_entry_proof_test COMMAND post_link_mutator_thin_entry_proof_test)`
+
+PM Task Card 2C1-A.2（薄入口证明纳入 Validation Gate）
+1. `Validation Reviewer` 不再接受人工说明“已薄入口”。
+2. 必须以 `post_link_mutator_thin_entry_proof_test` 通过作为唯一证明证据。
+
+## Phase 2C1-B：退出码 2..11 与 Trailer Magic/Version 硬断言
+
+PM Task Card 2C1-B.1（新增退出码与 trailer 合同测试）
+1. 新增文件：
+- `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+2. 测试必须覆盖并硬断言：
+- `exit code = 2`：参数缺失/非法 CLI。
+- `exit code = 3`：输入文件不存在。
+- `exit code = 4`：未知工件魔数。
+- `exit code = 5`：非法 `--target-kind` hint。
+- `exit code = 6`：target/artifact 不匹配。
+- `exit code = 7`：输入读取失败（通过测试钩子强制）。
+- `exit code = 8`：backend 解析为 unknown（通过测试钩子强制）。
+- `exit code = 9`：mutation 输出与输入相同（通过测试钩子强制）。
+- `exit code = 10`：输出文件写入失败。
+- `exit code = 11`：manifest 写入失败。
+3. 测试钩子固定方案（不给工程 Agent 设计空间）：
+- 在 `post_link_mutator` 内增加仅供测试调用的 `run_mutator_with_test_fault(...)`。
+- 固定 fault 枚举：
+  - `kNone`
+  - `kForceReadInputFailure`（命中 code 7）
+  - `kForceBackendUnknown`（命中 code 8）
+  - `kForceMutationIdentity`（命中 code 9）
+- `main.cpp` 仍只调用无 fault 的 `run_mutator(...)`；生产路径不可启用 fault。
+4. Trailer 硬断言（同一测试内必须包含）：
+- 对成功变异输出读取尾部 trailer，硬断言：
+  - magic 固定为 `EIPPFMT1`。
+  - version 固定为 `1`。
+- 任一不符直接 FAIL。
+
+PM Task Card 2C1-B.2（CMake 与 ctest 注册）
+1. 在 `core/tests/post_link_mutator/CMakeLists.txt` 新增：
+- `post_link_mutator_exit_code_trailer_contract_test` target。
+- 对应 `add_test(...)` 注册。
+
+## Phase 2C1-C：`derived_from_target_label` 路径硬验证
+
+PM Task Card 2C1-C.1（补强 smoke 测试）
+1. 修改文件：
+- `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+2. 必加成功用例（不允许替代）：
+- 不传 `--target-kind`，使用 ELF + `target_label=android_kernel_module.ko`。
+- 硬断言 manifest：
+  - `\"target_kind_source\": \"derived_from_target_label\"`
+  - `\"target_kind\": \"android_kernel_module\"`
+  - `\"artifact_kind\": \"linux_kernel_module_ko\"`
+3. 必加失败用例（不允许替代）：
+- 不传 `--target-kind`，构造 label/artifact 不匹配，硬断言退出码为 `6`。
+
+PM Task Card 2C1-C.2（补强 pipeline 测试）
+1. 修改文件：
+- `core/tests/tools/hardened_target_pipeline_test.cpp`
+2. 必加 manifest 断言：
+- `\"target_kind_source\": \"explicit_cli\"`
+- `\"signing_profile\": \"unsigned_dev_or_sign_after_mutation\"`
+3. 必加 trailer 断言：
+- 从 hardened fixture 二进制尾部读取 trailer，硬断言 `magic=EIPPFMT1`、`version=1`。
+
+## Phase 2C1-D：验收强绑定与固定验证命令重定义
+
+PM Task Card 2C1-D.1（测试清单与验收项强绑定）
+1. 验收项改为 AC 绑定，任何一项缺失即整体验收 FAIL：
+- `AC-1 薄入口证明` -> `post_link_mutator_thin_entry_proof_test` 必须通过。
+- `AC-2 退出码与 trailer 合同` -> `post_link_mutator_exit_code_trailer_contract_test` 必须通过。
+- `AC-3 derived 路径` -> `post_link_mutator_smoke_test` 中新增 derived 成功/失败用例必须通过。
+- `AC-4 pipeline 补强` -> `hardened_target_pipeline_test` 新增断言必须通过。
+- `AC-5 模块边界回归` -> `post_link_mutator_target_classifier_test` 必须持续通过。
+2. Validation Reviewer 判定规则：
+- 不允许“任务卡已写入但未被 AC 绑定”情形；出现即 FAIL。
+
+PM Task Card 2C1-D.2（固定验证命令，替换原 fixed commands）
+1. `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+2. `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core post_link_mutator_smoke_test post_link_mutator_target_classifier_test post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test hardened_target_pipeline_test`
+3. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_smoke_test|post_link_mutator_target_classifier_test|hardened_target_pipeline_test'`
+4. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_smoke_test|post_link_mutator_target_classifier_test|hardened_target_pipeline_test'`（重复一次验证一致性）
+
+## 角色追踪（固定 3 角色）
+1. Agent 1 (Planner)
+- 维护本 delta 计划。
+- 将 AC-1..AC-5 与测试名一对一登记，验收时逐项勾验。
+2. Agent 2 (Engineer)
+- 仅按 2C1-A~D 指定文件与断言实现，不自行扩展设计。
+- 提交固定命令的完整通过证据。
+3. Agent 3 (Security Reviewer)
+- 审核 fail-closed 回归与测试钩子隔离性（生产路径不可触发 fault）。
+- 审核 `derived_from_target_label` 与 trailer 常量断言完整性。
+
+## 完成判据（Phase 2C1 关闭条件）
+1. AC-1..AC-5 全部通过。
+2. 固定验证命令 1..4 全部通过且重复执行一致。
+3. 任一 AC 缺失、任一测试未注册、任一断言被弱化，均判定 `Phase 2C1 FAIL`。
+4. 满足上述条件后，才允许将 `Phase 2C` 状态从 `Validation FAIL` 变更为 `Validation PASS`。

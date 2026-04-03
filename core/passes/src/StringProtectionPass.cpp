@@ -16,7 +16,6 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/IRBuilder.h"
-#include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Intrinsics.h"
@@ -34,6 +33,9 @@ constexpr std::uint64_t kFnv1aOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
 constexpr std::size_t kMaxStackStringSize = 1024u;
 constexpr llvm::StringLiteral kAppliedMarkerName("__eippf_inline_string_protect_applied");
+constexpr llvm::StringLiteral kDisallowedMarkerName("__eippf_string_disallowed_detected");
+constexpr llvm::StringLiteral kDecodeHelperSymbol("eippf_string_token_decode");
+constexpr llvm::StringLiteral kWipeHelperSymbol("eippf_string_token_wipe");
 
 struct CandidateInfo {
   llvm::GlobalVariable* global = nullptr;
@@ -87,6 +89,39 @@ std::uint8_t stream_mask(std::uint8_t key, std::size_t index) {
   const std::uint8_t salt =
       static_cast<std::uint8_t>(((index * 37u) + (index >> 1u) + 0x5Bu) & 0xFFu);
   return static_cast<std::uint8_t>(key ^ salt);
+}
+
+char ascii_to_lower(char value) {
+  if (value >= 'A' && value <= 'Z') {
+    return static_cast<char>(value - 'A' + 'a');
+  }
+  return value;
+}
+
+bool contains_ascii_token_ignore_case(llvm::StringRef haystack, llvm::StringRef token) {
+  if (token.empty() || haystack.size() < token.size()) {
+    return false;
+  }
+
+  for (std::size_t i = 0; i + token.size() <= haystack.size(); ++i) {
+    bool match = true;
+    for (std::size_t j = 0; j < token.size(); ++j) {
+      if (ascii_to_lower(haystack[i + j]) != ascii_to_lower(token[j])) {
+        match = false;
+        break;
+      }
+    }
+    if (match) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+bool has_disallowed_lexical_anchor(llvm::StringRef text) {
+  return contains_ascii_token_ignore_case(text, "tutorial") ||
+         contains_ascii_token_ignore_case(text, "crack");
 }
 
 std::uint8_t derive_key(const llvm::Module& module, const llvm::GlobalVariable& global,
@@ -167,8 +202,8 @@ bool is_eligible_for_rewrite(llvm::GlobalVariable& global) {
   return has_terminal_instruction_use && !disallowed;
 }
 
-llvm::DenseMap<llvm::GlobalVariable*, CandidateInfo> collect_and_encrypt_candidates(llvm::Module& module,
-                                                                                     bool& changed) {
+llvm::DenseMap<llvm::GlobalVariable*, CandidateInfo> collect_and_encrypt_candidates(
+    llvm::Module& module, bool& changed, bool& saw_disallowed) {
   llvm::DenseMap<llvm::GlobalVariable*, CandidateInfo> candidates;
   std::size_t ordinal = 0;
 
@@ -183,6 +218,10 @@ llvm::DenseMap<llvm::GlobalVariable*, CandidateInfo> collect_and_encrypt_candida
 
     const llvm::StringRef raw = data->getRawDataValues();
     if (raw.empty()) {
+      continue;
+    }
+    if (has_disallowed_lexical_anchor(raw)) {
+      saw_disallowed = true;
       continue;
     }
 
@@ -353,6 +392,29 @@ llvm::FunctionCallee get_free_callee(llvm::Module& module) {
   return module.getOrInsertFunction("free", free_ty);
 }
 
+llvm::FunctionCallee get_decode_helper_callee(llvm::Module& module) {
+  llvm::LLVMContext& ctx = module.getContext();
+  llvm::Type* i8_ty = llvm::Type::getInt8Ty(ctx);
+  llvm::Type* i8_ptr_ty = llvm::PointerType::getUnqual(i8_ty);
+  llvm::Type* size_ty = module.getDataLayout().getIntPtrType(ctx);
+  llvm::FunctionType* decode_ty =
+      llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {i8_ptr_ty, i8_ptr_ty, size_ty, i8_ty}, false);
+  return module.getOrInsertFunction(kDecodeHelperSymbol, decode_ty);
+}
+
+llvm::FunctionCallee get_wipe_helper_callee(llvm::Module& module) {
+  llvm::LLVMContext& ctx = module.getContext();
+  llvm::Type* i8_ptr_ty = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(ctx));
+  llvm::Type* size_ty = module.getDataLayout().getIntPtrType(ctx);
+  llvm::FunctionType* wipe_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), {i8_ptr_ty, size_ty}, false);
+  return module.getOrInsertFunction(kWipeHelperSymbol, wipe_ty);
+}
+
+llvm::Value* make_size_literal(llvm::Type* size_type, std::size_t value) {
+  return llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(size_type),
+                                static_cast<std::uint64_t>(value));
+}
+
 llvm::Function* get_trap_function(llvm::Module& module) {
   return llvm::Intrinsic::getDeclaration(&module, llvm::Intrinsic::trap);
 }
@@ -398,29 +460,18 @@ RuntimeState create_runtime_state(llvm::Function& function, const CandidateInfo&
   return state;
 }
 
-void emit_inline_decrypt(llvm::IRBuilder<>& builder, const CandidateInfo& candidate,
-                         llvm::Value* destination_ptr) {
+void emit_runtime_decode(llvm::IRBuilder<>& builder, const CandidateInfo& candidate,
+                         llvm::Value* destination_ptr, llvm::FunctionCallee decode_callee) {
   llvm::Type* i8_ty = builder.getInt8Ty();
   llvm::Type* i8_ptr_ty = llvm::PointerType::getUnqual(i8_ty);
 
   llvm::Value* encrypted_base = builder.CreatePointerCast(candidate.global, i8_ptr_ty, "eippf.enc.base");
   llvm::Value* dst_base = builder.CreatePointerCast(destination_ptr, i8_ptr_ty, "eippf.dec.base");
 
-  for (std::size_t i = 0; i < candidate.byte_count; ++i) {
-    llvm::Value* index = builder.getInt64(static_cast<std::uint64_t>(i));
-    llvm::Value* src_ptr = builder.CreateInBoundsGEP(i8_ty, encrypted_base, index, "eippf.enc.ptr");
-    llvm::Value* dst_ptr = builder.CreateInBoundsGEP(i8_ty, dst_base, index, "eippf.dec.ptr");
-
-    auto* encrypted_byte = builder.CreateLoad(i8_ty, src_ptr, "eippf.enc.byte");
-    encrypted_byte->setAlignment(llvm::Align(1));
-    encrypted_byte->setVolatile(true);
-
-    llvm::Value* mask = builder.getInt8(stream_mask(candidate.key, i));
-    llvm::Value* plain = builder.CreateXor(encrypted_byte, mask, "eippf.dec.byte");
-
-    auto* store = builder.CreateStore(plain, dst_ptr);
-    store->setAlignment(llvm::Align(1));
-  }
+  llvm::Type* size_ty = decode_callee.getFunctionType()->getParamType(2);
+  llvm::Value* size_value = make_size_literal(size_ty, candidate.byte_count);
+  builder.CreateCall(decode_callee,
+                     {dst_base, encrypted_base, size_value, builder.getInt8(candidate.key)});
 }
 
 llvm::Value* materialize_replacement_operand(llvm::IRBuilder<>& builder, llvm::Value* original,
@@ -505,29 +556,23 @@ llvm::Value* materialize_replacement_operand(llvm::IRBuilder<>& builder, llvm::V
   return replacement;
 }
 
-void emit_memory_barrier(llvm::IRBuilder<>& builder) {
-  llvm::FunctionType* barrier_ty = llvm::FunctionType::get(builder.getVoidTy(), false);
-  llvm::InlineAsm* barrier =
-      llvm::InlineAsm::get(barrier_ty, "", "~{memory}", true, false, llvm::InlineAsm::AD_ATT);
-  builder.CreateCall(barrier);
-}
-
 void emit_secure_cleanup(llvm::IRBuilder<>& builder, const CandidateInfo& candidate,
-                         const RuntimeState& state, llvm::FunctionCallee free_callee) {
+                         const RuntimeState& state, llvm::FunctionCallee wipe_callee,
+                         llvm::FunctionCallee free_callee) {
   llvm::Type* i8_ty = builder.getInt8Ty();
   llvm::Type* i8_ptr_ty = llvm::PointerType::getUnqual(i8_ty);
+  llvm::Type* wipe_size_ty = wipe_callee.getFunctionType()->getParamType(1);
+  llvm::Value* encoded_size = make_size_literal(wipe_size_ty, candidate.byte_count);
+  llvm::Value* zero_size = llvm::ConstantInt::get(llvm::cast<llvm::IntegerType>(wipe_size_ty), 0);
 
   llvm::Value* active = builder.CreateLoad(builder.getInt1Ty(), state.active_flag, "eippf.cleanup.active");
 
   if (state.use_heap) {
     llvm::Value* heap_ptr = builder.CreateLoad(i8_ptr_ty, state.heap_ptr_slot, "eippf.cleanup.heap.ptr");
-    llvm::Value* memset_ptr =
-        builder.CreateSelect(active, heap_ptr, state.heap_dummy_ptr, "eippf.cleanup.memset.ptr");
-    llvm::Value* clear_size = builder.CreateSelect(active, builder.getInt64(candidate.byte_count),
-                                                   builder.getInt64(0), "eippf.cleanup.size");
-
-    builder.CreateMemSet(memset_ptr, builder.getInt8(0), clear_size, llvm::MaybeAlign(1), true);
-    emit_memory_barrier(builder);
+    llvm::Value* wipe_ptr =
+        builder.CreateSelect(active, heap_ptr, state.heap_dummy_ptr, "eippf.cleanup.wipe.ptr");
+    llvm::Value* clear_size = builder.CreateSelect(active, encoded_size, zero_size, "eippf.cleanup.size");
+    builder.CreateCall(wipe_callee, {wipe_ptr, clear_size});
 
     llvm::Value* null_ptr =
         llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(i8_ptr_ty));
@@ -535,10 +580,8 @@ void emit_secure_cleanup(llvm::IRBuilder<>& builder, const CandidateInfo& candid
     builder.CreateCall(free_callee, {free_arg});
     builder.CreateStore(null_ptr, state.heap_ptr_slot);
   } else {
-    llvm::Value* clear_size = builder.CreateSelect(active, builder.getInt64(candidate.byte_count),
-                                                   builder.getInt64(0), "eippf.cleanup.size");
-    builder.CreateMemSet(state.stack_byte_ptr, builder.getInt8(0), clear_size, llvm::MaybeAlign(1), true);
-    emit_memory_barrier(builder);
+    llvm::Value* clear_size = builder.CreateSelect(active, encoded_size, zero_size, "eippf.cleanup.size");
+    builder.CreateCall(wipe_callee, {state.stack_byte_ptr, clear_size});
   }
 
   builder.CreateStore(builder.getFalse(), state.active_flag);
@@ -618,6 +661,19 @@ bool mark_pass_applied(llvm::Module& module) {
   return true;
 }
 
+bool mark_disallowed_candidate_detected(llvm::Module& module) {
+  if (module.getNamedGlobal(kDisallowedMarkerName) != nullptr) {
+    return false;
+  }
+
+  auto* marker = new llvm::GlobalVariable(
+      module, llvm::Type::getInt8Ty(module.getContext()), true, llvm::GlobalValue::InternalLinkage,
+      llvm::ConstantInt::get(llvm::Type::getInt8Ty(module.getContext()), 1), kDisallowedMarkerName);
+  marker->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  marker->setDSOLocal(true);
+  return true;
+}
+
 }  // namespace
 
 namespace eippf::passes {
@@ -629,14 +685,20 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
   }
 
   bool changed = false;
+  bool saw_disallowed = false;
   llvm::DenseMap<llvm::GlobalVariable*, CandidateInfo> candidates =
-      collect_and_encrypt_candidates(module, changed);
+      collect_and_encrypt_candidates(module, changed, saw_disallowed);
+  if (saw_disallowed) {
+    changed |= mark_disallowed_candidate_detected(module);
+  }
   if (candidates.empty()) {
-    return llvm::PreservedAnalyses::all();
+    return changed ? llvm::PreservedAnalyses::none() : llvm::PreservedAnalyses::all();
   }
 
   llvm::FunctionCallee malloc_callee = get_malloc_callee(module);
   llvm::FunctionCallee free_callee = get_free_callee(module);
+  llvm::FunctionCallee decode_callee = get_decode_helper_callee(module);
+  llvm::FunctionCallee wipe_callee = get_wipe_helper_callee(module);
   llvm::Function* trap_function = get_trap_function(module);
 
   for (llvm::Function& function : module) {
@@ -694,7 +756,7 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
         state.runtime_base = state.stack_byte_ptr;
       }
 
-      emit_inline_decrypt(decrypt_builder, candidate, state.runtime_base);
+      emit_runtime_decode(decrypt_builder, candidate, state.runtime_base, decode_callee);
       decrypt_builder.CreateStore(decrypt_builder.getTrue(), state.active_flag);
 
       for (const OperandUseSite& site : uses) {
@@ -721,7 +783,7 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
           continue;
         }
         llvm::IRBuilder<> cleanup_builder(point);
-        emit_secure_cleanup(cleanup_builder, candidate, state, free_callee);
+        emit_secure_cleanup(cleanup_builder, candidate, state, wipe_callee, free_callee);
         changed = true;
       }
     }
@@ -731,22 +793,33 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
   return changed ? llvm::PreservedAnalyses::none() : llvm::PreservedAnalyses::all();
 }
 
+void register_string_protection_pipeline(llvm::PassBuilder& pass_builder) {
+  pass_builder.registerPipelineStartEPCallback(
+      [](llvm::ModulePassManager& module_pm, llvm::OptimizationLevel) {
+        module_pm.addPass(StringProtectionPass{});
+      });
+
+  pass_builder.registerPipelineParsingCallback(
+      [](llvm::StringRef name, llvm::ModulePassManager& module_pm,
+         llvm::ArrayRef<llvm::PassBuilder::PipelineElement>) {
+        if (name == "eippf-string-protect-inline") {
+          module_pm.addPass(StringProtectionPass{});
+          return true;
+        }
+        return false;
+      });
+}
+
 }  // namespace eippf::passes
 
+#ifdef EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN
 extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginInfo() {
   return {
       LLVM_PLUGIN_API_VERSION,
       "EIPPFStringProtectionPass",
       LLVM_VERSION_STRING,
       [](llvm::PassBuilder& pass_builder) {
-        pass_builder.registerPipelineParsingCallback(
-            [](llvm::StringRef name, llvm::ModulePassManager& module_pm,
-               llvm::ArrayRef<llvm::PassBuilder::PipelineElement>) {
-              if (name == "eippf-string-protect-inline") {
-                module_pm.addPass(eippf::passes::StringProtectionPass{});
-                return true;
-              }
-              return false;
-            });
+        eippf::passes::register_string_protection_pipeline(pass_builder);
       }};
 }
+#endif

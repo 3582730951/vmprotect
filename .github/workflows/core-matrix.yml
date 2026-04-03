@@ -1,0 +1,154 @@
+name: core-matrix
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux-core:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Build Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip cmake ninja
+          cmake --version
+          ninja --version
+          python --version
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/linux
+          cmake -S core -B build_ci -G Ninja 2>&1 | tee evidence/linux/configure.log
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build_ci -j 4 2>&1 | tee evidence/linux/build.log
+
+      - name: Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build_ci --output-on-failure 2>&1 | tee evidence/linux/ctest.log
+
+      - name: Perf Smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build_ci --target perf_smoke 2>&1 | tee evidence/linux/perf_smoke.log
+
+      - name: Artifact Audit Self-Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 core/tools/artifact_audit.py --self-test 2>&1 | tee evidence/linux/artifact_audit_selftest.log
+
+      - name: Collect Evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build_ci/CMakeCache.txt evidence/linux/CMakeCache.txt
+          if [ -f build_ci/compile_commands.json ]; then
+            cp build_ci/compile_commands.json evidence/linux/compile_commands.json
+          fi
+          if [ -f build_ci/Testing/Temporary/LastTest.log ]; then
+            cp build_ci/Testing/Temporary/LastTest.log evidence/linux/LastTest.log
+          fi
+          if [ -f build_ci/Testing/Temporary/LastTestsFailed.log ]; then
+            cp build_ci/Testing/Temporary/LastTestsFailed.log evidence/linux/LastTestsFailed.log
+          fi
+
+      - name: Upload Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-core-evidence
+          path: evidence/linux
+          if-no-files-found: error
+
+  macos-ios-safe:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Build Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip cmake ninja
+          cmake --version
+          ninja --version
+          python --version
+
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/macos
+          cmake -S core -B build_ci -G Ninja 2>&1 | tee evidence/macos/configure.log
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build_ci -j 4 2>&1 | tee evidence/macos/build.log
+
+      - name: iOS Strict Lane Tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ctest --test-dir build_ci --output-on-failure -R 'artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe' 2>&1 | tee evidence/macos/ctest_ios_safe.log
+
+      - name: Artifact Audit Self-Test
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 core/tools/artifact_audit.py --self-test 2>&1 | tee evidence/macos/artifact_audit_selftest.log
+
+      - name: Collect Evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build_ci/CMakeCache.txt evidence/macos/CMakeCache.txt
+          if [ -f build_ci/compile_commands.json ]; then
+            cp build_ci/compile_commands.json evidence/macos/compile_commands.json
+          fi
+          if [ -f build_ci/Testing/Temporary/LastTest.log ]; then
+            cp build_ci/Testing/Temporary/LastTest.log evidence/macos/LastTest.log
+          fi
+          if [ -f build_ci/Testing/Temporary/LastTestsFailed.log ]; then
+            cp build_ci/Testing/Temporary/LastTestsFailed.log evidence/macos/LastTestsFailed.log
+          fi
+
+      - name: Upload Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-ios-safe-evidence
+          path: evidence/macos
+          if-no-files-found: error

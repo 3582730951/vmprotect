@@ -17,6 +17,9 @@ target_include_directories(eippf_string_protection_pass PRIVATE
 target_include_directories(eippf_string_protection_pass SYSTEM PRIVATE
   ${LLVM_INCLUDE_DIRS}
 )
+target_compile_definitions(eippf_string_protection_pass PRIVATE
+  EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1
+)
 eippf_apply_common_compile_options(eippf_string_protection_pass)
 
 add_llvm_pass_plugin(eippf_selective_vm_pass
@@ -111,6 +114,7 @@ eippf_apply_common_compile_options(eippf_cff_obfuscation_pass)
 
 add_llvm_pass_plugin(eippf_protection_suite_pass
   src/ProtectionSuitePassPlugin.cpp
+  src/StringProtectionPass.cpp
   src/ProtectionAnchorPass.cpp
   src/SelectiveVMPass.cpp
   src/JITEnclavePass.cpp

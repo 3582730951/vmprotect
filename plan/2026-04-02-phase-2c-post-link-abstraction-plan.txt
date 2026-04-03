@@ -1,0 +1,197 @@
+# 2026-04-02 Phase 2C Post-Link Mutator Abstraction Split Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 本阶段只做 `Phase 2C / post_link_mutator abstraction split`，目标是把当前 `core/post_link_mutator/src/main.cpp` 的单文件实现拆分为可维护模块，并保持现有行为与 gate 不变。
+- 本阶段明确不做发布级 `PE/ELF/Mach-O` 深度重写，不引入新的二进制重写语义，不扩展到 `runtime/wrapper/passes`。
+
+Task Charter:
+1. Objective:
+- 将 `main.cpp` 从 600+ 行单文件拆为明确职责模块，形成 `library + thin main` 结构。
+- 保持 CLI、退出码、manifest 字段、mutation trailer 格式与 `HardenTarget` 集成行为完全兼容。
+2. Scope:
+- `core/post_link_mutator/**`
+- `core/tests/post_link_mutator/**`
+- `core/tests/tools/hardened_target_pipeline_test.cpp`
+- 必要时 `core/post_link_mutator/CMakeLists.txt`
+- 如无必要，不改 `core/CMakeLists.txt`
+3. Non-Goals:
+- 不做 PE section 重排、ELF program header 重写、Mach-O load command 深改。
+- 不做签名流程重构，不做 `artifact_audit.py` 语义变更。
+- 不进入 Phase 3/4/5 目标。
+4. Constraints:
+- 只允许结构化拆分与等价重构，不允许行为漂移。
+- fail-closed 语义必须保持：未知工件、未知 target、target/artifact 不匹配全部失败。
+- 仅在允许目录内修改，默认不碰 `runtime/wrapper/passes`。
+5. Acceptance Criteria:
+- `eippf_post_link_mutator` 行为保持兼容，现有 smoke/pipeline 测试通过。
+- `main.cpp` 仅保留入口编排，核心逻辑下沉到独立模块。
+- 新增模块级测试覆盖 success/failure/edge-security 三类断言。
+6. Forbidden Shortcuts:
+- 禁止只改命名不改结构。
+- 禁止通过删除校验降低失败路径。
+- 禁止把“已拆分”包装成“已完成发布级 deep rewrite”。
+
+Architecture Contract (Phase 2C Only):
+1. 模块拆分清单（从 `src/main.cpp` 拆出）:
+- `core/post_link_mutator/include/post_link_mutator/cli_options.hpp`
+- `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`
+- `core/post_link_mutator/include/post_link_mutator/target_classifier.hpp`
+- `core/post_link_mutator/include/post_link_mutator/binary_io.hpp`
+- `core/post_link_mutator/include/post_link_mutator/mutation_trailer.hpp`
+- `core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp`
+- `core/post_link_mutator/include/post_link_mutator/mutator_app.hpp`
+- `core/post_link_mutator/src/cli_options.cpp`
+- `core/post_link_mutator/src/artifact_detector.cpp`
+- `core/post_link_mutator/src/target_classifier.cpp`
+- `core/post_link_mutator/src/binary_io.cpp`
+- `core/post_link_mutator/src/mutation_trailer.cpp`
+- `core/post_link_mutator/src/manifest_writer.cpp`
+- `core/post_link_mutator/src/mutator_app.cpp`
+- `core/post_link_mutator/src/main.cpp`（薄入口）
+2. 函数级边界（固定，不留设计空间）:
+- `cli_options.*` 只承载 `CliOptions`、`parse_cli(...)`、`print_usage(...)`。
+- `artifact_detector.*` 只承载文件魔数读取与 `detect_base_artifact_kind(...)`。
+- `target_classifier.*` 只承载 target hint 解析、target 推断、target/artifact 兼容校验、manifest artifact 分类。
+- `binary_io.*` 只承载目录确保、二进制读取、二进制写入。
+- `mutation_trailer.*` 只承载 FNV1a、trailer 构建、`mutate_artifact(...)`。
+- `manifest_writer.*` 只承载 profile 选择、JSON 转义、manifest 写入。
+- `mutator_app.*` 承载原 `main` 的完整流程与退出码映射。
+- `main.cpp` 只做 `return run_mutator(argc, argv, std::cout, std::cerr);`。
+3. 行为不变量（必须逐项保持）:
+- mutation trailer magic 仍为 `EIPPFMT1`，version 仍为 `1`。
+- `mutation_status` 仍为 `mutated_with_trailer_v1`。
+- 退出码保持当前语义：`2..11` 各错误路径不变。
+- `target_kind_source` 规则不变：`--target-kind` 存在时 `explicit_cli`，否则 `derived_from_target_label`。
+- `HardenTarget.cmake` 调用参数与顺序不改。
+
+Role Traceability (Fixed 3-Role Contract):
+1. Agent 1 (Planner):
+- 产出与维护本计划文件。
+- 下发任务卡、冻结文件 ownership、收集证据。
+2. Agent 2 (Engineer):
+- 仅按任务卡修改授权文件。
+- 提供固定命令证据与测试结果。
+3. Agent 3 (Security Reviewer):
+- 按安全清单审查 fail-closed、策略一致性与回归风险。
+
+File Ownership Matrix:
+| 文件 | Owner | 变更类型 |
+| --- | --- | --- |
+| `core/post_link_mutator/CMakeLists.txt` | Agent 2 | 必改 |
+| `core/post_link_mutator/include/post_link_mutator/cli_options.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/target_classifier.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/binary_io.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/mutation_trailer.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/manifest_writer.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/include/post_link_mutator/mutator_app.hpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/cli_options.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/artifact_detector.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/target_classifier.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/binary_io.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/mutation_trailer.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/manifest_writer.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/mutator_app.cpp` | Agent 2 | 新增 |
+| `core/post_link_mutator/src/main.cpp` | Agent 2 | 重写为薄入口 |
+| `core/tests/post_link_mutator/CMakeLists.txt` | Agent 2 | 必改 |
+| `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp` | Agent 2 | 必改 |
+| `core/tests/post_link_mutator/post_link_mutator_target_classifier_test.cpp` | Agent 2 | 新增 |
+| `core/tests/tools/hardened_target_pipeline_test.cpp` | Agent 2 | 小幅补强 |
+| `plan/2026-04-02-phase-2c-post-link-abstraction-plan.txt` | Agent 1 | 已完成 |
+
+PM Task Card 2C.1 (Core Abstraction Split):
+1. 仅改以下文件:
+- `core/post_link_mutator/CMakeLists.txt`
+- `core/post_link_mutator/include/post_link_mutator/*.hpp`（上述 7 个）
+- `core/post_link_mutator/src/*.cpp`（上述 8 个）
+2. 固定实现要求:
+- `main.cpp` 不保留任何分类/IO/manifest/trailer 细节逻辑。
+- `mutator_app.cpp` 复制并承接原 `main.cpp` 的流程与退出码，不改业务语义。
+- 模块 API 与 Architecture Contract 一致，不额外扩张公共接口。
+- CMake 改为：
+- 新建 `eippf_post_link_mutator_core`（static library）。
+- `eippf_post_link_mutator` 只编译 `src/main.cpp` 并链接 `eippf_post_link_mutator_core`。
+- `eippf_post_link_mutator_core` 链接 `eippf_contracts`，并暴露 `../include` 与 `include/post_link_mutator`。
+3. 禁止项:
+- 禁止改 `core/cmake/HardenTarget.cmake`。
+- 禁止改 `core/tests/tools/CMakeLists.txt`（本卡不碰工具测试装配）。
+- 禁止引入异常/RTTI。
+4. 完成判据:
+- `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator` 通过。
+
+PM Task Card 2C.2 (Tests and Regression Closure):
+1. 仅改以下文件:
+- `core/tests/post_link_mutator/CMakeLists.txt`
+- `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+- `core/tests/post_link_mutator/post_link_mutator_target_classifier_test.cpp`（新增）
+- `core/tests/tools/hardened_target_pipeline_test.cpp`
+2. 固定实现要求:
+- `post_link_mutator_smoke_test.cpp`：在现有 case 基础上新增 manifest 字段断言。
+- 必须断言 `target_kind_source == explicit_cli`。
+- 必须断言 `signing_profile` 与 `attestation_profile` 的既有映射值不变。
+- `post_link_mutator_target_classifier_test.cpp`：新增且只测 `target_classifier` 模块。
+- success: `ios_appstore + macho` 可匹配。
+- failure: 非法 target hint 返回 unknown/失败路径。
+- edge-security: `android + .ko` 推导为 `android_kernel_module` 且 artifact 分类为 `linux_kernel_module_ko`。
+- `hardened_target_pipeline_test.cpp`：补强断言。
+- 必须断言 manifest 中 `target_kind_source` 存在且为 `explicit_cli`。
+- 必须断言 desktop fixture 的 `signing_profile` 为 `unsigned_dev_or_sign_after_mutation`。
+3. CMake 装配要求:
+- 在 `core/tests/post_link_mutator/CMakeLists.txt` 新增 `post_link_mutator_target_classifier_test`。
+- 该测试链接 `eippf_post_link_mutator_core`。
+- 注册 `add_test(NAME post_link_mutator_target_classifier_test COMMAND post_link_mutator_target_classifier_test)`。
+4. 完成判据:
+- `cmake --build /workspace/build_phase25_c -j --target post_link_mutator_smoke_test post_link_mutator_target_classifier_test hardened_target_pipeline_test` 通过。
+- `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_target_classifier_test|hardened_target_pipeline_test'` 通过。
+
+Dependencies and Merge Order:
+1. `M3.1`:
+- 合并 Task Card 2C.1。
+2. `M3.2`:
+- 在 `M3.1` 基础上合并 Task Card 2C.2。
+3. `M3.3`:
+- PM 执行固定命令复核并归档证据。
+
+Fixed Validation Commands:
+1. `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+2. `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator post_link_mutator_smoke_test post_link_mutator_target_classifier_test hardened_target_pipeline_test`
+3. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_target_classifier_test|hardened_target_pipeline_test'`
+4. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_target_classifier_test|hardened_target_pipeline_test'`（重复一次，验证同机一致性）
+
+Architecture Reviewer Checklist:
+1. `main.cpp` 是否已变为薄入口，核心逻辑全部迁移到模块实现。
+2. 模块职责是否单一且边界稳定，无循环依赖。
+3. `CMake` 是否完成 `library + executable` 拆分，且未改 HardenTarget 接口。
+4. 行为不变量是否保持：退出码、trailer 常量、manifest 核心字段。
+5. 变更是否严格限制在允许目录内。
+
+Security Reviewer Checklist:
+1. fail-closed 路径是否保持：unknown artifact、unknown target、target/artifact mismatch。
+2. `target_kind_source`、`signing_profile`、`attestation_profile` 是否无回归。
+3. 未引入新的默认放行分支，非法 hint 仍不允许降级放行。
+4. `hardened_target_pipeline_test` 是否仍验证 mutation 后与 audit sidecar 闭环。
+5. 未触碰 runtime/wrapper/passes，未引入跨模块安全副作用。
+
+Validation Reviewer Checklist:
+1. 三个测试目标是否全部执行并通过：
+- `post_link_mutator_smoke_test`
+- `post_link_mutator_target_classifier_test`
+- `hardened_target_pipeline_test`
+2. 新增测试是否覆盖 success/failure/edge-security 三类。
+3. 重复执行 `ctest` 是否一致通过。
+4. 若回滚任一关键不变量（如 target 推导或 manifest 字段），测试是否可稳定失败。
+
+Open Risks (Explicitly Deferred):
+1. 当前 mutator 仍是 trailer-based mutation，不是发布级深度二进制重写。
+2. PE/ELF/Mach-O 深度语义改写、重定位感知变换、签名后置链路强化，留待 Phase 3+。
+3. 本阶段完成后仅宣称“可维护抽象拆分完成”，不得宣称“发布级 mutator 完成”。
+
+Exit Rule:
+1. Architecture/Security/Validation 三类 checklist 全部通过前，不得标记 `Phase 2C complete`。
+2. 未满足 fixed commands 全通过，不得进入下一阶段。

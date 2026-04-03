@@ -1,0 +1,138 @@
+# 2026-04-02 Phase 3c / runtime linkage closure execution
+
+依附关系:
+- 本文件依附于 `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-plan.txt`。
+- 本文件只记录 `Phase 3c` 的计划审核、单文件修补、PM 集成验证、实现三审结果。
+
+Task Summary:
+- 关闭 `Phase 3` 首次全量 build 暴露的 runtime linkage blocker：
+  - `vm_runtime_bridge_vm2_test` 链接 `eippf_vm_rt` 时缺失 backend policy helper 实现闭口。
+
+Blocked State Before Fix:
+- `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`：成功
+- `cmake --build /workspace/build_phase3 -j`：失败
+- 失败目标：
+  - `tests/vm_runtime_bridge_vm2_test`
+- 真实 undefined references：
+  - `eippf::runtime::backend::target_kind_supports_desktop_jit(...)`
+  - `eippf::runtime::backend::target_forbids_runtime_executable_pages(...)`
+
+Approved Plan:
+- 架构计划：
+  - `/workspace/plan/2026-04-02-phase-3c-runtime-linkage-closure-plan.txt`
+- 最终计划结论：
+  - 只允许修补 `core/runtime/CMakeLists.txt`
+  - 只允许把 `src/backend_policy.cpp` 纳入 `eippf_vm_rt`
+  - 禁止修改 `core/tests/CMakeLists.txt`
+  - 禁止 `eippf_vm_rt -> eippf_runtime` 宽依赖
+
+Plan Reviews:
+- Architecture Reviewer：
+  - `PASS`
+  - 原因：
+    - 计划保持最小 delta
+    - 不把缺口转嫁给 tests
+    - 不扩大 `eippf_vm_rt` / `eippf_runtime` 边界
+- Security Reviewer：
+  - `PASS`
+  - 原因：
+    - `unknown` target 被提升为显式验收
+    - 要求保留 `vm_runtime_bridge_vm2_test` 最终 link line 且不得出现 `libeippf_runtime.a`
+    - 要求对白名单写入做显式审计
+- Validation Reviewer：
+  - `PASS`
+  - 原因：
+    - configure / 定向 build / 全量 build / ctest / perf_smoke 全部进入验收矩阵
+    - verbose link-line 与 diff-audit 被纳入硬证据
+
+Engineer Task Card:
+- Owner：
+  - `Engineer`
+- 文件白名单：
+  - `/workspace/core/runtime/CMakeLists.txt`
+- 强制步骤：
+  - 在 `add_library(eippf_vm_rt STATIC ...)` 中加入 `src/backend_policy.cpp`
+  - 不修改 tests 链接
+  - 不新增 `eippf_vm_rt -> eippf_runtime`
+  - 跑 configure / 定向 build / verbose build / 全量 build / ctest / perf_smoke
+
+Engineer Result:
+- changed files:
+  - `/workspace/core/runtime/CMakeLists.txt`
+- 实际修补：
+  - `eippf_vm_rt` 源列表新增 `src/backend_policy.cpp`
+- 工程自报结果：
+  - configure：成功
+  - 定向 build：成功
+  - 全量 build：成功
+  - 15 条相关测试：通过
+  - `perf_smoke`：通过
+
+PM Independent Evidence:
+- `git diff -- /workspace/core/runtime/CMakeLists.txt`
+  - 当前 task-local 相关变更确认：
+    - `add_library(eippf_vm_rt STATIC ...)` 中新增 `src/backend_policy.cpp`
+- `ninja -C /workspace/build_phase3 -t commands vm_runtime_bridge_vm2_test`
+  - 关键证据：
+    - `runtime/libeippf_vm_rt.a` 由：
+      - `backend_policy.cpp.o`
+      - `secure_ir_engine.cpp.o`
+      - `vm_runtime_bridge.cpp.o`
+      打包生成
+    - `tests/vm_runtime_bridge_vm2_test` 的最终 link line 为：
+      - `... -o tests/vm_runtime_bridge_vm2_test  runtime/libeippf_vm_rt.a  -ldl ...`
+    - 证据中未出现：
+      - `libeippf_runtime.a`
+
+PM Independent Validation:
+- `cmake -S /workspace/core -B /workspace/build_phase3 -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase3 -j`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase3 --output-on-failure -R 'runtime_vm_runtime_bridge_vm2_test|runtime_secure_ir_engine_test|runtime_memory_hal_test|backend_policy_test|runtime_backend_extraction_contract_test|runtime_secure_ir_engine_ios_appstore_safe_test|runtime_secure_ir_engine_windows_driver_safe_test|runtime_secure_ir_engine_android_dex_safe_test|runtime_secure_ir_engine_shell_ephemeral_safe_test|runtime_secure_ir_engine_unknown_safe_test|runtime_memory_hal_ios_appstore_safe_test|runtime_memory_hal_windows_driver_safe_test|runtime_memory_hal_android_dex_safe_test|runtime_memory_hal_shell_ephemeral_safe_test|runtime_memory_hal_unknown_safe_test'`
+  - `PASS`
+  - 结果：
+    - `15/15`
+- `cmake --build /workspace/build_phase3 --target perf_smoke`
+  - `PASS`
+
+Implementation Reviews:
+- Architecture Reviewer：
+  - 最终 `PASS`
+  - 原因：
+    - task-local delta 只在 `eippf_vm_rt` 上补 `backend_policy.cpp`
+    - consumer 仍只链接 `eippf_vm_rt`
+    - 未引入 `eippf_runtime` 宽依赖
+- Security Reviewer：
+  - `PASS`
+  - 原因：
+    - `memory_hal.hpp`、`backend_policy.cpp`、`secure_ir_engine.cpp` 的 gate 语义未变
+    - `unknown` / safe-target 测试通过
+    - link line 不含 `libeippf_runtime.a`
+- Validation Reviewer：
+  - `PASS`
+  - 原因：
+    - configure / build / ctest / perf_smoke 已由 PM 独立复跑
+    - `vm_runtime_bridge_vm2_test` 的最终 link line 证据已补齐
+
+Decision Log:
+- `DL-P3C-EXEC-01`
+  - 决定：
+    - 接受 `core/runtime/CMakeLists.txt` 中对 `eippf_vm_rt` 增加 `src/backend_policy.cpp` 的修补
+  - 原因：
+    - 这是最小生产闭口，且未扩大依赖面
+- `DL-P3C-EXEC-02`
+  - 决定：
+    - 接受 task-local provenance 作为实现级架构审核依据
+  - 原因：
+    - 当前工作树包含已批准但未分阶段提交的 earlier Track A/C 变更，不能把相对 `HEAD` 的整文件脏 diff 误判为 `3c` scope violation
+
+State Snapshot:
+- `Phase 3c`：
+  - `PASS`
+- 当前已知事实：
+  - 首次全量 build blocker 已关闭
+  - `vm_runtime_bridge_vm2_test` 消费合同保持为 `eippf_vm_rt`
+  - `eippf_vm_rt` 已完成 backend policy helper 闭口
+- 下一动作：
+  - 回到 `Phase 3` 主计划，执行 user-mode mainline 的最终 PM 集成与冻结审核

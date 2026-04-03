@@ -1,0 +1,88 @@
+# 2026-04-02 Phase 2B Harness Fix Plan
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 仅修复 `Phase 2B` gate test harness 用错编译器的问题。
+- 不改 pass 语义，不改 runtime。
+
+Task Charter:
+- Objective:
+  - 让 `jit_enclave_pipeline_gate_test` 始终由真实 `clang/clang++` 驱动执行，消除 `g++` + `-fpass-plugin` 造成的假失败。
+- Scope:
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- Non-Goals:
+  - 不改 `JITEnclavePass`
+  - 不改 runtime
+  - 不减少 gate 测试矩阵
+- Constraints:
+  - 不能硬编码 `/usr/bin/clang`
+  - 不能回退到 `g++`
+- Acceptance Criteria:
+  - 配置阶段能稳定解析真实 clang 路径
+  - `jit_enclave_pipeline_gate_test` 实际矩阵执行通过
+- Forbidden Shortcuts:
+  - 禁止找不到 clang 时继续配置
+  - 禁止跳过失败矩阵 case
+  - 禁止通过修改 pass 逻辑掩盖 harness 问题
+
+Design Decisions:
+- `jit_enclave_pipeline_gate_test` 的编译器来源统一为独立 CMake 变量：
+  - `EIPPF_TEST_CLANG_PATH`
+- 解析顺序固定：
+  - 若显式提供 `EIPPF_TEST_CLANG_PATH`，优先使用
+  - 否则若 `CMAKE_CXX_COMPILER_ID == Clang`，使用 `${CMAKE_CXX_COMPILER}`
+  - 否则 `find_program(... NAMES clang++ clang)` 自动发现
+- 若最终未找到 clang 或解析结果不是 clang：
+  - 配置阶段 `FATAL_ERROR`
+- `jit_enclave_pipeline_gate_test.cpp` 在执行矩阵前必须自检：
+  - 跑 `EIPPF_CLANG_PATH --version`
+  - 输出必须包含 `clang`
+  - 否则测试立即失败，错误文本包含 `toolchain_not_clang`
+
+File Ownership:
+- PM:
+  - `plan/2026-04-02-phase-2b-harness-fix-plan.txt`
+  - `plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+- Engineer:
+  - `core/tests/tools/CMakeLists.txt`
+  - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- Reviewers:
+  - read-only
+
+Engineer Task Card:
+- 文件 `[core/tests/tools/CMakeLists.txt](/workspace/core/tests/tools/CMakeLists.txt)`
+  - 为 `jit_enclave_pipeline_gate_test` 增加独立 clang 路径解析逻辑
+  - 优先级必须是：
+    - `EIPPF_TEST_CLANG_PATH`
+    - `CMAKE_CXX_COMPILER` if Clang
+    - `find_program(clang++/clang)`
+  - 找不到或不是 clang：
+    - `message(FATAL_ERROR "...requires clang/clang++...")`
+  - 保留 `EIPPF_JIT_ENCLAVE_PLUGIN_PATH` 注入逻辑
+  - 将解析结果注入 `EIPPF_CLANG_PATH`
+- 文件 `[core/tests/tools/jit_enclave_pipeline_gate_test.cpp](/workspace/core/tests/tools/jit_enclave_pipeline_gate_test.cpp)`
+  - 新增 `compiler_is_clang()` 自检
+  - 在跑矩阵前先验证 `EIPPF_CLANG_PATH --version` 包含 `clang`
+  - 若失败，输出 `toolchain_not_clang`
+  - 保留现有 gate 矩阵，不删任何 case
+- 固定命令：
+  - `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+  - `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+  - `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+
+Reviewer Checklist:
+- Architecture Reviewer:
+  - clang 路径来源唯一且 deterministic
+  - 无 clang 时配置期失败
+- Security Reviewer:
+  - 不存在 `g++` fallback
+  - gate 矩阵未被弱化
+- Validation Reviewer:
+  - 当前 g++ 默认环境下能解析 clang 并跑通 gate test
+  - 显式传入非 clang 路径时能 fail-fast

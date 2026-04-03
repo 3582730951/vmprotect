@@ -1,0 +1,760 @@
+# 2026-04-02 终局目标 Phase 2.5 执行记录
+
+Execution Mode:
+- `real-multi-agent`
+
+Plan Source:
+- [2026-04-02-terminal-goal-superseding-plan.txt](/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt)
+
+Review Gate:
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+Review Reasons:
+- Architecture Reviewer
+  - 单写者文件所有权与 merge order 已明确
+  - `Phase 2.5` 前置已落盘
+  - PM task cards 已经可直接下发
+- Security Reviewer
+  - fail-closed 边界未退化
+  - iOS / kernel / dex / shell 的硬约束仍被保留
+- Validation Reviewer
+  - `Lane Acceptance Matrix`
+  - `Lane Test Matrix`
+  - `CI / Evidence Spec`
+  - `Phase 3-7 Release-Grade DoD`
+  - 均已补齐
+
+Current Merge Order:
+- `M0`: plan/contracts freeze
+- `M1`: Phase 2A runtime backend extraction
+- `M2`: Phase 2B JITEnclave desktop-only confinement
+- `M3`: Phase 2C post_link mutator abstraction split
+
+Current Phase:
+- `Phase 2A / Runtime Backend Extraction`
+
+Delegated Tasks:
+- `Hooke`
+  - Task Card 2A
+  - Status:
+    - `reassigned_due_to_sla_timeout`
+- `Gauss`
+  - Task Card 2A
+  - Scope:
+    - contracts
+    - runtime backend policy/registry
+    - memory_hal / secure_ir_engine / EippfRuntime seam
+    - runtime backend split tests
+  - Build dir:
+    - `/workspace/build_phase25_a`
+- `Gauss`
+  - Status:
+    - `reassigned_due_to_sla_timeout`
+- `Bohr`
+  - Task Card 2A.1
+  - Scope:
+    - contracts
+    - runtime backend policy/registry
+    - backend descriptors
+    - runtime backend contract test
+  - Build dir:
+    - `/workspace/build_phase25_a1`
+  - Status:
+    - `completed`
+  - Owned files:
+    - `core/include/contracts/protection_contracts.hpp`
+    - `core/runtime/include/runtime/backend_policy.hpp`
+    - `core/runtime/include/runtime/backends/backend_registry.hpp`
+    - `core/runtime/include/runtime/backends/desktop_user_mode_backend.hpp`
+    - `core/runtime/include/runtime/backends/kernel_safe_backend.hpp`
+    - `core/runtime/include/runtime/backends/ios_safe_backend.hpp`
+    - `core/runtime/include/runtime/backends/dex_loader_backend.hpp`
+    - `core/runtime/include/runtime/backends/shell_launcher_backend.hpp`
+    - `core/runtime/src/backend_policy.cpp`
+    - `core/runtime/src/backends/backend_registry.cpp`
+    - `core/runtime/src/backends/desktop_user_mode_backend.cpp`
+    - `core/runtime/src/backends/kernel_safe_backend.cpp`
+    - `core/runtime/src/backends/ios_safe_backend.cpp`
+    - `core/runtime/src/backends/dex_loader_backend.cpp`
+    - `core/runtime/src/backends/shell_launcher_backend.cpp`
+    - `core/runtime/CMakeLists.txt`
+    - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+    - `core/tests/runtime/backend/CMakeLists.txt`
+
+Blocked Next Tasks:
+- `Task Card 2B / JITEnclave Desktop-Only Confinement`
+  - blocked by Phase 2A merge
+- `Task Card 2C / Post-Link Mutator Abstraction Split`
+  - blocked by Phase 2A merge
+- `Task Card 2A.2 / Runtime Call-Site Integration`
+  - blocked by Phase 2A.1 merge
+
+Acceptance For Phase 2A:
+- `runtime_backend_extraction_contract_test`
+- `jit_desktop_only_confinement_test`
+- `backend_policy_test`
+- `runtime_secure_ir_engine_*`
+- `runtime_memory_hal_*`
+
+Evidence Snapshot:
+- `cmake -S /workspace/core -B /workspace/build_phase25_min -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_min -j --target backend_policy_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase25_min --output-on-failure -R '^backend_policy_test$'`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_min -j --target runtime_backend_extraction_contract_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase25_min --output-on-failure -R '^runtime_backend_extraction_contract_test$'`
+  - `PASS`
+
+Review Cycle:
+- `Phase 2A.1 baseline review`
+  - agents:
+    - `Beauvoir`
+    - `Peirce`
+    - `Kepler`
+  - status:
+    - `completed`
+
+Review Results:
+- `Architecture Reviewer / Beauvoir`
+  - verdict: `FAIL`
+  - blockers:
+    - `mutation_profile_for_target(kDesktopNative)=kPeUserMode` 无法表达 Linux `ELF/.so`
+    - `contracts::target_forbids_jit()` 与 `dispatch_for_target()` 对 `android_dex` / `shell_ephemeral` 不一致
+  - consequence:
+    - `Phase 2A.2` blocked pending architect replan
+- `Security Reviewer / Peirce`
+  - verdict: `FAIL`
+  - blockers:
+    - `target_forbids_jit()` 与 dispatch 真相源分裂，存在 safe lane 误入 JIT 的 fail-open 风险
+    - `target_forbids_runtime_executable_pages(kUnknown)` 返回宽松结果，存在 unknown target 放行风险
+  - consequence:
+    - `Phase 2A.2` blocked pending architect replan
+- `Validation Reviewer / Kepler`
+  - verdict: `PASS`
+  - notes:
+    - 当前 `backend_policy_test` 与 `runtime_backend_extraction_contract_test` 足以作为 `2A.1` 基线
+    - 但需在修复 blocker 时补上 kernel 族覆盖、unknown/ttl 负向、registry helper 覆盖
+
+Architect Replan:
+- agent: `Raman`
+- scope:
+  - 仅修复 `desktop_native mutation_profile` 歧义
+  - 仅修复 JIT / runtime executable page 真相源分裂
+  - 仅补最少必要测试
+- status:
+  - `completed`
+- artifact:
+  - [2026-04-02-phase-2a1-blocker-fix-plan.txt](/workspace/plan/2026-04-02-phase-2a1-blocker-fix-plan.txt)
+
+Micro-Plan Review Gate:
+- `Architecture Reviewer / Beauvoir`
+  - verdict: `PASS`
+  - non-blocking:
+    - 文案中 blocker 数量与 helper/dispatch 描述需保持一致
+- `Security Reviewer / Peirce`
+  - verdict: `PASS`
+  - non-blocking:
+    - 仍属 contracts + dispatch 双真相源架构，后续需靠一致性测试防漂移
+- `Validation Reviewer / Kepler`
+  - verdict: `PASS`
+  - non-blocking:
+    - 建议补 `desktop_native + unsupported artifact -> kUnknown` 断言
+
+Micro-Plan Delta Review Gate:
+- `Architecture Reviewer / Beauvoir`
+  - verdict: `PASS`
+  - non-blocking:
+    - task card 文案需显式写出 `kUnknown`
+- `Security Reviewer / Peirce`
+  - verdict: `PASS`
+  - non-blocking:
+    - 仍需依赖一致性测试防止 contracts/dispatch 漂移
+- `Validation Reviewer / Kepler`
+  - verdict: `PASS`
+  - non-blocking:
+    - `kUnknown` 一致性可继续在 runtime contract test 增强
+
+Next Delegation:
+- `Engineer Fix Card / Phase 2A.1 blocker repair`
+  - status:
+    - `assigned`
+  - agent:
+    - `Bohr`
+  - allowed files:
+    - `core/include/contracts/protection_contracts.hpp`
+    - `core/runtime/src/backend_policy.cpp`
+    - `core/tests/contracts/protection_contracts_test.cpp`
+    - `core/tests/runtime/backend/backend_policy_test.cpp`
+    - `core/tests/runtime/backend/runtime_backend_extraction_contract_test.cpp`
+  - build dir:
+    - `/workspace/build_phase25_a1_fix`
+- `Engineer Delta Fix Card / Unknown JIT fail-closed`
+  - status:
+    - `completed`
+  - agent:
+    - `Bohr`
+  - allowed files:
+    - `core/include/contracts/protection_contracts.hpp`
+    - `core/tests/contracts/protection_contracts_test.cpp`
+    - `core/tests/runtime/backend/backend_policy_test.cpp`
+  - build dir:
+    - `/workspace/build_phase25_a1_fix`
+  - evidence:
+    - `cmake -S /workspace/core -B /workspace/build_phase25_a1_fix -G Ninja`
+    - `cmake --build /workspace/build_phase25_a1_fix -j --target protection_contracts_test backend_policy_test runtime_backend_extraction_contract_test`
+    - `ctest --test-dir /workspace/build_phase25_a1_fix --output-on-failure -R 'protection_contracts_test|backend_policy_test|runtime_backend_extraction_contract_test'`
+
+Phase 2A.1 Closeout:
+- implementation:
+  - `PASS`
+- local verification:
+  - `PASS`
+- architecture final review:
+  - `PASS`
+- security final review:
+  - `PASS`
+- validation final review:
+  - `PASS`
+- result:
+  - `ready_to_progress_to_2A_2`
+
+Phase 2A.2 Plan:
+- artifact:
+  - [2026-04-02-phase-2a2-call-site-plan.txt](/workspace/plan/2026-04-02-phase-2a2-call-site-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `PASS`
+
+Phase 2A.2 Delegation:
+- `Runtime Task Card`
+  - agent:
+    - `Bohr`
+  - owned files:
+    - `core/runtime/include/runtime/memory_hal.hpp`
+    - `core/runtime/include/runtime/secure_ir_engine.hpp`
+    - `core/runtime/src/secure_ir_engine.cpp`
+    - `core/runtime/src/EippfRuntime.cpp`
+  - build dir:
+    - `/workspace/build_phase25_a2`
+- `Test/CMake Task Card`
+  - agent:
+    - `Pasteur`
+  - owned files:
+    - `core/tests/runtime/ir/secure_ir_engine_safe_backend_test.cpp`
+    - `core/tests/runtime/hal/memory_hal_safe_backend_test.cpp`
+    - `core/tests/tools/hardened_target_secure_ir_engine_test.cpp`
+    - `core/tests/tools/hardened_target_runtime_kind_test.cpp`
+    - `core/tests/CMakeLists.txt`
+    - `core/tests/tools/CMakeLists.txt`
+  - build dir:
+    - `/workspace/build_phase25_a2`
+
+Phase 2A.2 Integration Evidence:
+- `cmake -S /workspace/core -B /workspace/build_phase25_a2 -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_a2 -j --target eippf_runtime`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_a2 -j --target secure_ir_engine_test memory_hal_test secure_ir_engine_ios_appstore_safe_test secure_ir_engine_windows_driver_safe_test secure_ir_engine_android_dex_safe_test secure_ir_engine_shell_ephemeral_safe_test secure_ir_engine_unknown_safe_test memory_hal_ios_appstore_safe_test memory_hal_windows_driver_safe_test memory_hal_android_dex_safe_test memory_hal_shell_ephemeral_safe_test memory_hal_unknown_safe_test hardened_target_desktop_runtime_kind_test hardened_target_ios_runtime_kind_test hardened_target_windows_driver_runtime_kind_test hardened_target_android_dex_runtime_kind_test hardened_target_shell_ephemeral_runtime_kind_test hardened_target_unknown_runtime_kind_test hardened_target_ios_secure_ir_engine_test hardened_target_windows_driver_secure_ir_engine_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase25_a2 --output-on-failure -R 'runtime_secure_ir_engine_test|runtime_memory_hal_test|runtime_secure_ir_engine_.*_safe_test|runtime_memory_hal_.*_safe_test|hardened_target_.*_runtime_kind_test|hardened_target_.*_secure_ir_engine_test'`
+  - `PASS`
+  - `20/20`
+
+Phase 2A.2 Final Review:
+- `Architecture Reviewer / Beauvoir`
+  - verdict: `PASS`
+  - non-blocking:
+    - gate 字符串和 probe 位常量建议后续抽成单一来源
+- `Security Reviewer / Peirce`
+  - verdict: `PASS`
+  - non-blocking:
+    - hardened secure_ir_engine 族当前只覆盖 `ios/windows_driver`
+- `Validation Reviewer / Kepler`
+  - verdict: `PASS`
+  - non-blocking:
+    - `EIPPF_EXTRA_PERF_*` 尚未同步纳入新增 runtime_kind 目标
+
+Phase 2A Closeout:
+- `2A.1 blocker repair`
+  - `PASS`
+- `2A.2 call-site integration`
+  - `PASS`
+- result:
+  - `Phase_2A_complete`
+
+Agent Recovery:
+- recovered_agents:
+  - `Pasteur`
+  - `Bohr`
+  - `Beauvoir`
+  - `Peirce`
+  - `Kepler`
+  - `Raman`
+- status:
+  - `all_closed`
+
+Phase 2B Plan:
+- artifact:
+  - [2026-04-02-phase-2b-jit-enclave-plan.txt](/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `PASS`
+- notes:
+  - gate code 审核口径建议统一为 `stderr` 首个非空行前缀
+  - 当前 2B 仅覆盖 pass/pipeline，不触碰 runtime
+
+Phase 2B Delegation:
+- `Engineer Task Card`
+  - status:
+    - `reassigned`
+  - owned files:
+    - `core/passes/include/passes/JITEnclavePass.hpp`
+    - `core/passes/src/JITEnclavePass.cpp`
+    - `core/tests/tools/CMakeLists.txt`
+    - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+  - build dir:
+    - `/workspace/build_phase25_b`
+  - first_worker:
+    - `Carson`
+  - first_worker_result:
+    - partial edits only in `JITEnclavePass.hpp` and `core/tests/tools/CMakeLists.txt`
+    - missing `JITEnclavePass.cpp` implementation
+    - missing `jit_enclave_pipeline_gate_test.cpp`
+    - no valid test evidence delivered
+  - strike:
+    - reason: `missing_evidence`
+    - count: `1`
+  - next_step:
+    - `assign_new_worker_on_existing_partial_edits`
+
+Phase 2B Worker History:
+- `Carson`
+  - verdict:
+    - `FAIL`
+  - reason:
+    - partial edits only
+    - missing full source/test delivery
+    - missing fixed command evidence
+- `Meitner`
+  - verdict:
+    - `FAIL`
+  - reason:
+    - partial pass/test work landed
+    - no complete evidence package returned before timeout
+- `Arendt`
+  - verdict:
+    - `PASS`
+  - owned files:
+    - `core/passes/include/passes/JITEnclavePass.hpp`
+    - `core/passes/src/JITEnclavePass.cpp`
+    - `core/tests/tools/CMakeLists.txt`
+    - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+  - delivered result:
+    - `desktop_native + jit route` allowed
+    - forbidden/unknown/missing target-kind + jit route fail-closed
+    - forbidden target + non-jit route allowed
+
+Phase 2B Integration Evidence:
+- `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+  - `PASS`
+  - `1/1`
+- manual stderr probe:
+  - command shape:
+    - `/usr/bin/clang++ ... -mllvm -eippf-target-kind=android_so`
+  - result:
+    - `returncode=1`
+    - first stderr line:
+      - `error: jit_route_forbidden_for_target: target_kind=android_so`
+  - normalized acceptance baseline:
+    - stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:
+
+Agent Recovery:
+- recovered_agents:
+  - `Carson`
+  - `Meitner`
+  - `Arendt`
+  - `Feynman`
+- status:
+  - `all_closed`
+
+Status:
+- `Phase_2B_complete`
+
+Phase 2B Final Review:
+- `Architecture Reviewer / Hilbert`
+  - verdict:
+    - `PASS`
+  - non-blocking:
+    - 当前测试只断言 gate code 子串匹配，未单独断言首行前缀
+- `Security Reviewer / Copernicus`
+  - verdict:
+    - `FAIL`
+  - blocker:
+    - 计划验收口径写的是首行前缀，当前测试只断言子串匹配，验收与自动化不一致
+  - bounded_repair:
+    - 仅允许补强 gate stderr 前缀断言
+    - 不允许扩大到 runtime/mutator/wrapper
+- `Validation Reviewer / Cicero`
+  - verdict:
+    - `PASS`
+  - non-blocking:
+    - 矩阵与固定命令已满足
+    - 但失败场景 gate token 断言仍需收紧
+
+Next Action:
+- `Phase 2B.1 / Gate Token Assertion Alignment`
+  - status:
+    - `plan_review_failed`
+  - scope:
+    - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+    - plan artifact only
+
+Phase 2B.1 Plan Review:
+- `Architecture Reviewer / Hume`
+  - verdict:
+    - `PASS`
+  - non-blocking:
+    - 可额外显式禁止 `/workspace/core/passes/**`
+- `Security Reviewer / Ramanujan`
+  - verdict:
+    - `PASS`
+  - non-blocking:
+    - 需同步清理旧计划里 `contains` 措辞，避免并存歧义
+- `Validation Reviewer / Parfit`
+  - verdict:
+    - `FAIL`
+  - blockers:
+    - 固定 3 条命令不能覆盖 `Phase 3` 的计划口径同步闭环
+    - 固定 3 条命令不能证明“同机重复执行一致”
+  - bounded_repair:
+    - 仅允许补充 plan-sync 验证步骤
+    - 仅允许补充重复 `ctest` 验证步骤
+    - 不允许扩大到 pass/runtime/wrapper/mutator
+
+Next Action Delta:
+- `Phase 2B.1a / Validation Closure Patch`
+  - status:
+    - `plan_review_failed`
+  - scope:
+    - `plan/2026-04-02-phase-2b1-gate-token-fix-plan.txt`
+    - plan artifact only
+
+Phase 2B.1a Plan Review:
+- `Architecture Reviewer / Confucius`
+  - verdict:
+    - `FAIL`
+  - blockers:
+    - `wc -l == 2` 不能证明两份文档各自都已同步到新口径
+    - `! rg ...` 不能区分“无匹配”和“读文件失败”，不够 deterministic
+    - 旧措辞黑名单未覆盖“稳定匹配”/“字符串匹配”类变体
+  - bounded_repair:
+    - 仅允许把文档验证改成逐文件显式校验
+    - 仅允许把旧措辞清理检查改成鲁棒命令
+    - 不允许重新打开 `core/**` scope
+- `Security Reviewer`
+  - verdict:
+    - `not_collected_due_to_fail_fast`
+- `Validation Reviewer`
+  - verdict:
+    - `not_collected_due_to_fail_fast`
+
+Next Action Delta 2:
+- `Phase 2B.1b / Deterministic Plan Sync Validation`
+  - status:
+    - `plan_review_passed`
+  - scope:
+    - `plan/2026-04-02-phase-2b1a-validation-closure-plan.txt`
+    - plan artifact only
+
+Phase 2B.1b Plan Review:
+- `Architecture Reviewer / Turing`
+  - verdict:
+    - `PASS`
+- `Security Reviewer / Goodall`
+  - verdict:
+    - `PASS`
+- `Validation Reviewer / Mendel`
+  - verdict:
+    - `PASS`
+
+Phase 2B.1 Execution:
+- engineer:
+  - `Galileo`
+- owned file:
+  - `core/tests/tools/jit_enclave_pipeline_gate_test.cpp`
+- delivered change:
+  - 保留退出码非 0 与 gate code 子串匹配断言
+  - 新增首个非空 stderr 行提取
+  - 新增前缀断言：`error: jit_route_forbidden_for_target:`
+- engineer evidence:
+  - `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+    - `PASS`
+  - `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+    - `PASS`
+  - `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+    - `PASS`
+
+Phase 2B PM Validation:
+- `cmake -S /workspace/core -B /workspace/build_phase25_b -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_b -j --target jit_enclave_pipeline_gate_test`
+  - `PASS`
+- `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+  - `PASS`
+  - `1/1`
+- repeated `ctest --test-dir /workspace/build_phase25_b --output-on-failure -R '^jit_enclave_pipeline_gate_test$'`
+  - `PASS`
+  - `1/1`
+- `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+  - `PASS`
+- `rg -n --fixed-strings "stderr 首个非空行前缀为 error: jit_route_forbidden_for_target:" /workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+  - `PASS`
+- legacy phrase cleanup gate on `/workspace/plan/2026-04-02-phase-2b-jit-enclave-plan.txt`
+  - `PASS`
+  - `legacy-clean`
+- legacy phrase cleanup gate on `/workspace/plan/2026-04-02-terminal-goal-phase-2-5-execution.txt`
+  - `PASS`
+  - `legacy-clean`
+
+Phase 2B Reopen Review:
+- `Architecture Reviewer / Lovelace`
+  - verdict:
+    - `PASS`
+- `Security Reviewer / Curie`
+  - verdict:
+    - `PASS`
+- `Validation Reviewer / Erdos`
+  - verdict:
+    - `PASS`
+- result:
+  - `Phase_2B_unblocked_and_frozen`
+
+Phase 2C Plan:
+- artifact:
+  - [2026-04-02-phase-2c-post-link-abstraction-plan.txt](/workspace/plan/2026-04-02-phase-2c-post-link-abstraction-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `FAIL`
+- validation blockers:
+  - fixed validation commands 不能单独证明 `library + thin main` 与模块边界成立
+  - 退出码 `2..11`、trailer magic/version 缺少硬断言
+  - `target_kind_source` 缺少 `derived_from_target_label` 路径验证
+  - 计划要求的新测试/断言尚未被验收条目强绑定
+- status:
+  - `plan_review_failed`
+- next_action:
+  - `Phase 2C.1 / Validation Closure Delta`
+
+Phase 2C.1 Plan:
+- artifact:
+  - [2026-04-02-phase-2c1-validation-closure-plan.txt](/workspace/plan/2026-04-02-phase-2c1-validation-closure-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `FAIL`
+- validation blockers:
+  - `AC-3/AC-4` 仍只绑定到测试目标，不足以证明新增子用例/子断言已执行
+  - `run_mutator_with_test_fault(...)` 缺少独立 AC 绑定
+- status:
+  - `plan_review_failed`
+- next_action:
+  - `Phase 2C.2 / AC Subcase Binding Delta`
+
+Phase 2C.2 Plan:
+- artifact:
+  - [2026-04-02-phase-2c2-ac-binding-plan.txt](/workspace/plan/2026-04-02-phase-2c2-ac-binding-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `PASS`
+- status:
+  - `ready_for_implementation`
+
+Strike Ledger Snapshot:
+- `Hooke`
+  - strike reason: `missing_evidence`
+  - strike count on current track: `1`
+- `Gauss`
+  - strike reason: `missing_evidence`
+  - strike count on current track: `1`
+- `Carson`
+  - strike reason: `missing_evidence`
+  - strike count on current track: `1`
+- `Meitner`
+  - strike reason: `missing_evidence`
+  - strike count on current track: `1`
+
+Phase 2C Implementation / First Review Cycle:
+- initial engineer implementation:
+  - `Plato`
+    - scope:
+      - `core/post_link_mutator/**`
+    - status:
+      - `completed`
+  - `Faraday`
+    - scope:
+      - `core/tests/post_link_mutator/**`
+      - `core/tests/tools/hardened_target_pipeline_test.cpp`
+    - status:
+      - `completed_with_rework`
+- PM integration evidence:
+  - `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+    - `PASS`
+  - `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_target_classifier_test post_link_mutator_smoke_test hardened_target_pipeline_test`
+    - `PASS`
+  - first `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+    - `PASS`
+  - second `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+    - `PASS`
+- first final review:
+  - `Architecture Reviewer`
+    - verdict:
+      - `FAIL`
+    - blockers:
+      - `AC-4` 未按 `2C.2` 精确绑定到 `explicit_cli + unsigned_dev_or_sign_after_mutation`
+      - `AC-5` 未验证 `main.cpp` 只转发 `run_mutator(...)` 且不含 `run_mutator_with_test_fault(`
+  - `Security Reviewer`
+    - verdict:
+      - `FAIL`
+    - blockers:
+      - `.dex/.sh` 仍可被 suffix 误分类，存在 fail-open
+      - `smoke` 与 `manifest_writer` 的 `signing_profile` 真相源分裂
+  - `Validation Reviewer`
+    - verdict:
+      - `FAIL`
+    - blockers:
+      - `post_link_mutator_exit_code_trailer_contract_test` cleanup 非确定性，双次复跑不稳定
+- result:
+  - `Phase_2C_blocked_pending_2C3`
+
+Strike Ledger Delta / Phase 2C:
+- `Faraday`
+  - strike reason:
+    - `test_gate_bypass`
+  - details:
+    - 首轮测试实现未按接口对齐
+    - `AC-3` 偏离已审核任务卡
+    - `AC-4/AC-5` 未精确回绑且留下 cleanup 不稳定
+  - strike count on current track:
+    - `3`
+  - action:
+    - `owner_destroyed_and_reassigned`
+
+Phase 2C.3 Plan:
+- artifact:
+  - [2026-04-02-phase-2c3-blocker-repair-plan.txt](/workspace/plan/2026-04-02-phase-2c3-blocker-repair-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `FAIL`
+- validation review:
+  - `PASS`
+- security blocker:
+  - 只封住了 `output-suffix` 误分类，未封住 `input-suffix fake .dex/.sh`
+- status:
+  - `plan_review_failed`
+- next_action:
+  - `Phase 2C.3a / Security Closure Delta`
+
+Phase 2C.3a Plan:
+- artifact:
+  - [2026-04-02-phase-2c3a-security-closure-plan.txt](/workspace/plan/2026-04-02-phase-2c3a-security-closure-plan.txt)
+- architecture review:
+  - `PASS`
+- security review:
+  - `PASS`
+- validation review:
+  - `PASS`
+- status:
+  - `ready_for_implementation`
+
+Phase 2C.3 / 2C.3a Reassignment:
+- `Engineer-Core / Kant`
+  - allowed files:
+    - `core/post_link_mutator/src/artifact_detector.cpp`
+    - `core/post_link_mutator/src/manifest_writer.cpp`
+    - `core/post_link_mutator/include/post_link_mutator/artifact_detector.hpp`（未使用）
+  - status:
+    - `completed`
+- `Engineer-Test / Pascal`
+  - allowed files:
+    - `core/tests/post_link_mutator/CMakeLists.txt`
+    - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+  - status:
+    - `completed`
+
+Phase 2C Final PM Integration Evidence:
+- `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+  - `PASS`
+- `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core post_link_mutator_smoke_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_target_classifier_test hardened_target_pipeline_test`
+  - `PASS`
+- first `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+  - `PASS`
+- second `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_smoke_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+  - `PASS`
+- `for i in 1 2 3 4 5; do ctest --test-dir /workspace/build_phase25_c --output-on-failure -R '^post_link_mutator_exit_code_trailer_contract_test$' || exit 1; done`
+  - `PASS`
+
+Phase 2C Final Review:
+- `Architecture Reviewer / Aristotle`
+  - verdict:
+    - `PASS`
+  - reasons:
+    - `core` library + thin entry structure preserved
+    - `AC-4` / `AC-5` 精确回绑
+    - 未扩 scope 到 `Phase 3`
+- `Security Reviewer / Huygens`
+  - verdict:
+    - `PASS`
+  - reasons:
+    - `.dex` 最小 header 校验已落地
+    - `.sh` shebang 校验已落地
+    - 4 条真实 CLI 负向用例均封住 suffix 伪装路径
+- `Validation Reviewer / Noether`
+  - verdict:
+    - `PASS`
+  - reasons:
+    - `smoke + AC-2 + AC-3 + AC-4 + AC-5 + AC-6` 双次均 `6/6`
+    - `AC-2` 五次稳定性复跑通过
+    - 未发现本 phase 范围内阻塞级伪通过空间
+
+Phase 2C Closeout:
+- implementation:
+  - `PASS`
+- local verification:
+  - `PASS`
+- architecture final review:
+  - `PASS`
+- security final review:
+  - `PASS`
+- validation final review:
+  - `PASS`
+- result:
+  - `Phase_2C_frozen`
+- next_action:
+  - `Phase 3 detailed planning`

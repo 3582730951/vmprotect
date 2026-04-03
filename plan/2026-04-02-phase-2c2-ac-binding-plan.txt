@@ -1,0 +1,89 @@
+# 2026-04-02 Phase 2C2 AC 绑定修复 Delta 微计划
+
+执行模式：`real-multi-agent`
+保障等级：`heavy`
+
+## Delta 目标（仅修复 Validation FAIL blocker）
+1. 仅修补 AC 绑定与固定验证命令，不改 `Phase 2C` 目标、架构边界与行为语义。
+2. 将 `AC-3`、`AC-4` 从“依赖既有测试目标中的新增子用例/子断言”升级为“独立测试目标直接验收”。
+3. 为 `run_mutator_with_test_fault(...)` 建立独立 AC 绑定，形成可单独执行、可单独拒绝的 fault isolation 证据。
+
+## 范围与非目标（继承 2C/2C1，不扩边界）
+1. 允许变更目录保持在 `core/post_link_mutator/**`、`core/tests/post_link_mutator/**`、`core/tests/tools/hardened_target_pipeline_test.cpp`、`core/post_link_mutator/CMakeLists.txt`。
+2. 不扩展到 `runtime/wrapper/passes`。
+3. 不新增 Phase 3+ 语义，不做深度二进制重写。
+4. 不变更已有 AC 业务含义，仅重绑定证据形态。
+
+## Phase 2C2-A：AC-3 独立测试目标化（derived 路径）
+
+PM 任务卡 2C2-A.1（新增 AC-3 专属测试）
+1. 新增文件：`core/tests/post_link_mutator/post_link_mutator_derived_target_kind_contract_test.cpp`。
+2. 固定断言 1：不传 `--target-kind`，输入 ELF + `target_label=android_kernel_module.ko`，必须成功且 manifest 同时包含 `\"target_kind_source\": \"derived_from_target_label\"`、`\"target_kind\": \"android_kernel_module\"`、`\"artifact_kind\": \"linux_kernel_module_ko\"`。
+3. 固定断言 2：不传 `--target-kind`，构造 `target_label/artifact` 不匹配，退出码必须为 `6`。
+4. 固定断言 3：success 结果中不得出现 `\"target_kind_source\": \"explicit_cli\"`。
+5. 在 `core/tests/post_link_mutator/CMakeLists.txt` 固定注册 `add_executable(post_link_mutator_derived_target_kind_contract_test ...)` 与 `add_test(NAME post_link_mutator_derived_target_kind_contract_test COMMAND post_link_mutator_derived_target_kind_contract_test)`。
+
+PM 任务卡 2C2-A.2（AC-3 重绑定）
+1. `AC-3` 唯一验收证据改为 `post_link_mutator_derived_target_kind_contract_test`。
+2. `post_link_mutator_smoke_test` 同类子用例只保留回归价值，不再承担 AC-3 主证据。
+
+## Phase 2C2-B：AC-4 独立测试目标化（pipeline 补强）
+
+PM 任务卡 2C2-B.1（新增 AC-4 专属测试）
+1. 新增文件：`core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`。
+2. 固定断言 1：执行 hardened pipeline（同 `hardened_target_pipeline_test` 输入工件族）。
+3. 固定断言 2：manifest 必须包含 `\"target_kind_source\": \"explicit_cli\"` 与 `\"signing_profile\": \"unsigned_dev_or_sign_after_mutation\"`。
+4. 固定断言 3：输出二进制 trailer 必须满足 `magic = EIPPFMT1`、`version = 1`。
+5. 固定断言 4：任一字段缺失、任一值不符、任一文件不存在即失败。
+6. 在 `core/tests/post_link_mutator/CMakeLists.txt` 固定注册 `add_executable(post_link_mutator_hardened_pipeline_contract_test ...)` 与 `add_test(NAME post_link_mutator_hardened_pipeline_contract_test COMMAND post_link_mutator_hardened_pipeline_contract_test)`。
+
+PM 任务卡 2C2-B.2（AC-4 重绑定）
+1. `AC-4` 唯一验收证据改为 `post_link_mutator_hardened_pipeline_contract_test`。
+2. `hardened_target_pipeline_test` 保留为回归测试，不再承担 AC-4 主证据职责。
+
+## Phase 2C2-C：Fault Isolation 独立 AC 绑定
+
+PM 任务卡 2C2-C.1（新增 fault isolation 专属测试）
+1. 新增文件：`core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`。
+2. 固定断言 1：`run_mutator_with_test_fault(...)` 在 `kForceReadInputFailure` 时返回 `7`。
+3. 固定断言 2：`run_mutator_with_test_fault(...)` 在 `kForceBackendUnknown` 时返回 `8`。
+4. 固定断言 3：`run_mutator_with_test_fault(...)` 在 `kForceMutationIdentity` 时返回 `9`。
+5. 固定断言 4：同一输入下 `run_mutator(...)` 不得返回 `7/8/9`。
+6. 固定断言 5：读取 `core/post_link_mutator/src/main.cpp`，必须包含 `run_mutator(argc, argv, std::cout, std::cerr)`，且不得出现 `run_mutator_with_test_fault(`。
+7. 在 `core/tests/post_link_mutator/CMakeLists.txt` 固定注册 `add_executable(post_link_mutator_fault_isolation_contract_test ...)` 与 `add_test(NAME post_link_mutator_fault_isolation_contract_test COMMAND post_link_mutator_fault_isolation_contract_test)`。
+
+PM 任务卡 2C2-C.2（Fault AC 绑定）
+1. 新增 `AC-5 fault isolation`，唯一绑定 `post_link_mutator_fault_isolation_contract_test`。
+2. 原模块边界回归顺延为 `AC-6`，绑定保持 `post_link_mutator_target_classifier_test`。
+
+## Phase 2C2-D：AC 总表重绑定（一对一硬绑定）
+
+PM 任务卡 2C2-D.1（最终 AC 映射）
+1. `AC-1 薄入口证明` -> `post_link_mutator_thin_entry_proof_test`
+2. `AC-2 退出码与 trailer 合同` -> `post_link_mutator_exit_code_trailer_contract_test`
+3. `AC-3 derived 路径合同` -> `post_link_mutator_derived_target_kind_contract_test`
+4. `AC-4 hardened pipeline 合同` -> `post_link_mutator_hardened_pipeline_contract_test`
+5. `AC-5 fault isolation` -> `post_link_mutator_fault_isolation_contract_test`
+6. `AC-6 模块边界回归` -> `post_link_mutator_target_classifier_test`
+
+PM 任务卡 2C2-D.2（Validation 判定规则）
+1. 任一 AC 未绑定独立测试目标，直接 `FAIL`。
+2. 任一 AC 仍依赖“在其他测试中新增子用例/子断言”作为主证据，直接 `FAIL`。
+3. 任一独立目标未注册 `add_test(...)` 或未被固定命令覆盖，直接 `FAIL`。
+
+## 固定验证命令（替换 2C1 fixed commands）
+1. `cmake -S /workspace/core -B /workspace/build_phase25_c -G Ninja`
+2. `cmake --build /workspace/build_phase25_c -j --target eippf_post_link_mutator eippf_post_link_mutator_core post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_target_classifier_test post_link_mutator_smoke_test hardened_target_pipeline_test`
+3. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`
+4. `ctest --test-dir /workspace/build_phase25_c --output-on-failure -R 'post_link_mutator_thin_entry_proof_test|post_link_mutator_exit_code_trailer_contract_test|post_link_mutator_derived_target_kind_contract_test|post_link_mutator_hardened_pipeline_contract_test|post_link_mutator_fault_isolation_contract_test|post_link_mutator_target_classifier_test'`（重复一次验证一致性）
+
+## 角色追踪（固定 3 角色）
+1. Agent 1（Planner）：维护 2C2 delta 与 AC 映射，按 AC-1..AC-6 一对一核验，不接受口头证明。
+2. Agent 2（Engineer）：仅按 2C2-A~2C2-D 指定文件、指定断言、指定测试名实现，不新增自定义测试名，不扩目录。
+3. Agent 3（Security Reviewer）：重点审查 `derived_from_target_label`、pipeline 合同字段、fault isolation 三条新独立证据链，确认生产路径不可触发 fault 注入分支。
+
+## 完成判据（2C2 关闭条件）
+1. `AC-1..AC-6` 对应独立测试目标全部通过。
+2. 固定验证命令 1..4 全部通过且两次 AC gate 结果一致。
+3. 任一 AC 回退为“子用例主证据”或任一独立测试目标缺失，判定 `Phase 2C2 FAIL`。
+4. 满足上述条件后，`Phase 2C` 才可从 `Validation FAIL` 更新为 `Validation PASS`。
