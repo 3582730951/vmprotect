@@ -87,3 +87,20 @@ CI blocker 收口结论:
 下一步:
 - 提交并推送当前改动。
 - 跟踪远端 `core-matrix` 直到 `linux-core` 与 `macos-ios-safe` 全绿。
+
+Delta 1:
+- 远端 run `23940662641` 的 `macos-ios-safe` 在 `iOS Strict Lane Tests` 失败。
+- hosted runner 日志确认：
+  - `post_link_mutator_smoke_test` 运行时依赖 `build_ci/post_link_mutator/eippf_post_link_mutator`
+  - macOS 目标化 build 清单漏掉了 `eippf_post_link_mutator`
+- Delta 1 三审结论:
+  - Architecture Reviewer: `PASS`
+  - Security Reviewer: `PASS`
+  - Validation Reviewer: `PASS`
+- Delta 1 工程修复:
+  - `.github/workflows/core-matrix.yml`
+  - 在 macOS build step 的 target 清单最前面补上 `eippf_post_link_mutator`
+- Delta 1 本地验证:
+  - `cmake --build /workspace/build_phase8_ci -j 4 --target eippf_post_link_mutator post_link_mutator_smoke_test`
+  - `ctest --test-dir /workspace/build_phase8_ci --output-on-failure -R '^post_link_mutator_smoke_test$'`
+  - 结果: `PASS`

@@ -1,0 +1,22 @@
+# 2026-04-03 Phase 8 CI 解阻增量 Delta 1
+
+问题来源:
+- GitHub Actions run `23940662641`
+- job: `macos-ios-safe`
+- 失败步骤: `iOS Strict Lane Tests`
+- 真实失败点:
+  - `post_link_mutator_smoke_test` 运行时找不到 `/Users/runner/work/vmprotect/vmprotect/build_ci/post_link_mutator/eippf_post_link_mutator`
+
+根因:
+- macOS job 已从全量 build 收敛为目标化 build，但 target 清单漏掉了 `eippf_post_link_mutator`。
+- `post_link_mutator_smoke_test` 不是纯源码检查测试，而是通过 `EIPPF_POST_LINK_MUTATOR_BIN="$<TARGET_FILE:eippf_post_link_mutator>"` 调用可执行 mutator。
+
+修复边界:
+- 只修改 `.github/workflows/core-matrix.yml`
+- 在 macOS build step 的 target 清单中加入 `eippf_post_link_mutator`
+- 不改测试正则，不改 Linux job，不改 strict/self-test/evidence
+
+验收:
+- macOS build step 显式构建 `eippf_post_link_mutator`
+- `post_link_mutator_smoke_test` 在 hosted runner 不再因缺少 mutator binary 失败
+- 不引入 `continue-on-error`、`|| true`、skip、排除参数

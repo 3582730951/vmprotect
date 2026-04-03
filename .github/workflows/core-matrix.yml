@@ -140,6 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           cmake --build build_ci -j 4 --target \
+            eippf_post_link_mutator \
             artifact_audit_strict_test \
             post_link_mutator_smoke_test \
             ios_safe_success_test \
