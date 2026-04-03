@@ -1,0 +1,44 @@
+# 2026-04-03 Sample Suite CI License Pipefail Delta
+
+Execution Mode:
+- `real-multi-agent`
+
+Task Summary:
+- 修复 `sample-suite-eval` 中 `build-linux-android` job 的 Android SDK license 安装失败。
+- 失败点限定为 `sdkmanager --licenses` 与 `set -euo pipefail` 的管道语义冲突。
+
+Problem Statement:
+- 失败 workflow: `sample-suite-eval`
+- 失败 run: `23942446425`
+- 失败 job: `build-linux-android`
+- 根因:
+  - `yes | sdkmanager --licenses >/dev/null` 在 `pipefail` 下因为 `yes` 收到 `SIGPIPE` 返回非零，导致整步失败。
+
+Scope:
+- 仅允许修改 [sample-suite-eval.yml](/workspace/.github/workflows/sample-suite-eval.yml)
+- 不修改样例源码
+- 不修改保护脚本
+- 不修改报告模板
+
+Acceptance Criteria:
+- `build-linux-android` 不再因 `sdkmanager --licenses` 管道失败退出。
+- 新的 `sample-suite-eval` workflow 至少进入 `protect-and-evaluate`。
+- 若后续还有新 blocker，必须是新的独立问题，不得重复当前 pipefail 根因。
+
+Implementation Card:
+- Owner: `Engineer B`
+- Files:
+  - `.github/workflows/sample-suite-eval.yml`
+- Required Change:
+  - 保留 `set -euo pipefail` 作为 job 默认 shell safety。
+  - 仅对 `sdkmanager --licenses` 调用局部关闭 `pipefail`，或改写为不会触发 `SIGPIPE` 的等价写法。
+  - 不得放宽整个 step 的错误处理。
+  - 安装 `platforms;android-34`、`build-tools;34.0.0`、`ndk;26.3.11579264` 的逻辑保持不变。
+
+Validation:
+- 推送后观察新的 `sample-suite-eval` run。
+- 若 `build-linux-android` 成功，则此 delta `PASS`。
+
+State Snapshot:
+- 当前仓库代码逻辑无需调整。
+- 当前 blocker 是单一 CI shell 语义问题。

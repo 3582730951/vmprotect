@@ -48,8 +48,10 @@ jobs:
           echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> "${GITHUB_ENV}"
           echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> "${GITHUB_PATH}"
 
+          set +o pipefail
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null
+          set -o pipefail
           "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
             --sdk_root="${ANDROID_SDK_ROOT}" \
             "platforms;android-34" \
