@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "samples": [
     {
       "id": "windows_exe",
@@ -7,6 +7,9 @@
       "artifact_kind": "pe",
       "target_kind": "desktop_native",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "windows_exe/sample_windows.exe",
       "output_name": "sample_windows.exe",
       "anchor_strings": [
@@ -21,6 +24,9 @@
       "artifact_kind": "pe",
       "target_kind": "desktop_native",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "windows_dll/sample_windows.dll",
       "output_name": "sample_windows.dll",
       "anchor_strings": [
@@ -35,6 +41,9 @@
       "artifact_kind": "pe",
       "target_kind": "windows_driver",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": true,
+      "signature_fixture_kind": "pe_win_certificate_stub",
       "input_relpath": "windows_sys/sample_windows.sys",
       "output_name": "sample_windows.sys",
       "anchor_strings": [
@@ -49,6 +58,9 @@
       "artifact_kind": "elf",
       "target_kind": "desktop_native",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "linux_elf/sample_linux_elf",
       "output_name": "sample_linux_elf",
       "anchor_strings": [
@@ -63,6 +75,9 @@
       "artifact_kind": "elf",
       "target_kind": "desktop_native",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "linux_so/libsample_linux.so",
       "output_name": "libsample_linux.so",
       "anchor_strings": [
@@ -77,6 +92,9 @@
       "artifact_kind": "elf",
       "target_kind": "linux_kernel_module",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": true,
+      "signature_fixture_kind": "elf_module_signature_stub",
       "input_relpath": "linux_ko/sample_linux_module.ko",
       "output_name": "sample_linux_module.ko",
       "anchor_strings": [
@@ -91,6 +109,9 @@
       "artifact_kind": "elf",
       "target_kind": "android_so",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "android_so/libsample_android.so",
       "output_name": "libsample_android.so",
       "anchor_strings": [
@@ -105,6 +126,9 @@
       "artifact_kind": "dex",
       "target_kind": "android_dex",
       "protect_via": "dex_toolchain",
+      "build_mode": "bundle_tool",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "android_dex/classes.dex",
       "output_name": "classes.dex",
       "anchor_strings": [
@@ -119,6 +143,9 @@
       "artifact_kind": "elf",
       "target_kind": "android_kernel_module",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": true,
+      "signature_fixture_kind": "elf_module_signature_stub",
       "input_relpath": "android_ko/sample_android_module.ko",
       "output_name": "sample_android_module.ko",
       "anchor_strings": [
@@ -133,6 +160,9 @@
       "artifact_kind": "macho",
       "target_kind": "ios_appstore",
       "protect_via": "post_link_mutator",
+      "build_mode": "wrapper_pass_pipeline",
+      "requires_signed_policy": true,
+      "signature_fixture_kind": "ios_trusted_verifier_only",
       "input_relpath": "ios_macho/sample_ios_macho",
       "output_name": "sample_ios_macho",
       "anchor_strings": [
@@ -147,6 +177,9 @@
       "artifact_kind": "shell_script",
       "target_kind": "shell_ephemeral",
       "protect_via": "script_guard",
+      "build_mode": "bundle_tool",
+      "requires_signed_policy": false,
+      "signature_fixture_kind": "none",
       "input_relpath": "shell_script/sample_eval.sh",
       "output_name": "sample_eval.sh",
       "anchor_strings": [

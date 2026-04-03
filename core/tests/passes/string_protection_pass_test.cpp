@@ -138,6 +138,44 @@ bool test_normal_candidate_rewrite_success() {
                 "wipe helper call should be injected");
 }
 
+bool test_sample_anchor_literals_are_rewritten() {
+  constexpr std::array<const char*, 3> kSampleAnchors = {
+      "EIPPF_SAMPLE_ANCHOR_WINDOWS_DLL",
+      "EIPPF_SAMPLE_ANCHOR_LINUX_SO",
+      "EIPPF_SAMPLE_ANCHOR_ANDROID_SO",
+  };
+
+  for (const char* anchor : kSampleAnchors) {
+    llvm::LLVMContext context;
+    ModuleFixture fixture = build_fixture(context, anchor);
+    if (!expect(run_pass(*fixture.module),
+                "sample anchor literal should be rewritten by string protection pass")) {
+      return false;
+    }
+
+    auto* encrypted = llvm::dyn_cast<llvm::ConstantDataSequential>(fixture.string_global->getInitializer());
+    if (!expect(encrypted != nullptr, "sample anchor candidate should keep byte-array constant form")) {
+      return false;
+    }
+
+    const std::string plain = std::string(anchor) + '\0';
+    if (!expect(encrypted->getRawDataValues() != plain,
+                "sample anchor literal must not remain plaintext after rewrite")) {
+      return false;
+    }
+    if (!expect(has_callee(*fixture.use_function, "eippf_string_token_decode"),
+                "sample anchor rewrite should inject decode helper call")) {
+      return false;
+    }
+    if (!expect(fixture.module->getNamedGlobal(kDisallowedMarker) == nullptr,
+                "sample anchor rewrite should not be tagged as disallowed lexical anchor")) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 bool test_tutorial_anchor_is_disallowed() {
   llvm::LLVMContext context;
   ModuleFixture fixture = build_fixture(context, "tutorial_anchor_here");
@@ -187,6 +225,7 @@ bool test_rewrite_avoids_long_lived_plaintext_semantics() {
 int main() {
   bool ok = true;
   ok = test_normal_candidate_rewrite_success() && ok;
+  ok = test_sample_anchor_literals_are_rewritten() && ok;
   ok = test_tutorial_anchor_is_disallowed() && ok;
   ok = test_rewrite_avoids_long_lived_plaintext_semantics() && ok;
 

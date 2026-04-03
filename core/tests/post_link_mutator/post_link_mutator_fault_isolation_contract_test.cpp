@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -15,6 +17,8 @@
 #endif
 
 namespace {
+constexpr std::size_t kElfHeader64Size = 64u;
+constexpr std::size_t kElfSectionHeader64Size = 64u;
 
 class ArgvBuilder final {
  public:
@@ -67,6 +71,105 @@ bool expect(bool condition, const char* message) {
     return {};
   }
   return path;
+}
+
+void write_u16_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint16_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+}
+
+void write_u32_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+  bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 16u) & 0xFFu);
+  bytes[offset + 3u] = static_cast<std::uint8_t>((value >> 24u) & 0xFFu);
+}
+
+void write_u64_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint64_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+  bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 16u) & 0xFFu);
+  bytes[offset + 3u] = static_cast<std::uint8_t>((value >> 24u) & 0xFFu);
+  bytes[offset + 4u] = static_cast<std::uint8_t>((value >> 32u) & 0xFFu);
+  bytes[offset + 5u] = static_cast<std::uint8_t>((value >> 40u) & 0xFFu);
+  bytes[offset + 6u] = static_cast<std::uint8_t>((value >> 48u) & 0xFFu);
+  bytes[offset + 7u] = static_cast<std::uint8_t>((value >> 56u) & 0xFFu);
+}
+
+[[nodiscard]] std::size_t align_up(std::size_t value, std::size_t alignment) {
+  const std::size_t remainder = value % alignment;
+  return remainder == 0u ? value : (value + (alignment - remainder));
+}
+
+[[nodiscard]] std::vector<std::uint8_t> make_kernel_et_rel_fixture() {
+  std::vector<std::uint8_t> bytes(kElfHeader64Size, 0u);
+  bytes[0] = 0x7Fu;
+  bytes[1] = static_cast<std::uint8_t>('E');
+  bytes[2] = static_cast<std::uint8_t>('L');
+  bytes[3] = static_cast<std::uint8_t>('F');
+  bytes[4] = 2u;
+  bytes[5] = 1u;
+  bytes[6] = 1u;
+
+  write_u16_le(bytes, 16u, 1u);
+  write_u16_le(bytes, 18u, 0x3Eu);
+  write_u32_le(bytes, 20u, 1u);
+  write_u16_le(bytes, 52u, static_cast<std::uint16_t>(kElfHeader64Size));
+  write_u16_le(bytes, 58u, static_cast<std::uint16_t>(kElfSectionHeader64Size));
+  write_u16_le(bytes, 60u, 3u);
+  write_u16_le(bytes, 62u, 1u);
+
+  const std::vector<std::uint8_t> text_payload{
+      0x90u, 0x90u, 0xC3u, 0x00u};
+  const std::vector<std::uint8_t> shstrtab{
+      0x00u,
+      static_cast<std::uint8_t>('.'),
+      static_cast<std::uint8_t>('s'),
+      static_cast<std::uint8_t>('h'),
+      static_cast<std::uint8_t>('s'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('r'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('a'),
+      static_cast<std::uint8_t>('b'),
+      0x00u,
+      static_cast<std::uint8_t>('.'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('e'),
+      static_cast<std::uint8_t>('x'),
+      static_cast<std::uint8_t>('t'),
+      0x00u};
+
+  const std::size_t text_offset = align_up(kElfHeader64Size, 4u);
+  const std::size_t shstrtab_offset = align_up(text_offset + text_payload.size(), 4u);
+  const std::size_t section_header_offset = align_up(shstrtab_offset + shstrtab.size(), 4u);
+  const std::size_t total_size = section_header_offset + (3u * kElfSectionHeader64Size);
+  bytes.resize(total_size, 0u);
+
+  std::copy(text_payload.begin(),
+            text_payload.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(text_offset));
+  std::copy(shstrtab.begin(),
+            shstrtab.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(shstrtab_offset));
+
+  write_u64_le(bytes, 40u, static_cast<std::uint64_t>(section_header_offset));
+
+  const std::size_t shstrtab_entry_offset = section_header_offset + kElfSectionHeader64Size;
+  write_u32_le(bytes, shstrtab_entry_offset + 0u, 1u);
+  write_u32_le(bytes, shstrtab_entry_offset + 4u, 3u);
+  write_u64_le(bytes, shstrtab_entry_offset + 24u, static_cast<std::uint64_t>(shstrtab_offset));
+  write_u64_le(bytes, shstrtab_entry_offset + 32u, static_cast<std::uint64_t>(shstrtab.size()));
+  write_u64_le(bytes, shstrtab_entry_offset + 48u, 1u);
+
+  const std::size_t text_entry_offset = shstrtab_entry_offset + kElfSectionHeader64Size;
+  write_u32_le(bytes, text_entry_offset + 0u, 11u);
+  write_u32_le(bytes, text_entry_offset + 4u, 1u);
+  write_u64_le(bytes, text_entry_offset + 24u, static_cast<std::uint64_t>(text_offset));
+  write_u64_le(bytes, text_entry_offset + 32u, static_cast<std::uint64_t>(text_payload.size()));
+  write_u64_le(bytes, text_entry_offset + 48u, 4u);
+
+  return bytes;
 }
 
 bool write_bytes(const std::filesystem::path& path, const std::vector<std::uint8_t>& bytes) {
@@ -143,9 +246,7 @@ int main() {
   }
 
   const std::filesystem::path input_path = temp_dir / "input.elf";
-  const std::vector<std::uint8_t> elf_bytes{
-      0x7fu, static_cast<std::uint8_t>('E'), static_cast<std::uint8_t>('L'),
-      static_cast<std::uint8_t>('F'), 0x02u, 0x01u, 0x01u, 0x00u};
+  const std::vector<std::uint8_t> elf_bytes = make_kernel_et_rel_fixture();
   if (!expect(write_bytes(input_path, elf_bytes), "failed to write input fixture")) {
     std::filesystem::remove_all(temp_dir);
     return 1;
@@ -217,9 +318,7 @@ int main() {
       "linux_kernel_module",
   };
   const RunResult normal_result = run_without_fault(normal_args);
-  if (!expect(normal_result.exit_code != 7 && normal_result.exit_code != 8 &&
-                  normal_result.exit_code != 9,
-              "non-fault path must not return fault-only exit codes")) {
+  if (!expect(normal_result.exit_code == 0, "non-fault path should succeed")) {
     std::filesystem::remove_all(temp_dir);
     return 1;
   }

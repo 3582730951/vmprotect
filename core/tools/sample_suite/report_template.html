@@ -105,38 +105,60 @@
     </section>
 
     <section class="section">
-      <h2>Summary</h2>
+      <h2>Artifact Shape</h2>
       <table>
         <thead>
           <tr>
             <th>Sample ID</th>
             <th>Target</th>
             <th>Protection Tool</th>
+            <th>Validation Scope</th>
+            <th>Known Limits</th>
+            <th>Input SHA256</th>
+            <th>Output SHA256</th>
             <th>Original Anchor Visible</th>
             <th>Protected Anchor Visible</th>
             <th>Original Strings</th>
             <th>Protected Strings</th>
-            <th>Protected Strict Failures</th>
+            <th>Artifact Shape Strict Failures</th>
+            <th>Policy Only Unsigned</th>
           </tr>
         </thead>
         <tbody>
-          {{summary_table_rows}}
+          {{artifact_shape_rows}}
         </tbody>
       </table>
     </section>
 
     <section class="section">
-      <h2>Validation Scope And Limits</h2>
+      <h2>Signed Policy</h2>
       <table>
         <thead>
           <tr>
             <th>Sample ID</th>
-            <th>Validated Scope</th>
-            <th>Known Limits</th>
+            <th>Signed Policy Artifact</th>
+            <th>Signed Policy SHA256</th>
+            <th>Trusted Verifier</th>
+            <th>Signed Policy Strict Failures</th>
           </tr>
         </thead>
         <tbody>
-          {{scope_rows}}
+          {{signed_policy_rows}}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Implementation Defects</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Sample ID</th>
+            <th>Defect Codes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{implementation_defect_rows}}
         </tbody>
       </table>
     </section>

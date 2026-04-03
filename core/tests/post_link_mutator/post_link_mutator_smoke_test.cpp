@@ -1,12 +1,14 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +24,11 @@
 namespace {
 
 constexpr std::string_view kMutationTrailerMagic = "EIPPFMT1";
+constexpr std::string_view kExpectedNoteSectionName = ".note.eippf";
+constexpr std::size_t kElfHeader64Size = 64u;
+constexpr std::size_t kElfSectionHeader64Size = 64u;
+constexpr std::size_t kPeOffsetField = 0x3Cu;
+constexpr std::size_t kCoffHeaderSize = 20u;
 
 struct ExpectedManifest final {
   std::string artifact_kind;
@@ -41,6 +48,8 @@ struct ExpectedManifest final {
   bool hvci_profile = false;
   bool vermagic_profile = false;
   bool gki_kmi_profile = false;
+  std::string mutation_envelope_kind;
+  bool requires_resign = false;
 };
 
 [[nodiscard]] std::string quote_arg(const std::string& value) {
@@ -68,6 +77,149 @@ struct ExpectedManifest final {
 #else
   return status;
 #endif
+}
+
+void write_u16_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint16_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+}
+
+void write_u32_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint32_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+  bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 16u) & 0xFFu);
+  bytes[offset + 3u] = static_cast<std::uint8_t>((value >> 24u) & 0xFFu);
+}
+
+void write_u64_le(std::vector<std::uint8_t>& bytes, std::size_t offset, std::uint64_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value & 0xFFu);
+  bytes[offset + 1u] = static_cast<std::uint8_t>((value >> 8u) & 0xFFu);
+  bytes[offset + 2u] = static_cast<std::uint8_t>((value >> 16u) & 0xFFu);
+  bytes[offset + 3u] = static_cast<std::uint8_t>((value >> 24u) & 0xFFu);
+  bytes[offset + 4u] = static_cast<std::uint8_t>((value >> 32u) & 0xFFu);
+  bytes[offset + 5u] = static_cast<std::uint8_t>((value >> 40u) & 0xFFu);
+  bytes[offset + 6u] = static_cast<std::uint8_t>((value >> 48u) & 0xFFu);
+  bytes[offset + 7u] = static_cast<std::uint8_t>((value >> 56u) & 0xFFu);
+}
+
+[[nodiscard]] std::size_t align_up(std::size_t value, std::size_t alignment) {
+  const std::size_t remainder = value % alignment;
+  return remainder == 0u ? value : (value + (alignment - remainder));
+}
+
+[[nodiscard]] std::vector<std::uint8_t> make_kernel_et_rel_fixture() {
+  std::vector<std::uint8_t> bytes(kElfHeader64Size, 0u);
+  bytes[0] = 0x7Fu;
+  bytes[1] = static_cast<std::uint8_t>('E');
+  bytes[2] = static_cast<std::uint8_t>('L');
+  bytes[3] = static_cast<std::uint8_t>('F');
+  bytes[4] = 2u;
+  bytes[5] = 1u;
+  bytes[6] = 1u;
+
+  write_u16_le(bytes, 16u, 1u);
+  write_u16_le(bytes, 18u, 0x3Eu);
+  write_u32_le(bytes, 20u, 1u);
+  write_u16_le(bytes, 52u, static_cast<std::uint16_t>(kElfHeader64Size));
+  write_u16_le(bytes, 58u, static_cast<std::uint16_t>(kElfSectionHeader64Size));
+  write_u16_le(bytes, 60u, 3u);
+  write_u16_le(bytes, 62u, 1u);
+
+  const std::vector<std::uint8_t> text_payload{
+      0x90u, 0x90u, 0xC3u, 0x00u};
+  const std::vector<std::uint8_t> shstrtab{
+      0x00u,
+      static_cast<std::uint8_t>('.'),
+      static_cast<std::uint8_t>('s'),
+      static_cast<std::uint8_t>('h'),
+      static_cast<std::uint8_t>('s'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('r'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('a'),
+      static_cast<std::uint8_t>('b'),
+      0x00u,
+      static_cast<std::uint8_t>('.'),
+      static_cast<std::uint8_t>('t'),
+      static_cast<std::uint8_t>('e'),
+      static_cast<std::uint8_t>('x'),
+      static_cast<std::uint8_t>('t'),
+      0x00u};
+
+  const std::size_t text_offset = align_up(kElfHeader64Size, 4u);
+  const std::size_t shstrtab_offset = align_up(text_offset + text_payload.size(), 4u);
+  const std::size_t section_header_offset = align_up(shstrtab_offset + shstrtab.size(), 4u);
+  const std::size_t total_size = section_header_offset + (3u * kElfSectionHeader64Size);
+  bytes.resize(total_size, 0u);
+
+  std::copy(text_payload.begin(),
+            text_payload.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(text_offset));
+  std::copy(shstrtab.begin(),
+            shstrtab.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(shstrtab_offset));
+
+  write_u64_le(bytes, 40u, static_cast<std::uint64_t>(section_header_offset));
+
+  const std::size_t shstrtab_entry_offset = section_header_offset + kElfSectionHeader64Size;
+  write_u32_le(bytes, shstrtab_entry_offset + 0u, 1u);
+  write_u32_le(bytes, shstrtab_entry_offset + 4u, 3u);
+  write_u64_le(bytes, shstrtab_entry_offset + 24u, static_cast<std::uint64_t>(shstrtab_offset));
+  write_u64_le(bytes, shstrtab_entry_offset + 32u, static_cast<std::uint64_t>(shstrtab.size()));
+  write_u64_le(bytes, shstrtab_entry_offset + 48u, 1u);
+
+  const std::size_t text_entry_offset = shstrtab_entry_offset + kElfSectionHeader64Size;
+  write_u32_le(bytes, text_entry_offset + 0u, 11u);
+  write_u32_le(bytes, text_entry_offset + 4u, 1u);
+  write_u64_le(bytes, text_entry_offset + 24u, static_cast<std::uint64_t>(text_offset));
+  write_u64_le(bytes, text_entry_offset + 32u, static_cast<std::uint64_t>(text_payload.size()));
+  write_u64_le(bytes, text_entry_offset + 48u, 4u);
+
+  return bytes;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> make_windows_driver_pe_fixture() {
+  std::vector<std::uint8_t> bytes(0x240u, 0u);
+  bytes[0] = static_cast<std::uint8_t>('M');
+  bytes[1] = static_cast<std::uint8_t>('Z');
+  write_u32_le(bytes, kPeOffsetField, 0x80u);
+
+  const std::size_t pe_offset = 0x80u;
+  bytes[pe_offset] = static_cast<std::uint8_t>('P');
+  bytes[pe_offset + 1u] = static_cast<std::uint8_t>('E');
+  bytes[pe_offset + 2u] = 0u;
+  bytes[pe_offset + 3u] = 0u;
+
+  const std::size_t coff_offset = pe_offset + 4u;
+  write_u16_le(bytes, coff_offset + 0u, 0x8664u);
+  write_u16_le(bytes, coff_offset + 2u, 1u);
+  write_u16_le(bytes, coff_offset + 16u, 0xF0u);
+  write_u16_le(bytes, coff_offset + 18u, 0x2022u);
+
+  const std::size_t optional_header_offset = coff_offset + kCoffHeaderSize;
+  write_u16_le(bytes, optional_header_offset + 0u, 0x20Bu);
+  write_u32_le(bytes, optional_header_offset + 56u, 0x1000u);
+  write_u32_le(bytes, optional_header_offset + 60u, 0x200u);
+
+  const std::size_t section_offset = optional_header_offset + 0xF0u;
+  bytes[section_offset + 0u] = static_cast<std::uint8_t>('.');
+  bytes[section_offset + 1u] = static_cast<std::uint8_t>('t');
+  bytes[section_offset + 2u] = static_cast<std::uint8_t>('e');
+  bytes[section_offset + 3u] = static_cast<std::uint8_t>('x');
+  bytes[section_offset + 4u] = static_cast<std::uint8_t>('t');
+  write_u32_le(bytes, section_offset + 8u, 0x20u);
+  write_u32_le(bytes, section_offset + 12u, 0x1000u);
+  write_u32_le(bytes, section_offset + 16u, 0x20u);
+  write_u32_le(bytes, section_offset + 20u, 0x200u);
+  write_u32_le(bytes, section_offset + 36u, 0x60000020u);
+
+  const std::size_t raw_start = 0x200u;
+  const std::vector<std::uint8_t> payload{
+      0x48u, 0x31u, 0xC0u, 0xC3u, 0x90u, 0x90u, 0x90u, 0x90u};
+  std::copy(payload.begin(),
+            payload.end(),
+            bytes.begin() + static_cast<std::ptrdiff_t>(raw_start));
+  return bytes;
 }
 
 [[nodiscard]] std::vector<std::uint8_t> read_file_bytes(const std::filesystem::path& path) {
@@ -133,6 +285,7 @@ bool expect_manifest_fields(const std::filesystem::path& manifest_path,
   const std::string hvci_profile = expected.hvci_profile ? "true" : "false";
   const std::string vermagic_profile = expected.vermagic_profile ? "true" : "false";
   const std::string gki_kmi_profile = expected.gki_kmi_profile ? "true" : "false";
+  const std::string requires_resign = expected.requires_resign ? "true" : "false";
 
   return expect(manifest.find("\"schema_version\": 2") != std::string::npos,
                 "manifest schema version mismatch") &&
@@ -162,6 +315,11 @@ bool expect_manifest_fields(const std::filesystem::path& manifest_path,
          expect(manifest.find("\"signature_policy\": \"" + expected.signature_policy + "\"") !=
                     std::string::npos,
                 "manifest signature policy mismatch") &&
+         expect(manifest.find("\"mutation_envelope_kind\": \"" + expected.mutation_envelope_kind +
+                                  "\"") != std::string::npos,
+                "manifest mutation envelope kind mismatch") &&
+         expect(manifest.find("\"requires_resign\": " + requires_resign) != std::string::npos,
+                "manifest requires_resign mismatch") &&
          expect(manifest.find("\"kernel_compat_profile\": \"" + expected.kernel_compat_profile + "\"") !=
                     std::string::npos,
                 "manifest kernel compat profile mismatch") &&
@@ -211,12 +369,31 @@ bool expect_trailer_magic_and_version(const std::vector<std::uint8_t>& original,
   return expect(*version_it == 1u, "mutation trailer version mismatch");
 }
 
+bool expect_kernel_note_semantics(const std::vector<std::uint8_t>& mutated) {
+  if (!expect(mutated.size() >= 4u, "kernel mutated output should have ELF header")) {
+    return false;
+  }
+  if (!expect(mutated[0] == 0x7Fu && mutated[1] == static_cast<std::uint8_t>('E') &&
+                  mutated[2] == static_cast<std::uint8_t>('L') &&
+                  mutated[3] == static_cast<std::uint8_t>('F'),
+              "kernel mutated output should remain ELF")) {
+    return false;
+  }
+  const auto note_begin = std::search(mutated.begin(),
+                                      mutated.end(),
+                                      kExpectedNoteSectionName.begin(),
+                                      kExpectedNoteSectionName.end());
+  return expect(note_begin != mutated.end(), "kernel mutated output missing .note.eippf");
+}
+
 int run_success_case(const std::filesystem::path& temp_dir,
                      std::string_view label,
                      std::string_view target_label,
                      const std::vector<std::uint8_t>& input_content,
                      const ExpectedManifest& expected,
-                     bool in_place_output) {
+                     bool in_place_output,
+                     bool expect_kernel_note,
+                     bool expect_prefix_preserved) {
   const std::filesystem::path input = temp_dir / (std::string(label) + ".in.bin");
   const std::filesystem::path output = in_place_output
                                            ? input
@@ -243,15 +420,22 @@ int run_success_case(const std::filesystem::path& temp_dir,
   if (!expect(got.size() > input_content.size(), "mutated output should grow after trailer append")) {
     return 1;
   }
-  if (!expect(std::equal(input_content.begin(), input_content.end(), got.begin()),
+  if (expect_prefix_preserved &&
+      !expect(std::equal(input_content.begin(), input_content.end(), got.begin()),
               "mutated output should preserve original prefix")) {
     return 1;
   }
   if (!expect(got != input_content, "mutated output must differ from input")) {
     return 1;
   }
-  if (!expect_trailer_magic_and_version(input_content, got)) {
-    return 1;
+  if (expect_kernel_note) {
+    if (!expect_kernel_note_semantics(got)) {
+      return 1;
+    }
+  } else {
+    if (!expect_trailer_magic_and_version(input_content, got)) {
+      return 1;
+    }
   }
 
   if (!expect_manifest_fields(manifest, target_label, "explicit_cli", expected)) {
@@ -352,18 +536,12 @@ int main() {
     return 1;
   }
 
-  std::vector<std::uint8_t> pe(256u, 0u);
-  pe[0] = static_cast<std::uint8_t>('M');
-  pe[1] = static_cast<std::uint8_t>('Z');
-  pe[0x3c] = 0x80u;
-  pe[0x80] = static_cast<std::uint8_t>('P');
-  pe[0x81] = static_cast<std::uint8_t>('E');
-  pe[0x82] = 0x00u;
-  pe[0x83] = 0x00u;
+  const std::vector<std::uint8_t> pe = make_windows_driver_pe_fixture();
 
   const std::vector<std::uint8_t> elf{
       0x7fu, static_cast<std::uint8_t>('E'), static_cast<std::uint8_t>('L'),
       static_cast<std::uint8_t>('F'), 0x02u, 0x01u, 0x01u, 0x00u};
+  const std::vector<std::uint8_t> kernel_elf = make_kernel_et_rel_fixture();
 
   const std::vector<std::uint8_t> macho{
       0xFEu, 0xEDu, 0xFAu, 0xCFu, 0x00u, 0x00u, 0x00u, 0x00u};
@@ -392,8 +570,12 @@ int main() {
                            true,
                            false,
                            false,
+                           false,
+                           "pe_user_mode_trailer_v1",
                            false},
-          false) != 0) {
+          false,
+          false,
+          true) != 0) {
     return 1;
   }
   if (run_success_case(
@@ -417,8 +599,12 @@ int main() {
                            true,
                            false,
                            false,
+                           false,
+                           "elf_user_mode_trailer_v1",
                            false},
-          false) != 0) {
+          false,
+          false,
+          true) != 0) {
     return 1;
   }
   if (run_success_case(
@@ -442,8 +628,12 @@ int main() {
                            true,
                            false,
                            false,
-                           false},
-          false) != 0) {
+                           false,
+                           "macho_user_mode_trailer_v1",
+                           true},
+          false,
+          false,
+          true) != 0) {
     return 1;
   }
   if (run_success_case(
@@ -467,15 +657,19 @@ int main() {
                            true,
                            true,
                            false,
-                           false},
-          false) != 0) {
+                           false,
+                           "pe_overlay_trailer_v2",
+                           true},
+          false,
+          false,
+          true) != 0) {
     return 1;
   }
   if (run_success_case(
           temp_dir,
           "linux_ko",
           "linux_kernel_module.ko",
-          elf,
+          kernel_elf,
           ExpectedManifest{"linux_kernel_module_ko",
                            "linux_kernel_module",
                            "kernel_safe_aot",
@@ -492,15 +686,19 @@ int main() {
                            true,
                            false,
                            true,
-                           false},
-          true) != 0) {
+                           false,
+                           "elf_note_section_v1",
+                           true},
+          true,
+          true,
+          false) != 0) {
     return 1;
   }
   if (run_success_case(
           temp_dir,
           "android_ko",
           "android_kernel_module.ko",
-          elf,
+          kernel_elf,
           ExpectedManifest{"linux_kernel_module_ko",
                            "android_kernel_module",
                            "kernel_safe_aot",
@@ -517,8 +715,12 @@ int main() {
                            true,
                            false,
                            false,
+                           true,
+                           "elf_note_section_v1",
                            true},
-          true) != 0) {
+          true,
+          true,
+          false) != 0) {
     return 1;
   }
   if (run_failure_case(temp_dir, "unknown", "desktop_native", unknown) != 0) {

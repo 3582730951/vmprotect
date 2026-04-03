@@ -58,8 +58,11 @@ if(TARGET eippf_post_link_mutator)
   add_executable(post_link_mutator_hardened_pipeline_contract_test
     post_link_mutator_hardened_pipeline_contract_test.cpp
   )
+  add_dependencies(post_link_mutator_hardened_pipeline_contract_test
+    hardened_target_pipeline_fixture
+  )
   target_compile_definitions(post_link_mutator_hardened_pipeline_contract_test PRIVATE
-    EIPPF_HARDENED_FIXTURE_PATH="${CMAKE_BINARY_DIR}/tests/tools/hardened_target_pipeline_fixture"
+    EIPPF_HARDENED_FIXTURE_PATH="$<TARGET_FILE:hardened_target_pipeline_fixture>"
     EIPPF_HARDENED_FIXTURE_MANIFEST_PATH="${CMAKE_BINARY_DIR}/tests/tools/hardened_target_pipeline_fixture.eippf.manifest.json"
   )
   eippf_configure_post_link_mutator_test(post_link_mutator_hardened_pipeline_contract_test)
@@ -108,5 +111,17 @@ if(TARGET eippf_post_link_mutator)
   add_test(
     NAME post_link_mutator_user_mode_contract_test
     COMMAND post_link_mutator_user_mode_contract_test
+  )
+
+  add_executable(post_link_mutator_kernel_mutator_contract_test
+    post_link_mutator_kernel_mutator_contract_test.cpp
+  )
+  target_link_libraries(post_link_mutator_kernel_mutator_contract_test PRIVATE
+    eippf_post_link_mutator_core
+  )
+  eippf_configure_post_link_mutator_test(post_link_mutator_kernel_mutator_contract_test)
+  add_test(
+    NAME post_link_mutator_kernel_mutator_contract_test
+    COMMAND post_link_mutator_kernel_mutator_contract_test
   )
 endif()

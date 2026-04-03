@@ -11,10 +11,12 @@
 #include "post_link_mutator/artifact_detector.hpp"
 #include "post_link_mutator/binary_io.hpp"
 #include "post_link_mutator/cli_options.hpp"
+#include "post_link_mutator/elf_kernel_module_mutator.hpp"
 #include "post_link_mutator/elf_user_mode_mutator.hpp"
 #include "post_link_mutator/macho_user_mode_mutator.hpp"
 #include "post_link_mutator/manifest_writer.hpp"
 #include "post_link_mutator/mutation_trailer.hpp"
+#include "post_link_mutator/pe_kernel_driver_mutator.hpp"
 #include "post_link_mutator/pe_user_mode_mutator.hpp"
 #include "post_link_mutator/target_classifier.hpp"
 
@@ -32,6 +34,14 @@ namespace {
   using eippf::contracts::ArtifactKind;
   return artifact_kind == ArtifactKind::kPe || artifact_kind == ArtifactKind::kElf ||
          artifact_kind == ArtifactKind::kMachO;
+}
+
+[[nodiscard]] bool is_kernel_target_kind(
+    eippf::contracts::ProtectionTargetKind target_kind) noexcept {
+  using eippf::contracts::ProtectionTargetKind;
+  return target_kind == ProtectionTargetKind::kWindowsDriver ||
+         target_kind == ProtectionTargetKind::kLinuxKernelModule ||
+         target_kind == ProtectionTargetKind::kAndroidKernelModule;
 }
 
 [[nodiscard]] std::optional<std::vector<std::uint8_t>> mutate_user_mode_artifact(
@@ -147,6 +157,21 @@ int run_mutator_with_test_fault(int argc,
       return 9;
     }
     mutated = *user_mode_mutated;
+  } else if (is_kernel_target_kind(target_kind)) {
+    std::optional<std::vector<std::uint8_t>> kernel_mutated;
+    if (target_kind == ProtectionTargetKind::kWindowsDriver) {
+      kernel_mutated =
+          mutate_pe_kernel_driver_artifact(input, target_kind, backend_kind, manifest_artifact_kind);
+    } else if (target_kind == ProtectionTargetKind::kLinuxKernelModule ||
+               target_kind == ProtectionTargetKind::kAndroidKernelModule) {
+      kernel_mutated =
+          mutate_elf_kernel_module_artifact(input, target_kind, backend_kind, manifest_artifact_kind);
+    }
+    if (!kernel_mutated.has_value()) {
+      err << "Kernel mutator rejected artifact/target combination\n";
+      return 9;
+    }
+    mutated = *kernel_mutated;
   } else {
     mutated = mutate_artifact(input, target_kind, backend_kind, manifest_artifact_kind);
   }

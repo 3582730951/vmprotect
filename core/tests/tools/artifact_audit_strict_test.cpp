@@ -32,6 +32,12 @@
 
 namespace {
 
+constexpr std::string_view kDexBundleMagic = "EDXB";
+constexpr std::size_t kDexBundleHeaderBytes = 26u;
+constexpr std::size_t kDexBundleFlagsOffset = 5u;
+constexpr std::size_t kDexBundleKeyMarkerOffset = 9u;
+constexpr std::size_t kDexBundlePayloadLengthOffset = 18u;
+
 struct PeFixtureOptions final {
   std::uint32_t text_characteristics = 0x60000020u;
   std::string payload = "clean_payload";
@@ -507,24 +513,27 @@ bool expect_report_not_contains(const std::string& report, std::string_view need
   return manifest;
 }
 
-[[nodiscard]] std::vector<std::uint8_t> build_dex_bundle_fixture(bool embedded_key_marker = false) {
-  std::vector<std::uint8_t> bytes;
-  bytes.reserve(24u);
-  bytes.push_back(static_cast<std::uint8_t>('E'));
-  bytes.push_back(static_cast<std::uint8_t>('D'));
-  bytes.push_back(static_cast<std::uint8_t>('X'));
-  bytes.push_back(static_cast<std::uint8_t>('B'));
-  bytes.push_back(3u);  // loader format version
-  bytes.push_back(embedded_key_marker ? 1u : 0u);
-  while (bytes.size() < 18u) {
-    bytes.push_back(0u);
+[[nodiscard]] std::vector<std::uint8_t> build_dex_bundle_fixture(std::uint8_t flags = 0u,
+                                                                  std::uint8_t key_marker = 0u) {
+  std::vector<std::uint8_t> bytes(kDexBundleHeaderBytes, 0u);
+  bytes[0u] = static_cast<std::uint8_t>(kDexBundleMagic[0u]);
+  bytes[1u] = static_cast<std::uint8_t>(kDexBundleMagic[1u]);
+  bytes[2u] = static_cast<std::uint8_t>(kDexBundleMagic[2u]);
+  bytes[3u] = static_cast<std::uint8_t>(kDexBundleMagic[3u]);
+  bytes[4u] = 3u;  // loader format version
+  bytes[kDexBundleFlagsOffset] = flags;
+  bytes[6u] = static_cast<std::uint8_t>('0');
+  bytes[7u] = static_cast<std::uint8_t>('3');
+  bytes[8u] = static_cast<std::uint8_t>('5');
+  bytes[kDexBundleKeyMarkerOffset] = key_marker;
+
+  constexpr std::string_view kPayload = "CIPHER";
+  const std::uint64_t payload_len = static_cast<std::uint64_t>(kPayload.size());
+  for (std::size_t i = 0; i < 8u; ++i) {
+    bytes[kDexBundlePayloadLengthOffset + i] = static_cast<std::uint8_t>((payload_len >> (8u * i)) & 0xFFu);
   }
-  bytes.push_back(static_cast<std::uint8_t>('C'));
-  bytes.push_back(static_cast<std::uint8_t>('I'));
-  bytes.push_back(static_cast<std::uint8_t>('P'));
-  bytes.push_back(static_cast<std::uint8_t>('H'));
-  bytes.push_back(static_cast<std::uint8_t>('E'));
-  bytes.push_back(static_cast<std::uint8_t>('R'));
+
+  bytes.insert(bytes.end(), kPayload.begin(), kPayload.end());
   return bytes;
 }
 
@@ -668,6 +677,8 @@ int main() {
   const std::filesystem::path shell_manifest_symlink_provider_path =
       temp_dir / "shell_symlink_provider.manifest.json";
   const std::filesystem::path dex_bundle_artifact = temp_dir / "loader_bundle.eippf";
+  const std::filesystem::path dex_bundle_flags_artifact = temp_dir / "loader_bundle_flags.eippf";
+  const std::filesystem::path dex_bundle_key_marker_artifact = temp_dir / "loader_bundle_key_marker.eippf";
   const std::filesystem::path raw_dex_plaintext_artifact = temp_dir / "classes.dex";
   const std::filesystem::path dex_manifest_success_path = temp_dir / "dex_success.manifest.json";
   const std::filesystem::path dex_manifest_missing_metadata_path =
@@ -716,7 +727,9 @@ int main() {
           "/System/Library/PrivateFrameworks/FrontBoardServices.framework/FrontBoardServices");
   const std::vector<std::uint8_t> rwx_macho_bytes = build_macho32_fixture(true, {}, true);
   const std::vector<std::uint8_t> shell_bundle_bytes = build_shell_bundle_fixture();
-  const std::vector<std::uint8_t> dex_bundle_bytes = build_dex_bundle_fixture(false);
+  const std::vector<std::uint8_t> dex_bundle_bytes = build_dex_bundle_fixture(0u, 0u);
+  const std::vector<std::uint8_t> dex_bundle_flags_bytes = build_dex_bundle_fixture(0x03u, 0u);
+  const std::vector<std::uint8_t> dex_bundle_key_marker_bytes = build_dex_bundle_fixture(0u, 1u);
   const std::vector<std::uint8_t> raw_dex_plaintext_bytes = build_raw_dex_fixture("SECRET_ANCHOR");
 
   if (!write_bytes(clean_artifact, clean_bytes) || !write_bytes(dirty_artifact, dirty_bytes) ||
@@ -733,6 +746,8 @@ int main() {
       !write_bytes(rwx_macho_artifact, rwx_macho_bytes) ||
       !write_bytes(shell_bundle_artifact, shell_bundle_bytes) ||
       !write_bytes(dex_bundle_artifact, dex_bundle_bytes) ||
+      !write_bytes(dex_bundle_flags_artifact, dex_bundle_flags_bytes) ||
+      !write_bytes(dex_bundle_key_marker_artifact, dex_bundle_key_marker_bytes) ||
       !write_bytes(raw_dex_plaintext_artifact, raw_dex_plaintext_bytes)) {
     std::cerr << "[FAIL] cannot write test artifacts\n";
     return 1;
@@ -1615,6 +1630,34 @@ int main() {
   const std::string dex_success_report = read_text(report_path);
   if (!expect_report_contains(dex_success_report, "\"strict_failures\": []",
                               "dex strict success should keep strict_failures empty")) {
+    return 1;
+  }
+
+  if (!expect(run_audit(dex_bundle_flags_artifact,
+                        report_path,
+                        EIPPF_LEXICAL_DENYLIST_PATH,
+                        true,
+                        {"--manifest", dex_manifest_success_path.string()}) == 0,
+              "dex bundle with non-zero flags and zero key marker should pass strict audit")) {
+    return 1;
+  }
+  const std::string dex_flags_report = read_text(report_path);
+  if (!expect_report_contains(dex_flags_report, "\"strict_failures\": []",
+                              "dex non-zero flags should keep strict_failures empty")) {
+    return 1;
+  }
+
+  if (!expect(run_audit(dex_bundle_key_marker_artifact,
+                        report_path,
+                        EIPPF_LEXICAL_DENYLIST_PATH,
+                        true,
+                        {"--manifest", dex_manifest_success_path.string()}) != 0,
+              "dex bundle with non-zero key marker should fail strict audit")) {
+    return 1;
+  }
+  const std::string dex_key_marker_report = read_text(report_path);
+  if (!expect_report_contains(dex_key_marker_report, "bundle_invariant_violation",
+                              "dex non-zero key marker should report bundle_invariant_violation")) {
     return 1;
   }
 

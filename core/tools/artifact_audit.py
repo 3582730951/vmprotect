@@ -94,6 +94,22 @@ SIGNED_ARTIFACT_KINDS = {
     "linux_kernel_module_ko",
 }
 
+DEX_BUNDLE_MAGIC = b"EDXB"
+SHELL_BUNDLE_MAGIC = b"ESHB"
+
+DEX_BUNDLE_HEADER_FORMAT_VERSION_OFFSET = 4
+DEX_BUNDLE_HEADER_FLAGS_OFFSET = 5
+DEX_BUNDLE_HEADER_DEX_VERSION_OFFSET = 6
+DEX_BUNDLE_HEADER_DEX_VERSION_LENGTH = 3
+DEX_BUNDLE_HEADER_KEY_MATERIAL_MARKER_OFFSET = (
+    DEX_BUNDLE_HEADER_DEX_VERSION_OFFSET + DEX_BUNDLE_HEADER_DEX_VERSION_LENGTH
+)
+DEX_BUNDLE_INVARIANT_MIN_BYTES = 18
+
+SHELL_BUNDLE_HEADER_FORMAT_VERSION_OFFSET = 4
+SHELL_BUNDLE_HEADER_KEY_MATERIAL_MARKER_OFFSET = 5
+SHELL_BUNDLE_INVARIANT_MIN_BYTES = 16
+
 DEX_LOADER_PROVIDER_KIND_ALLOWLIST = (
     "executable_adapter",
     "fifo",
@@ -168,9 +184,9 @@ def detect_artifact_kind(data: bytes) -> str:
         return "macho"
     if data.startswith(b"dex\n"):
         return "dex"
-    if data.startswith(b"EDXB"):
+    if data.startswith(DEX_BUNDLE_MAGIC):
         return "dex_bundle"
-    if data.startswith(b"ESHB"):
+    if data.startswith(SHELL_BUNDLE_MAGIC):
         return "shell_bundle"
     return "unknown"
 
@@ -609,17 +625,17 @@ def audit_native_permissions(data: bytes, artifact_kind: str) -> tuple[bool, lis
 
 def audit_bundle_invariants(data: bytes, artifact_kind: str) -> tuple[bool, list[dict[str, object]], bool]:
     if artifact_kind == "dex_bundle":
-        if len(data) < 18:
+        if len(data) < DEX_BUNDLE_INVARIANT_MIN_BYTES:
             return False, [{"kind": "malformed_bundle", "detail": "truncated_dex_bundle_header"}], False
         violations: list[dict[str, object]] = []
-        if data[5] != 0:
+        if data[DEX_BUNDLE_HEADER_KEY_MATERIAL_MARKER_OFFSET] != 0:
             violations.append({"kind": "embedded_key_material", "detail": "dex_bundle_key_marker_non_zero"})
         return len(violations) == 0, violations, True
     if artifact_kind == "shell_bundle":
-        if len(data) < 16:
+        if len(data) < SHELL_BUNDLE_INVARIANT_MIN_BYTES:
             return False, [{"kind": "malformed_bundle", "detail": "truncated_shell_bundle_header"}], False
         violations: list[dict[str, object]] = []
-        if data[5] != 0:
+        if data[SHELL_BUNDLE_HEADER_KEY_MATERIAL_MARKER_OFFSET] != 0:
             violations.append({"kind": "embedded_key_material", "detail": "shell_bundle_key_marker_non_zero"})
         return len(violations) == 0, violations, True
     return True, [], True
@@ -2378,7 +2394,7 @@ def run_self_test() -> int:
     default_manifest_meta = load_manifest_metadata(None)
     assert detect_artifact_kind(b"MZ\x00\x00") == "pe"
     assert detect_artifact_kind(b"\x7fELF\x02\x01") == "elf"
-    assert detect_artifact_kind(b"EDXB\x01") == "dex_bundle"
+    assert detect_artifact_kind(DEX_BUNDLE_MAGIC + b"\x01") == "dex_bundle"
     assert "tutorial_anchor" in extract_strings(b"\x00tutorial_anchor\x00")
 
     good_pe = build_test_pe(IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE | 0x20, b"clean")

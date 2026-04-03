@@ -1,0 +1,194 @@
+# 2026-04-03 样例评估链整改 Delta 计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 基于当前工作区已落地但未完全验收的改动，完成样例评估链的剩余收口：
+  - native/kernel sample 编译链真正切到 `wrapper + eippf_protection_suite_pass`
+  - `.ko/.sys` kernel mutator 旧测试收口
+  - `artifact_shape / signed_policy` 双视图报告与证据树收口
+  - sample-suite 全链本地通过，并推到 GitHub Actions 通过
+
+Task Charter:
+- Objective:
+  - 修掉最新样例报告暴露的真实缺陷，并把样例评估链升级到可重复、可审计、可在 CI 稳定复跑的状态。
+- Scope:
+  - `.github/workflows/sample-suite-eval.yml`
+  - `core/tools/sample_suite/*`
+  - `core/tests/sample_suite/*`
+  - `core/post_link_mutator/*`
+  - `core/tests/post_link_mutator/*`
+  - `core/passes/CMakeLists.txt`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/tools/artifact_audit_strict_test.cpp`
+- Non-Goals:
+  - 不宣称真实 Apple/微软/内核发行签名量产闭环。
+  - 不在本轮扩展新的保护类型或新的 runtime lane。
+  - 不修改生产保护语义来“洗绿” sample-suite 报告。
+- Constraints:
+  - 所有 C/C++ 样例编译都必须走 `core/wrapper/eippf_cc.py`。
+  - kernel target 禁止再走通用 EOF trailer。
+  - `protected/` 与 `signed_policy/` 必须物理隔离。
+  - `signed_policy` 只允许 test-only fixture signer 和 trusted verifier wrapper。
+- Acceptance Criteria:
+  - `sample_manifest.json` 为 schema v2，并与 `protect_and_evaluate.py` 契约一致。
+  - `artifact_audit_strict_test`、`string_protection_pass_test`、`sample_suite_report_contract_test`、`post_link_mutator_kernel_mutator_contract_test` 全部通过。
+  - 旧 `post_link_mutator` 测试调整到新 kernel 语义后重新通过。
+  - `protect_and_evaluate.py` 生成：
+    - `artifact_shape`
+    - `signed_policy`
+    - `failure_classification`
+    - HTML 三表报告
+    - `validation_scope/known_limits`
+    - 输入/输出 `sha256`
+  - `sample-suite-eval` 在 CI 中完成编译、保护、评估、证据上传并通过。
+- Forbidden Shortcuts:
+  - 禁止继续使用裸编译样例绕过 wrapper/pass。
+  - 禁止通过放宽 strict/audit 规则来让报告变绿。
+  - 禁止在 `protected/` 上原位补签或 patch。
+  - 禁止把 `implementation_defect` 当成 CI 绿灯。
+
+State Snapshot:
+- 已落地但待验收：
+  - `artifact_audit.py` dex bundle key marker 偏移修正
+  - `sample_manifest.json` schema v2
+  - `sample-suite` 双视图骨架
+  - `fixture_signers.py`
+  - `kernel mutator` 新实现
+- 已知阻塞：
+  - 旧 `post_link_mutator` contract/smoke 测试仍按旧 kernel trailer 语义写
+  - `sample-suite` HTML 缺 scope/hash 展示，reverse layout 还没收口
+  - `protect_and_evaluate.py` 目前把 `implementation_defect` 直接升级为流程失败
+  - build scripts / workflow 虽已改动，但还未完成本地集成验证
+
+Parallel Tracks:
+- Track A / Wrapper Sample Build Closure
+  - Owner: `Engineer-A`
+  - Files:
+    - `.github/workflows/sample-suite-eval.yml`
+    - `core/tools/sample_suite/build_linux_android.sh`
+    - `core/tools/sample_suite/build_windows.ps1`
+    - `core/tools/sample_suite/build_macos_ios.sh`
+    - `core/passes/CMakeLists.txt`
+    - `core/tests/passes/string_protection_pass_test.cpp`
+    - `core/tests/sample_suite/sources/*`
+  - Output:
+    - 三平台 sample build 全部固定为 wrapper + pass plugin
+    - anchor 回归测试通过
+
+- Track B / Kernel Mutator Regression Closure
+  - Owner: `Engineer-B`
+  - Files:
+    - `core/post_link_mutator/*`
+    - `core/tests/post_link_mutator/*`
+  - Output:
+    - kernel mutator 新语义接入旧 contract/smoke 测试
+    - old post_link_mutator suite 恢复通过
+
+- Track C / Report And Evidence Closure
+  - Owner: `Engineer-C`
+  - Files:
+    - `core/tools/sample_suite/protect_and_evaluate.py`
+    - `core/tools/sample_suite/report_template.html`
+    - `core/tests/sample_suite/fixture_signers.py`
+    - `core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `core/tests/tools/CMakeLists.txt`
+  - Output:
+    - 双视图报告 final 版
+    - summary/report/evidence layout 契约 final 版
+    - `implementation_defect` 与“流程硬失败”分离
+
+- Track D / Audit Contract Closure
+  - Owner: `Engineer-D`
+  - Files:
+    - `core/tools/artifact_audit.py`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+  - Output:
+    - dex bundle invariant 修正稳定通过
+
+File Ownership:
+- PM:
+  - `plan/2026-04-03-sample-suite-remediation-delta-plan.txt`
+  - 最终集成、测试、推送、CI 跟踪
+- Engineer-A:
+  - Track A 文件
+- Engineer-B:
+  - Track B 文件
+- Engineer-C:
+  - Track C 文件
+- Engineer-D:
+  - Track D 文件
+
+Dependencies:
+- Track D 可先独立验收。
+- Track A 与 Track C 可以并行。
+- Track B 在新 kernel mutator 已存在基础上继续收口旧测试。
+- Merge Order:
+  1. Track D
+  2. Track B
+  3. Track A
+  4. Track C
+  5. 全量集成验证
+  6. GitHub CI
+
+Regression Perimeter:
+- Directly Changed:
+  - sample build scripts / workflow
+  - sample-suite report/evidence contract
+  - post_link_mutator kernel lane tests
+  - audit strict bundle checks
+- Adjacent:
+  - `core-matrix`
+  - `eippf_harden_target`
+  - `artifact_audit.py --self-test`
+  - `post_link_mutator` manifest semantics
+- Unchanged Guarantees:
+  - production `runtime` 行为不降级
+  - sample-suite 不引入生产路径的 test signer
+  - kernel target fail-closed 保持
+- Second-Order Risks:
+  - Windows hosted runner LLVM/choco 环境不稳定
+  - macOS hosted runner LLVM + xcrun 组合可能导致 plugin/SDK 路径冲突
+  - old post_link tests 若继续依赖极简 fixture，可能需要批量重写
+
+Quality Gates:
+- G1:
+  - `python3 -m py_compile` 通过：
+    - `artifact_audit.py`
+    - `protect_and_evaluate.py`
+    - `fixture_signers.py`
+    - `sample_suite_report_contract_test.py`
+- G2:
+  - `artifact_audit_strict_test`
+  - `string_protection_pass_test`
+  - `sample_suite_report_contract_test`
+  - `post_link_mutator_kernel_mutator_contract_test`
+  - `ctest -R post_link_mutator`
+- G3:
+  - `sample_manifest.json` schema v2 + 11 类样例完整
+  - `summary.json` 校验 11 类 + hash + signed-policy 四目标
+- G4:
+  - HTML 报告包含：
+    - Artifact Shape
+    - Signed Policy
+    - Implementation Defects
+    - validation scope / known limits
+    - input/output sha256
+- G5:
+  - `protect_and_evaluate.py` 对“缺陷”和“硬失败”分离
+  - 只有缺文件、命令失败、契约破坏、summary 不闭合才返回非 0
+- G6:
+  - GitHub Actions `sample-suite-eval` 通过
+
+Three-Agent Review Targets:
+- `Architect Reviewer`
+  - 检查文件边界、kernel 测试收口方式、report/evidence 契约是否闭合
+- `Security Reviewer`
+  - 检查是否引入 fail-open、签名策略弱化、证据树污染
+- `Validation Reviewer`
+  - 检查 CLI/contract/CI 是否可复现且机器可判定

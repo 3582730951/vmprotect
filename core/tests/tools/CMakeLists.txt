@@ -74,6 +74,13 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/artifact_audit.py")
 
   add_test(NAME artifact_audit_user_mode_test COMMAND artifact_audit_user_mode_test)
 
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/sample_suite/sample_suite_report_contract_test.py")
+    add_test(
+      NAME sample_suite_report_contract_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/sample_suite/sample_suite_report_contract_test.py"
+    )
+  endif()
+
   if(TARGET eippf_runtime)
     add_executable(android_so_pipeline_smoke_test
       android_so_pipeline_smoke_test.cpp

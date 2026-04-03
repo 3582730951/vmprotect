@@ -16,6 +16,56 @@ namespace {
   return !ec;
 }
 
+[[nodiscard]] const char* mutation_envelope_kind_for_manifest(
+    const eippf::contracts::ProtectionManifestV2& manifest) noexcept {
+  using eippf::contracts::ArtifactKind;
+  using eippf::contracts::ProtectionTargetKind;
+
+  if (manifest.target_kind == ProtectionTargetKind::kWindowsDriver) {
+    return "pe_overlay_trailer_v2";
+  }
+  if (manifest.target_kind == ProtectionTargetKind::kLinuxKernelModule ||
+      manifest.target_kind == ProtectionTargetKind::kAndroidKernelModule) {
+    return "elf_note_section_v1";
+  }
+
+  switch (manifest.artifact_kind) {
+    case ArtifactKind::kPe:
+      return "pe_user_mode_trailer_v1";
+    case ArtifactKind::kElf:
+      return "elf_user_mode_trailer_v1";
+    case ArtifactKind::kMachO:
+      return "macho_user_mode_trailer_v1";
+    case ArtifactKind::kDex:
+      return "dex_bundle_trailer_v1";
+    case ArtifactKind::kShellBundle:
+      return "shell_bundle_trailer_v1";
+    case ArtifactKind::kWindowsDriverSys:
+      return "pe_overlay_trailer_v2";
+    case ArtifactKind::kLinuxKernelModuleKo:
+      return "elf_note_section_v1";
+    case ArtifactKind::kUnknown:
+      return "unknown";
+  }
+  return "unknown";
+}
+
+[[nodiscard]] const char* mutation_note_for_envelope_kind(
+    std::string_view mutation_envelope_kind) noexcept {
+  if (mutation_envelope_kind == "pe_overlay_trailer_v2") {
+    return "pe overlay trailer appended";
+  }
+  if (mutation_envelope_kind == "elf_note_section_v1") {
+    return "elf note section injected";
+  }
+  if (mutation_envelope_kind == "macho_user_mode_trailer_v1" ||
+      mutation_envelope_kind == "elf_user_mode_trailer_v1" ||
+      mutation_envelope_kind == "pe_user_mode_trailer_v1") {
+    return "mutation trailer appended";
+  }
+  return "mutation envelope applied";
+}
+
 }  // namespace
 
 std::filesystem::path derive_manifest_path(const std::filesystem::path& output_path,
@@ -107,6 +157,9 @@ bool write_manifest(const std::filesystem::path& manifest_path,
 
   const bool sign_after_mutate_required =
       manifest.signature_policy == eippf::contracts::SignaturePolicyKind::kSignAfterMutate;
+  const bool requires_resign = eippf::contracts::target_requires_signed_artifact(manifest.target_kind);
+  const char* mutation_envelope_kind = mutation_envelope_kind_for_manifest(manifest);
+  const char* mutation_note = mutation_note_for_envelope_kind(mutation_envelope_kind);
   const bool hvci_profile = manifest.kernel_compat_profile == "hvci_profile";
   const bool vermagic_profile = manifest.kernel_compat_profile == "vermagic_profile";
   const bool gki_kmi_profile = manifest.kernel_compat_profile == "gki_kmi_profile";
@@ -127,6 +180,8 @@ bool write_manifest(const std::filesystem::path& manifest_path,
          << eippf::contracts::to_string(manifest.mutation_profile) << "\",\n";
   output << "  \"signature_policy\": \""
          << eippf::contracts::to_string(manifest.signature_policy) << "\",\n";
+  output << "  \"mutation_envelope_kind\": \"" << mutation_envelope_kind << "\",\n";
+  output << "  \"requires_resign\": " << (requires_resign ? "true" : "false") << ",\n";
   output << "  \"kernel_compat_profile\": \"" << json_escape(manifest.kernel_compat_profile)
          << "\",\n";
   output << "  \"sign_after_mutate_required\": "
@@ -152,7 +207,8 @@ bool write_manifest(const std::filesystem::path& manifest_path,
   output << "  \"input_size_bytes\": " << input_size_bytes << ",\n";
   output << "  \"output_size_bytes\": " << output_size_bytes << ",\n";
   output << "  \"mutation_status\": \"" << json_escape(mutation_status) << "\",\n";
-  output << "  \"notes\": [\"mutation trailer appended\", \"sign after mutation if required\"]\n";
+  output << "  \"notes\": [\"" << json_escape(mutation_note)
+         << "\", \"sign after mutation if required\"]\n";
   output << "}\n";
   return static_cast<bool>(output);
 }

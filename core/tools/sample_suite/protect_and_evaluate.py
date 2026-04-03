@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import html
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,32 @@ from typing import Any
 
 PROVIDER_PROTOCOL = "eippf.external_key.v1"
 EXPECTED_SAMPLE_COUNT = 11
+EXPECTED_MANIFEST_SCHEMA_VERSION = 2
+EXPECTED_SAMPLE_IDS = (
+    "windows_exe",
+    "windows_dll",
+    "windows_sys",
+    "linux_elf",
+    "linux_so",
+    "linux_ko",
+    "android_so",
+    "android_dex",
+    "android_ko",
+    "ios_macho",
+    "shell_script",
+)
+
+SIGNED_POLICY_SAMPLE_IDS = {
+    "windows_sys",
+    "linux_ko",
+    "android_ko",
+    "ios_macho",
+}
+
+SIGNED_POLICY_POLICY_ONLY_FAILURES = {
+    "signature_missing",
+    "signature_authenticity_missing",
+}
 
 REQUIRED_SAMPLE_FIELDS = (
     "id",
@@ -28,6 +55,9 @@ REQUIRED_SAMPLE_FIELDS = (
     "anchor_strings",
     "validation_scope",
     "known_limits",
+    "build_mode",
+    "requires_signed_policy",
+    "signature_fixture_kind",
 )
 
 
@@ -68,12 +98,20 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def run_command(command: list[str]) -> tuple[int, str, str]:
+def run_command(
+    command: list[str],
+    env_overrides: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
+    env = None
+    if env_overrides is not None:
+        env = os.environ.copy()
+        env.update(env_overrides)
     completed = subprocess.run(
         command,
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     return completed.returncode, completed.stdout, completed.stderr
 
@@ -110,6 +148,11 @@ def load_manifest(path: Path) -> tuple[int, list[dict[str, Any]]]:
     schema_version = raw["schema_version"]
     if not isinstance(schema_version, int):
         raise ValueError("manifest schema_version must be an integer")
+    if schema_version != EXPECTED_MANIFEST_SCHEMA_VERSION:
+        raise ValueError(
+            "manifest schema_version must be "
+            f"{EXPECTED_MANIFEST_SCHEMA_VERSION}, got {schema_version}"
+        )
     samples = raw["samples"]
     if not isinstance(samples, list):
         raise ValueError("manifest samples must be a list")
@@ -135,9 +178,13 @@ def load_manifest(path: Path) -> tuple[int, list[dict[str, Any]]]:
             "output_name",
             "validation_scope",
             "known_limits",
+            "build_mode",
+            "signature_fixture_kind",
         ):
             if not isinstance(sample[field], str) or not sample[field].strip():
                 raise ValueError(f"sample #{index} field {field} must be a non-empty string")
+        if not isinstance(sample["requires_signed_policy"], bool):
+            raise ValueError(f"sample #{index} field requires_signed_policy must be a boolean")
         if not isinstance(sample["anchor_strings"], list) or any(
             not isinstance(item, str) for item in sample["anchor_strings"]
         ):
@@ -146,6 +193,11 @@ def load_manifest(path: Path) -> tuple[int, list[dict[str, Any]]]:
         if sample_id in ids:
             raise ValueError(f"duplicate sample id: {sample_id}")
         ids.add(sample_id)
+        requires_signed_policy = bool(sample["requires_signed_policy"])
+        if sample_id in SIGNED_POLICY_SAMPLE_IDS and not requires_signed_policy:
+            raise ValueError(f"sample #{index} {sample_id} must require signed_policy")
+        if sample_id not in SIGNED_POLICY_SAMPLE_IDS and requires_signed_policy:
+            raise ValueError(f"sample #{index} {sample_id} cannot require signed_policy")
     return schema_version, samples
 
 
@@ -260,6 +312,9 @@ def run_artifact_audit(
     output_json: Path,
     logs_dir: Path,
     manifest_path: Path | None = None,
+    signature_verifier: Path | None = None,
+    strict: bool = False,
+    env_overrides: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     command = [
         sys.executable,
@@ -273,8 +328,12 @@ def run_artifact_audit(
     ]
     if manifest_path is not None:
         command.extend(["--manifest", str(manifest_path)])
+    if signature_verifier is not None:
+        command.extend(["--signature-verifier", str(signature_verifier)])
+    if strict:
+        command.append("--strict")
 
-    rc, stdout, stderr = run_command(command)
+    rc, stdout, stderr = run_command(command, env_overrides=env_overrides)
     write_log(logs_dir / f"{output_json.stem}.audit.log", command, rc, stdout, stderr)
 
     if output_json.exists():
@@ -293,6 +352,236 @@ def run_artifact_audit(
         if isinstance(report["strict_failures"], list):
             report["strict_failures"].append(f"audit_failed_rc_{rc}")
     return rc, report
+
+
+def strict_failures_from_report(report: dict[str, Any]) -> list[str]:
+    strict_failures = report.get("strict_failures")
+    if not isinstance(strict_failures, list):
+        return ["strict_failures_invalid"]
+    return [item for item in strict_failures if isinstance(item, str)]
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def is_sha256_hex(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    if len(value) != 64:
+        return False
+    return all(char in "0123456789abcdefABCDEF" for char in value)
+
+
+def write_reverse_compat_layout(
+    sample_reverse_dir: Path,
+    sample_id: str,
+    protected_strings: list[str],
+    input_relpath: str,
+    protected_relpath: str,
+    input_sha256: str,
+    output_sha256: str,
+    validation_scope: str,
+    known_limits: str,
+) -> None:
+    strings_text = "\n".join(protected_strings)
+    if strings_text:
+        strings_text += "\n"
+    write_text(sample_reverse_dir / "strings.txt", strings_text)
+    metadata_lines = [
+        f"sample_id={sample_id}",
+        f"input_relpath={input_relpath}",
+        f"protected_relpath={protected_relpath}",
+        f"input_sha256={input_sha256}",
+        f"output_sha256={output_sha256}",
+        f"validation_scope={validation_scope}",
+        f"known_limits={known_limits}",
+        "",
+    ]
+    write_text(sample_reverse_dir / "metadata.txt", "\n".join(metadata_lines))
+
+
+def classify_artifact_shape_failures(
+    sample_id: str,
+    requires_signed_policy: bool,
+    report: dict[str, Any],
+) -> dict[str, Any]:
+    strict_failures = strict_failures_from_report(report)
+    signature_details = report.get("signature_details")
+    structure_present = False
+    format_valid = False
+    if isinstance(signature_details, dict):
+        structure_present = bool(signature_details.get("structure_present", False))
+        format_valid = bool(signature_details.get("format_valid", False))
+
+    implementation_defects: list[str] = []
+    policy_only_unsigned: list[str] = []
+    for failure in strict_failures:
+        if not requires_signed_policy:
+            implementation_defects.append(failure)
+            continue
+        if sample_id != "ios_macho" and failure in SIGNED_POLICY_POLICY_ONLY_FAILURES:
+            policy_only_unsigned.append(failure)
+            continue
+        if (
+            sample_id == "ios_macho"
+            and failure == "signature_authenticity_missing"
+            and structure_present
+            and format_valid
+        ):
+            policy_only_unsigned.append(failure)
+            continue
+        implementation_defects.append(failure)
+
+    return {
+        "strict_failures": strict_failures,
+        "implementation_defects": implementation_defects,
+        "policy_only_unsigned": policy_only_unsigned,
+        "signature_structure_present": structure_present,
+        "signature_format_valid": format_valid,
+    }
+
+
+def normalize_fixture_kind(value: str) -> str:
+    return value.strip().lower().replace("-", "_")
+
+
+def signed_policy_fixture_recipe(sample_id: str, signature_fixture_kind: str) -> tuple[str | None, str]:
+    normalized = normalize_fixture_kind(signature_fixture_kind)
+    if sample_id == "windows_sys":
+        if normalized not in {"pe_win_certificate_stub", "windows_pe_stub", "pe_stub"}:
+            raise ValueError(
+                f"windows_sys signature_fixture_kind must be pe_win_certificate_stub-compatible, got {signature_fixture_kind}"
+            )
+        return "patch_pe_win_certificate_stub", "success"
+    if sample_id in {"linux_ko", "android_ko"}:
+        if normalized not in {"elf_module_signature_stub", "module_signature_stub", "elf_signature_stub"}:
+            raise ValueError(
+                f"{sample_id} signature_fixture_kind must be elf_module_signature_stub-compatible, got {signature_fixture_kind}"
+            )
+        return "append_elf_module_signature_stub", "success"
+    if sample_id == "ios_macho":
+        if normalized not in {"ios_trusted_verifier_only", "existing_codesig", "none"}:
+            raise ValueError(
+                f"ios_macho signature_fixture_kind must be ios_trusted_verifier_only-compatible, got {signature_fixture_kind}"
+            )
+        return None, "success"
+    raise ValueError(f"unsupported signed_policy sample id: {sample_id}")
+
+
+def run_fixture_signer(
+    fixture_signers_path: Path,
+    command_name: str,
+    sample_logs_dir: Path,
+    **kwargs: str,
+) -> tuple[int, str, str]:
+    command = [sys.executable, str(fixture_signers_path), command_name]
+    for key, value in kwargs.items():
+        command.extend([f"--{key.replace('_', '-')}", value])
+    rc, stdout, stderr = run_command(command)
+    write_log(
+        sample_logs_dir / f"{command_name}.log",
+        command,
+        rc,
+        stdout,
+        stderr,
+    )
+    return rc, stdout, stderr
+
+
+def trusted_verifier_env(verifiers_dir: Path, verifier_sha256: str) -> dict[str, str]:
+    return {
+        "EIPPF_SIGNATURE_VERIFIER_TRUSTED_PREFIXES": str(verifiers_dir.resolve()),
+        "EIPPF_SIGNATURE_VERIFIER_TRUSTED_SHA256": verifier_sha256,
+    }
+
+
+def validate_summary_contract(summary_payload: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(summary_payload, dict):
+        return ["summary payload must be an object"]
+    if summary_payload.get("schema_version") != EXPECTED_MANIFEST_SCHEMA_VERSION:
+        errors.append(
+            f"summary schema_version must be {EXPECTED_MANIFEST_SCHEMA_VERSION}"
+        )
+    samples = summary_payload.get("samples")
+    if not isinstance(samples, list):
+        errors.append("summary samples must be a list")
+        return errors
+    if len(samples) != EXPECTED_SAMPLE_COUNT:
+        errors.append(
+            f"summary samples count must be {EXPECTED_SAMPLE_COUNT}, got {len(samples)}"
+        )
+    expected_ids = set(EXPECTED_SAMPLE_IDS)
+    seen_ids: list[str] = []
+    seen_set: set[str] = set()
+    seen_signed_policy_ids: set[str] = set()
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict):
+            errors.append(f"sample[{index}] must be an object")
+            continue
+        sample_id = sample.get("id")
+        if not isinstance(sample_id, str):
+            errors.append(f"sample[{index}] missing id")
+            continue
+        seen_ids.append(sample_id)
+        if sample_id in seen_set:
+            errors.append(f"sample[{sample_id}] duplicate id")
+        seen_set.add(sample_id)
+        artifact_shape = sample.get("artifact_shape")
+        if not isinstance(artifact_shape, dict):
+            errors.append(f"sample[{sample_id}] missing artifact_shape object")
+        elif not isinstance(artifact_shape.get("strict_failures"), list):
+            errors.append(f"sample[{sample_id}] artifact_shape.strict_failures must be list")
+        if not is_sha256_hex(sample.get("input_sha256")):
+            errors.append(f"sample[{sample_id}] input_sha256 must be 64 hex chars")
+        if not is_sha256_hex(sample.get("output_sha256")):
+            errors.append(f"sample[{sample_id}] output_sha256 must be 64 hex chars")
+        if not isinstance(sample.get("validation_scope"), str) or not sample.get("validation_scope"):
+            errors.append(f"sample[{sample_id}] validation_scope must be non-empty string")
+        if not isinstance(sample.get("known_limits"), str) or not sample.get("known_limits"):
+            errors.append(f"sample[{sample_id}] known_limits must be non-empty string")
+        failure_classification = sample.get("failure_classification")
+        if not isinstance(failure_classification, dict):
+            errors.append(f"sample[{sample_id}] missing failure_classification object")
+        else:
+            if not isinstance(failure_classification.get("implementation_defects"), list):
+                errors.append(
+                    f"sample[{sample_id}] failure_classification.implementation_defects must be list"
+                )
+            if not isinstance(failure_classification.get("policy_only_unsigned"), list):
+                errors.append(
+                    f"sample[{sample_id}] failure_classification.policy_only_unsigned must be list"
+                )
+        if sample_id in SIGNED_POLICY_SAMPLE_IDS:
+            seen_signed_policy_ids.add(sample_id)
+            if not isinstance(sample.get("signed_policy"), dict):
+                errors.append(f"sample[{sample_id}] missing signed_policy object")
+            if not isinstance(sample.get("signed_policy_relpath"), str):
+                errors.append(f"sample[{sample_id}] missing signed_policy_relpath")
+            if not is_sha256_hex(sample.get("signed_policy_sha256")):
+                errors.append(f"sample[{sample_id}] signed_policy_sha256 must be 64 hex chars")
+    missing = SIGNED_POLICY_SAMPLE_IDS - seen_signed_policy_ids
+    if missing:
+        errors.append(
+            "summary missing signed_policy targets: "
+            + ",".join(sorted(missing))
+        )
+    seen_id_set = set(seen_ids)
+    missing_ids = expected_ids - seen_id_set
+    if missing_ids:
+        errors.append("summary missing sample ids: " + ",".join(sorted(missing_ids)))
+    extra_ids = seen_id_set - expected_ids
+    if extra_ids:
+        errors.append("summary contains unexpected sample ids: " + ",".join(sorted(extra_ids)))
+    return errors
 
 
 def anchor_visible(strings_lines: list[str], anchors: list[str]) -> bool:
@@ -326,39 +615,96 @@ def render_report(
     generated_at: str,
     samples: list[dict[str, Any]],
 ) -> None:
-    summary_rows: list[str] = []
-    scope_rows: list[str] = []
+    artifact_shape_rows: list[str] = []
+    signed_policy_rows: list[str] = []
+    implementation_defect_rows: list[str] = []
 
     for sample in samples:
-        original_badge = '<span class="flag yes">yes</span>' if sample["original_anchor_visible"] else '<span class="flag no">no</span>'
-        protected_badge = '<span class="flag yes">yes</span>' if sample["protected_anchor_visible"] else '<span class="flag no">no</span>'
-        strict_failures = sample["protected_strict_failures"]
-        strict_text = ", ".join(strict_failures) if strict_failures else "none"
-        summary_rows.append(
+        artifact_shape = sample.get("artifact_shape", {})
+        failure_classification = sample.get("failure_classification", {})
+        artifact_shape_failures = artifact_shape.get("strict_failures", [])
+        impl_defects = failure_classification.get("implementation_defects", [])
+        policy_only_unsigned = failure_classification.get("policy_only_unsigned", [])
+
+        original_badge = (
+            '<span class="flag yes">yes</span>'
+            if bool(sample.get("original_anchor_visible", False))
+            else '<span class="flag no">no</span>'
+        )
+        protected_badge = (
+            '<span class="flag yes">yes</span>'
+            if bool(sample.get("protected_anchor_visible", False))
+            else '<span class="flag no">no</span>'
+        )
+        strict_text = (
+            ", ".join(str(item) for item in artifact_shape_failures)
+            if isinstance(artifact_shape_failures, list) and artifact_shape_failures
+            else "none"
+        )
+        policy_only_text = (
+            ", ".join(str(item) for item in policy_only_unsigned)
+            if isinstance(policy_only_unsigned, list) and policy_only_unsigned
+            else "none"
+        )
+        artifact_shape_rows.append(
             "<tr>"
-            f"<td><code>{html.escape(sample['id'])}</code></td>"
-            f"<td>{html.escape(sample['target_kind'])}</td>"
-            f"<td>{html.escape(sample['protect_via'])}</td>"
+            f"<td><code>{html.escape(str(sample.get('id', '')))}</code></td>"
+            f"<td>{html.escape(str(sample.get('target_kind', '')))}</td>"
+            f"<td>{html.escape(str(sample.get('protect_via', '')))}</td>"
+            f"<td><code>{html.escape(str(sample.get('validation_scope', '')))}</code></td>"
+            f"<td><code>{html.escape(str(sample.get('known_limits', '')))}</code></td>"
+            f"<td><code>{html.escape(str(sample.get('input_sha256', '')))}</code></td>"
+            f"<td><code>{html.escape(str(sample.get('output_sha256', '')))}</code></td>"
             f"<td>{original_badge}</td>"
             f"<td>{protected_badge}</td>"
-            f"<td>{sample['original_string_count']}</td>"
-            f"<td>{sample['protected_string_count']}</td>"
+            f"<td>{int(sample.get('original_string_count', 0))}</td>"
+            f"<td>{int(sample.get('protected_string_count', 0))}</td>"
             f"<td><code>{html.escape(strict_text)}</code></td>"
+            f"<td><code>{html.escape(policy_only_text)}</code></td>"
             "</tr>"
         )
-        scope_rows.append(
-            "<tr>"
-            f"<td><code>{html.escape(sample['id'])}</code></td>"
-            f"<td>{html.escape(sample['validation_scope'])}</td>"
-            f"<td>{html.escape(sample['known_limits'])}</td>"
-            "</tr>"
+
+        if isinstance(sample.get("signed_policy"), dict):
+            signed_policy = sample["signed_policy"]
+            signed_failures = signed_policy.get("strict_failures", [])
+            signed_failures_text = (
+                ", ".join(str(item) for item in signed_failures)
+                if isinstance(signed_failures, list) and signed_failures
+                else "none"
+            )
+            signed_policy_rows.append(
+                "<tr>"
+                f"<td><code>{html.escape(str(sample.get('id', '')))}</code></td>"
+                f"<td><code>{html.escape(str(sample.get('signed_policy_relpath', '')))}</code></td>"
+                f"<td><code>{html.escape(str(sample.get('signed_policy_sha256', '')))}</code></td>"
+                f"<td><code>{html.escape(str(signed_policy.get('verifier_relpath', '')))}</code></td>"
+                f"<td><code>{html.escape(signed_failures_text)}</code></td>"
+                "</tr>"
+            )
+
+        if isinstance(impl_defects, list) and impl_defects:
+            implementation_defect_rows.append(
+                "<tr>"
+                f"<td><code>{html.escape(str(sample.get('id', '')))}</code></td>"
+                f"<td><code>{html.escape(', '.join(str(item) for item in impl_defects))}</code></td>"
+                "</tr>"
+            )
+
+    if not signed_policy_rows:
+        signed_policy_rows.append(
+            "<tr><td colspan=\"5\"><code>none</code></td></tr>"
+        )
+    if not implementation_defect_rows:
+        implementation_defect_rows.append(
+            "<tr><td colspan=\"2\"><code>none</code></td></tr>"
         )
 
     template = template_path.read_text(encoding="utf-8")
     report = (
         template.replace("{{generated_at}}", html.escape(generated_at))
-        .replace("{{summary_table_rows}}", "".join(summary_rows))
-        .replace("{{scope_rows}}", "".join(scope_rows))
+        .replace("{{artifact_shape_rows}}", "".join(artifact_shape_rows))
+        .replace("{{signed_policy_rows}}", "".join(signed_policy_rows))
+        .replace("{{implementation_defect_rows}}", "".join(implementation_defect_rows))
     )
     output_path.write_text(report, encoding="utf-8")
 
@@ -371,20 +717,24 @@ def main() -> int:
     output_root = args.output_root.resolve()
     original_root = output_root / "original"
     protected_root = output_root / "protected"
+    signed_policy_root = output_root / "signed_policy"
     manifests_root = output_root / "manifests"
     audit_root = output_root / "audit"
     reverse_root = output_root / "reverse"
     logs_root = output_root / "logs"
     providers_root = logs_root / "providers"
+    verifiers_root = logs_root / "verifiers"
     for path in (
         output_root,
         original_root,
         protected_root,
+        signed_policy_root,
         manifests_root,
         audit_root,
         reverse_root,
         logs_root,
         providers_root,
+        verifiers_root,
     ):
         ensure_dir(path)
 
@@ -408,12 +758,17 @@ def main() -> int:
         Path(__file__).resolve().parents[1] / "artifact_audit.py",
         "artifact_audit.py",
     )
+    fixture_signers_path = locate_tool(
+        Path(__file__).resolve().parents[2] / "tests" / "sample_suite" / "fixture_signers.py",
+        "fixture_signers.py",
+    )
 
     objdump_base, objdump_tool_name = choose_objdump_command()
 
     summary_items: list[dict[str, Any]] = []
     processed_ids: set[str] = set()
-    had_errors = False
+    hard_fail = False
+    verifier_wrappers: dict[str, Path] = {}
 
     input_root = args.input_root.resolve()
     for sample in samples:
@@ -427,11 +782,15 @@ def main() -> int:
         anchors = list(sample["anchor_strings"])
         validation_scope = sample["validation_scope"]
         known_limits = sample["known_limits"]
+        build_mode = sample["build_mode"]
+        requires_signed_policy = bool(sample["requires_signed_policy"])
+        signature_fixture_kind = sample["signature_fixture_kind"]
 
         sample_logs_dir = logs_root / sample_id
         sample_reverse_dir = reverse_root / sample_id
         sample_original_dir = original_root / sample_id
         sample_protected_dir = protected_root / sample_id
+        sample_signed_policy_dir = signed_policy_root / sample_id
         for path in (
             sample_logs_dir,
             sample_reverse_dir,
@@ -439,10 +798,13 @@ def main() -> int:
             sample_protected_dir,
         ):
             ensure_dir(path)
+        if requires_signed_policy:
+            ensure_dir(sample_signed_policy_dir)
 
         input_path = input_root / input_relpath
         original_copy = sample_original_dir / input_path.name
         protected_path = sample_protected_dir / output_name
+        signed_policy_path = sample_signed_policy_dir / output_name
         protection_manifest_path = manifests_root / f"{sample_id}.manifest.json"
 
         protect_rc = 0
@@ -450,7 +812,7 @@ def main() -> int:
         protect_stderr = ""
 
         if not input_path.exists():
-            had_errors = True
+            hard_fail = True
             write_text(sample_logs_dir / "missing_input.log", f"missing input: {input_path}\n")
         else:
             shutil.copy2(input_path, original_copy)
@@ -495,20 +857,17 @@ def main() -> int:
                 protect_rc, protect_stdout, protect_stderr = run_command(command)
                 write_log(sample_logs_dir / "protect.log", command, protect_rc, protect_stdout, protect_stderr)
             else:
-                had_errors = True
+                hard_fail = True
                 write_text(
                     sample_logs_dir / "protect.log",
                     f"unsupported protect_via value: {protect_via}\n",
                 )
                 protect_rc = 2
 
-        if protect_rc != 0:
-            had_errors = True
-
         input_exists = original_copy.exists()
         protected_exists = protected_path.exists()
         if not input_exists or not protected_exists or not protection_manifest_path.exists():
-            had_errors = True
+            hard_fail = True
 
         if input_exists:
             input_sha = sha256_file(original_copy)
@@ -549,17 +908,15 @@ def main() -> int:
                 objdump_base,
                 sample_logs_dir,
             )
-            protected_audit_path = audit_root / f"{sample_id}.protected.audit.json"
-            protected_audit_rc, protected_audit_report = run_artifact_audit(
+            artifact_shape_audit_path = audit_root / f"{sample_id}.artifact_shape.audit.json"
+            _, artifact_shape_report = run_artifact_audit(
                 artifact_audit_path,
                 protected_path,
                 target_kind,
-                protected_audit_path,
+                artifact_shape_audit_path,
                 sample_logs_dir,
                 protection_manifest_path if protection_manifest_path.exists() else None,
             )
-            if protected_audit_rc != 0:
-                had_errors = True
         else:
             output_sha = ""
             output_size = 0
@@ -569,41 +926,236 @@ def main() -> int:
                 "string_count": 0,
                 "binary_kind": "other",
             }
-            protected_audit_report = {"strict_failures": [f"protection_failed_rc_{protect_rc}"]}
-            write_json(audit_root / f"{sample_id}.protected.audit.json", protected_audit_report)
+            artifact_shape_audit_path = audit_root / f"{sample_id}.artifact_shape.audit.json"
+            artifact_shape_report = {"strict_failures": [f"protection_failed_rc_{protect_rc}"]}
+            write_json(artifact_shape_audit_path, artifact_shape_report)
 
-        strict_failures = protected_audit_report.get("strict_failures", [])
-        if not isinstance(strict_failures, list):
-            strict_failures = ["strict_failures_invalid"]
-        if protect_rc != 0:
-            strict_failures = [*strict_failures, f"protection_failed_rc_{protect_rc}"]
-
-        summary_items.append(
-            {
-                "id": sample_id,
-                "target_kind": target_kind,
-                "protect_via": protect_via,
-                "input_relpath": input_relpath,
-                "protected_relpath": safe_relative(protected_path, output_root),
-                "input_sha256": input_sha,
-                "output_sha256": output_sha,
-                "original_size": input_size,
-                "protected_size": output_size,
-                "original_file_desc": original_reverse["file_desc"],
-                "protected_file_desc": protected_reverse["file_desc"],
-                "anchor_strings": anchors,
-                "original_anchor_visible": anchor_visible(original_reverse["strings"], anchors),
-                "protected_anchor_visible": anchor_visible(protected_reverse["strings"], anchors),
-                "original_string_count": int(original_reverse["string_count"]),
-                "protected_string_count": int(protected_reverse["string_count"]),
-                "protected_strict_failures": strict_failures,
-                "validation_scope": validation_scope,
-                "known_limits": known_limits,
-            }
+        artifact_shape_classification = classify_artifact_shape_failures(
+            sample_id,
+            requires_signed_policy,
+            artifact_shape_report,
         )
+        artifact_shape_strict_failures = list(artifact_shape_classification["strict_failures"])
+        implementation_defects = list(artifact_shape_classification["implementation_defects"])
+        policy_only_unsigned = list(artifact_shape_classification["policy_only_unsigned"])
+        if protect_rc != 0:
+            failure = f"protection_failed_rc_{protect_rc}"
+            artifact_shape_strict_failures = unique_strings([*artifact_shape_strict_failures, failure])
+            implementation_defects = unique_strings([*implementation_defects, failure])
+            hard_fail = True
+
+        signed_policy_item: dict[str, Any] | None = None
+        signed_policy_relpath = ""
+        signed_policy_sha256 = ""
+        if requires_signed_policy:
+            signed_policy_audit_path = audit_root / f"{sample_id}.signed_policy.audit.json"
+            signed_policy_report: dict[str, Any] = {"strict_failures": []}
+            signed_policy_verifier_path: Path | None = None
+            signed_policy_verifier_sha256 = ""
+            audited_signed_policy_artifact = signed_policy_path
+            recipe_error = ""
+            signer_command: str | None = None
+            wrapper_mode = ""
+            try:
+                signer_command, wrapper_mode = signed_policy_fixture_recipe(
+                    sample_id,
+                    signature_fixture_kind,
+                )
+            except ValueError as error:
+                recipe_error = str(error)
+                implementation_defects = unique_strings(
+                    [*implementation_defects, "signed_policy_fixture_recipe_invalid"]
+                )
+                hard_fail = True
+
+            if protected_exists and not recipe_error:
+                if sample_id == "ios_macho":
+                    shutil.copy2(protected_path, signed_policy_path)
+                elif signer_command is not None:
+                    signer_rc, _, _ = run_fixture_signer(
+                        fixture_signers_path,
+                        signer_command,
+                        sample_logs_dir,
+                        in_path=str(protected_path),
+                        out_path=str(signed_policy_path),
+                    )
+                    if signer_rc != 0 or not signed_policy_path.exists():
+                        implementation_defects = unique_strings(
+                            [*implementation_defects, "signed_policy_fixture_patch_failed"]
+                        )
+                        hard_fail = True
+                else:
+                    shutil.copy2(protected_path, signed_policy_path)
+            elif not protected_exists:
+                implementation_defects = unique_strings(
+                    [*implementation_defects, "signed_policy_input_missing"]
+                )
+                hard_fail = True
+
+            if signed_policy_path.exists():
+                signed_policy_relpath = safe_relative(signed_policy_path, output_root)
+                signed_policy_sha256 = sha256_file(signed_policy_path)
+            else:
+                signed_policy_relpath = safe_relative(signed_policy_path, output_root)
+                signed_policy_sha256 = ""
+
+            if not recipe_error:
+                if wrapper_mode not in verifier_wrappers:
+                    wrapper_rc, wrapper_stdout, _ = run_fixture_signer(
+                        fixture_signers_path,
+                        "make_trusted_verifier_wrapper",
+                        sample_logs_dir,
+                        out_dir=str(verifiers_root),
+                        mode=wrapper_mode,
+                    )
+                    if wrapper_rc == 0:
+                        wrapper_path_line = first_line(wrapper_stdout)
+                        if wrapper_path_line:
+                            wrapper_candidate = Path(wrapper_path_line)
+                            if not wrapper_candidate.is_absolute():
+                                wrapper_candidate = verifiers_root / wrapper_candidate
+                        else:
+                            wrapper_candidate = verifiers_root / f"trusted_verifier_{wrapper_mode}.py"
+                        if wrapper_candidate.exists():
+                            verifier_wrappers[wrapper_mode] = wrapper_candidate.resolve()
+                        else:
+                            implementation_defects = unique_strings(
+                                [*implementation_defects, "trusted_verifier_wrapper_missing"]
+                            )
+                            hard_fail = True
+                    else:
+                        implementation_defects = unique_strings(
+                            [*implementation_defects, "trusted_verifier_wrapper_build_failed"]
+                        )
+                        hard_fail = True
+
+                if wrapper_mode in verifier_wrappers:
+                    signed_policy_verifier_path = verifier_wrappers[wrapper_mode]
+                    signed_policy_verifier_sha256 = sha256_file(signed_policy_verifier_path)
+
+            ios_signature_structure_ok = bool(
+                artifact_shape_classification.get("signature_structure_present", False)
+            ) and bool(
+                artifact_shape_classification.get("signature_format_valid", False)
+            )
+
+            if sample_id == "ios_macho" and not ios_signature_structure_ok:
+                signed_policy_report = {
+                    "strict_failures": ["ios_codesig_structure_invalid"],
+                    "skipped": True,
+                    "reason": "ios_codesig_structure_invalid",
+                }
+                write_json(signed_policy_audit_path, signed_policy_report)
+                implementation_defects = unique_strings(
+                    [*implementation_defects, "ios_codesig_structure_invalid"]
+                )
+            else:
+                if sample_id == "ios_macho":
+                    audited_signed_policy_artifact = protected_path
+                if (
+                    signed_policy_verifier_path is not None
+                    and signed_policy_verifier_sha256
+                    and audited_signed_policy_artifact.exists()
+                ):
+                    signed_policy_env = trusted_verifier_env(
+                        verifiers_root,
+                        signed_policy_verifier_sha256,
+                    )
+                    _, signed_policy_report = run_artifact_audit(
+                        artifact_audit_path,
+                        audited_signed_policy_artifact,
+                        target_kind,
+                        signed_policy_audit_path,
+                        sample_logs_dir,
+                        protection_manifest_path if protection_manifest_path.exists() else None,
+                        signature_verifier=signed_policy_verifier_path,
+                        strict=True,
+                        env_overrides=signed_policy_env,
+                    )
+                else:
+                    signed_policy_report = {"strict_failures": ["signed_policy_verifier_or_input_missing"]}
+                    write_json(signed_policy_audit_path, signed_policy_report)
+                    implementation_defects = unique_strings(
+                        [*implementation_defects, "signed_policy_verifier_or_input_missing"]
+                    )
+                    hard_fail = True
+
+            if not signed_policy_audit_path.exists():
+                write_json(signed_policy_audit_path, signed_policy_report)
+
+            signed_policy_failures = strict_failures_from_report(signed_policy_report)
+            if signed_policy_failures:
+                implementation_defects = unique_strings(
+                    [*implementation_defects, *[f"signed_policy:{item}" for item in signed_policy_failures]]
+                )
+
+            signed_policy_item = {
+                "audit_relpath": safe_relative(signed_policy_audit_path, output_root),
+                "audited_relpath": safe_relative(audited_signed_policy_artifact, output_root),
+                "strict_failures": signed_policy_failures,
+                "verifier_relpath": (
+                    safe_relative(signed_policy_verifier_path, output_root)
+                    if signed_policy_verifier_path is not None
+                    else ""
+                ),
+                "verifier_sha256": signed_policy_verifier_sha256,
+            }
+
+        implementation_defects = unique_strings(implementation_defects)
+        policy_only_unsigned = unique_strings(policy_only_unsigned)
+
+        summary_item: dict[str, Any] = {
+            "id": sample_id,
+            "target_kind": target_kind,
+            "protect_via": protect_via,
+            "build_mode": build_mode,
+            "requires_signed_policy": requires_signed_policy,
+            "signature_fixture_kind": signature_fixture_kind,
+            "input_relpath": input_relpath,
+            "protected_relpath": safe_relative(protected_path, output_root),
+            "input_sha256": input_sha,
+            "output_sha256": output_sha,
+            "original_size": input_size,
+            "protected_size": output_size,
+            "original_file_desc": original_reverse["file_desc"],
+            "protected_file_desc": protected_reverse["file_desc"],
+            "anchor_strings": anchors,
+            "original_anchor_visible": anchor_visible(original_reverse["strings"], anchors),
+            "protected_anchor_visible": anchor_visible(protected_reverse["strings"], anchors),
+            "original_string_count": int(original_reverse["string_count"]),
+            "protected_string_count": int(protected_reverse["string_count"]),
+            "artifact_shape": {
+                "audit_relpath": safe_relative(artifact_shape_audit_path, output_root),
+                "strict_failures": artifact_shape_strict_failures,
+            },
+            "failure_classification": {
+                "implementation_defects": implementation_defects,
+                "policy_only_unsigned": policy_only_unsigned,
+            },
+            "validation_scope": validation_scope,
+            "known_limits": known_limits,
+        }
+
+        if signed_policy_item is not None:
+            summary_item["signed_policy"] = signed_policy_item
+            summary_item["signed_policy_relpath"] = signed_policy_relpath
+            summary_item["signed_policy_sha256"] = signed_policy_sha256
+
+        write_reverse_compat_layout(
+            sample_reverse_dir=sample_reverse_dir,
+            sample_id=sample_id,
+            protected_strings=protected_reverse["strings"],
+            input_relpath=input_relpath,
+            protected_relpath=safe_relative(protected_path, output_root),
+            input_sha256=input_sha,
+            output_sha256=output_sha,
+            validation_scope=validation_scope,
+            known_limits=known_limits,
+        )
+        summary_items.append(summary_item)
 
     if len(summary_items) != EXPECTED_SAMPLE_COUNT or len(processed_ids) != EXPECTED_SAMPLE_COUNT:
-        had_errors = True
+        hard_fail = True
 
     generated_at = datetime.now(timezone.utc).isoformat()
     summary_payload = {
@@ -611,6 +1163,13 @@ def main() -> int:
         "generated_at_utc": generated_at,
         "samples": summary_items,
     }
+    summary_contract_errors = validate_summary_contract(summary_payload)
+    if summary_contract_errors:
+        hard_fail = True
+        write_json(
+            logs_root / "summary_contract_errors.json",
+            {"errors": summary_contract_errors},
+        )
     summary_path = output_root / "summary.json"
     write_json(summary_path, summary_payload)
 
@@ -625,6 +1184,7 @@ def main() -> int:
         "post_link_mutator_path": str(post_link_tool),
         "dex_toolchain_path": str(dex_tool),
         "script_guard_path": str(script_guard_tool),
+        "fixture_signers_path": str(fixture_signers_path),
     }
     tool_versions_path = output_root / "tool_versions.json"
     write_json(tool_versions_path, tool_versions_payload)
@@ -637,6 +1197,7 @@ def main() -> int:
         output_root / "sample_manifest.json",
         output_root / "original",
         output_root / "protected",
+        output_root / "signed_policy",
         output_root / "manifests",
         output_root / "audit",
         output_root / "reverse",
@@ -647,9 +1208,15 @@ def main() -> int:
     )
     for path in required_paths:
         if not path.exists():
-            had_errors = True
+            hard_fail = True
 
-    return 1 if had_errors else 0
+    for sample_id in EXPECTED_SAMPLE_IDS:
+        compat_strings = reverse_root / sample_id / "strings.txt"
+        compat_metadata = reverse_root / sample_id / "metadata.txt"
+        if not compat_strings.exists() or not compat_metadata.exists():
+            hard_fail = True
+
+    return 1 if hard_fail else 0
 
 
 if __name__ == "__main__":

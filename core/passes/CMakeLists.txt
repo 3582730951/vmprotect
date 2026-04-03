@@ -128,6 +128,10 @@ target_include_directories(eippf_protection_suite_pass SYSTEM PRIVATE
   ${LLVM_INCLUDE_DIRS}
 )
 eippf_apply_common_compile_options(eippf_protection_suite_pass)
+set_target_properties(eippf_protection_suite_pass PROPERTIES
+  OUTPUT_NAME "eippf_protection_suite_pass"
+  PREFIX ""
+)
 
 if(NOT EIPPF_PASS_PLUGIN)
   eippf_register_pass_plugin("eippf_protection_suite_pass")

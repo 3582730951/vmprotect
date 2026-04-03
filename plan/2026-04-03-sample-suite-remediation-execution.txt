@@ -1,0 +1,119 @@
+# 2026-04-03 样例评估链整改执行记录
+
+## 阶段
+- `superseding-plan-approved`
+
+## 计划文件
+- `/workspace/plan/2026-04-03-sample-suite-remediation-superseding-plan.txt`
+
+## 三审结论
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+## 审核通过原因
+- 4 个 blocker 都已映射到独立 Track 与机器可判定的验收项。
+- `artifact_shape` 与 `signed_policy` 已被固定为双视图硬契约。
+- `implementation_defect` 与 hard-fail 已被明确分离。
+- old `post_link_mutator` tests 的收口被明确为“fixture + 语义预期迁移”，不是只补 build target。
+
+## 当前工程分发
+- Engineer-A
+  - 轨道: `Track A / old post_link tests 语义收口`
+  - 文件范围:
+    - `/workspace/core/tests/post_link_mutator/CMakeLists.txt`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_derived_target_kind_contract_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_user_mode_contract_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+    - `/workspace/core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+- Engineer-B
+  - 轨道: `Track B / sample build scripts 与 workflow 集成收口`
+  - 文件范围:
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+    - `/workspace/core/passes/CMakeLists.txt`
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+    - `/workspace/core/tests/sample_suite/sources/windows/windows_dll.c`
+    - `/workspace/core/tests/sample_suite/sources/linux/linux_so.c`
+    - `/workspace/core/tests/sample_suite/sources/android/android_so.c`
+    - `/workspace/core/tests/sample_suite/sources/kernel/linux_module.c`
+    - `/workspace/core/tests/sample_suite/sources/kernel/android_module.c`
+- Engineer-C
+  - 轨道: `Track C / report、summary、evidence layout 收口`
+  - 文件范围:
+    - `/workspace/core/tools/sample_suite/protect_and_evaluate.py`
+    - `/workspace/core/tools/sample_suite/report_template.html`
+    - `/workspace/core/tests/sample_suite/fixture_signers.py`
+    - `/workspace/core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `/workspace/core/tests/tools/CMakeLists.txt`
+
+## PM 边界
+- PM 不写实现代码。
+- PM 只负责计划、审核协调、任务分发、集成构建与验收。
+
+## 进入集成前的已知事实
+- `string_protection_pass_test` 当前已通过。
+- `artifact_audit_strict_test` 当前已通过。
+- `ctest -R post_link_mutator` 当前真实失败 5 项:
+  - `post_link_mutator_smoke_test`
+  - `post_link_mutator_exit_code_trailer_contract_test`
+  - `post_link_mutator_derived_target_kind_contract_test`
+  - `post_link_mutator_hardened_pipeline_contract_test`
+  - `post_link_mutator_fault_isolation_contract_test`
+
+## 下一步
+- 等待 A/B/C 三个工程轨回报。
+- PM 统一执行集成构建、`ctest`、sample-suite 局部链路验证，再决定是否需要补发 Track E delta 任务。
+
+## 工程轨回报
+- Engineer-A
+  - 结果: `PASS`
+  - 本地验证:
+    - `cmake --build /workspace/build_plan_impl -j --target eippf_post_link_mutator post_link_mutator_smoke_test post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_target_classifier_test post_link_mutator_user_mode_contract_test post_link_mutator_kernel_mutator_contract_test`
+    - `ctest --test-dir /workspace/build_plan_impl --output-on-failure -R post_link_mutator`
+  - 结果摘要:
+    - `.sys` success path 改为 parseable PE driver fixture
+    - `.ko` success path 改为合法 `ET_REL + section table`
+    - `.ko` 断言迁移到 `.note.eippf + manifest envelope/resign`
+    - `hardened_pipeline_contract_test` 接上 fixture 依赖
+- Engineer-B
+  - 结果: `PASS`
+  - 本地验证:
+    - `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `cmake --build /workspace/build_plan_impl -j --target eippf_protection_suite_pass string_protection_pass_test`
+    - `ctest --test-dir /workspace/build_plan_impl --output-on-failure -R string_protection_pass_test`
+  - 结果摘要:
+    - `sample-suite-eval` 的触发路径扩大到保护链相关目录
+    - evidence layout 检查补入 `signed_policy`
+    - wrapper/pass plugin 作为样例编译唯一路径保持不变
+- Engineer-C
+  - 结果: `PASS`
+  - 本地验证:
+    - `python3 -m py_compile /workspace/core/tools/sample_suite/protect_and_evaluate.py /workspace/core/tests/sample_suite/fixture_signers.py /workspace/core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `python3 /workspace/core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `ctest --test-dir /workspace/build_plan_impl --output-on-failure -R sample_suite_report_contract_test`
+  - 结果摘要:
+    - `summary/report` 补齐 `validation_scope/known_limits/input_sha256/output_sha256`
+    - reverse 兼容布局补齐 `strings.txt` 与 `metadata.txt`
+    - `implementation_defect` 与 hard-fail 已分离
+
+## PM 集成验收
+- 语法与契约:
+  - `python3 -m py_compile /workspace/core/tools/artifact_audit.py /workspace/core/tools/sample_suite/protect_and_evaluate.py /workspace/core/tests/sample_suite/fixture_signers.py /workspace/core/tests/sample_suite/sample_suite_report_contract_test.py`
+  - `python3 /workspace/core/tests/sample_suite/sample_suite_report_contract_test.py`
+- 集成构建:
+  - `cmake --build /workspace/build_plan_impl -j --target eippf_protection_suite_pass eippf_post_link_mutator artifact_audit_strict_test string_protection_pass_test post_link_mutator_smoke_test post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_target_classifier_test post_link_mutator_user_mode_contract_test post_link_mutator_kernel_mutator_contract_test`
+- 集成测试:
+  - `ctest --test-dir /workspace/build_plan_impl --output-on-failure -R 'artifact_audit_strict_test|tools_artifact_audit_selftest|string_protection_pass_test|sample_suite_report_contract_test|post_link_mutator'`
+- 结果:
+  - `13/13 passed`
+
+## 当前结论
+- superseding 计划中的 A/B/C blocker 已本地收口。
+- 下一阶段进入远端提交与 GitHub Actions `sample-suite-eval` 跨平台闭环。

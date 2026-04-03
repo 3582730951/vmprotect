@@ -9,6 +9,12 @@ on:
     paths:
       - core/tests/sample_suite/**
       - core/tools/sample_suite/**
+      - core/passes/**
+      - core/wrapper/**
+      - core/post_link_mutator/**
+      - core/dex_toolchain/**
+      - core/script_guard/**
+      - core/tools/artifact_audit.py
       - .github/workflows/sample-suite-eval.yml
 
 jobs:
@@ -29,7 +35,25 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential clang lld binutils curl unzip ca-certificates file python3
+          sudo apt-get install -y \
+            build-essential \
+            clang-18 \
+            lld-18 \
+            llvm-18 \
+            llvm-18-dev \
+            llvm-18-tools \
+            binutils \
+            curl \
+            unzip \
+            ca-certificates \
+            file \
+            python3 \
+            cmake \
+            ninja-build
+          echo "/usr/lib/llvm-18/bin" >> "${GITHUB_PATH}"
+          echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANG=clang-18" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANGXX=clang++-18" >> "${GITHUB_ENV}"
 
       - name: Install Android SDK Build Tools + NDK
         shell: bash
@@ -58,6 +82,24 @@ jobs:
             "build-tools;34.0.0" \
             "ndk;26.3.11579264"
 
+      - name: Build Protection Suite Pass Plugin (Linux)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins"
+          cmake -S core -B build_sample_suite_linux_plugin -G Ninja \
+            -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins" \
+            -DEIPPF_BUILD_TESTS=OFF \
+            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
+            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
+            -DEIPPF_BUILD_SCRIPT_GUARD=OFF \
+            -DEIPPF_BUILD_IP_WEAVER=OFF \
+            -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
+            -DEIPPF_BUILD_TOOLING=OFF
+          cmake --build build_sample_suite_linux_plugin -j 4 --target eippf_protection_suite_pass
+          test -f "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.so"
+
       - name: Build Linux Android Samples
         shell: bash
         run: |
@@ -82,6 +124,38 @@ jobs:
       - name: Setup MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Install LLVM Toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          choco install llvm --yes --no-progress
+          $llvmRoot = "C:\Program Files\LLVM"
+          if (!(Test-Path $llvmRoot)) {
+            throw "[FAIL] expected LLVM install root missing: $llvmRoot"
+          }
+          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Protection Suite Pass Plugin (Windows)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "$PWD\sample_suite_inputs\pass_plugins" | Out-Null
+          cmake -S core -B build_sample_suite_windows_plugin `
+            -DLLVM_DIR="$env:LLVM_DIR" `
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="$PWD\sample_suite_inputs\pass_plugins" `
+            -DEIPPF_BUILD_TESTS=OFF `
+            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF `
+            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF `
+            -DEIPPF_BUILD_SCRIPT_GUARD=OFF `
+            -DEIPPF_BUILD_IP_WEAVER=OFF `
+            -DEIPPF_BUILD_IP_WEAVER_IR=OFF `
+            -DEIPPF_BUILD_TOOLING=OFF
+          cmake --build build_sample_suite_windows_plugin --target eippf_protection_suite_pass --config Release
+          if (!(Test-Path "$PWD\sample_suite_inputs\pass_plugins\eippf_protection_suite_pass.dll")) {
+            throw "[FAIL] pass plugin build output missing: $PWD\sample_suite_inputs\pass_plugins\eippf_protection_suite_pass.dll"
+          }
+
       - name: Build Windows Samples
         shell: powershell
         run: |
@@ -100,6 +174,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install LLVM Build Toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install llvm ninja
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          echo "${LLVM_PREFIX}/bin" >> "${GITHUB_PATH}"
+          echo "LLVM_DIR=${LLVM_PREFIX}/lib/cmake/llvm" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANG=${LLVM_PREFIX}/bin/clang" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANGXX=${LLVM_PREFIX}/bin/clang++" >> "${GITHUB_ENV}"
+
+      - name: Build Protection Suite Pass Plugin (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins"
+          cmake -S core -B build_sample_suite_macos_plugin -G Ninja \
+            -DLLVM_DIR="${LLVM_DIR}" \
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins" \
+            -DEIPPF_BUILD_TESTS=OFF \
+            -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF \
+            -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF \
+            -DEIPPF_BUILD_SCRIPT_GUARD=OFF \
+            -DEIPPF_BUILD_IP_WEAVER=OFF \
+            -DEIPPF_BUILD_IP_WEAVER_IR=OFF \
+            -DEIPPF_BUILD_TOOLING=OFF
+          cmake --build build_sample_suite_macos_plugin -j 4 --target eippf_protection_suite_pass
+          test -f "${GITHUB_WORKSPACE}/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dylib"
 
       - name: Build iOS Mach-O Sample
         shell: bash
@@ -158,11 +262,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S core -B build_sample_suite -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          mkdir -p "${GITHUB_WORKSPACE}/build_sample_suite/pass_plugins"
+          cmake -S core -B build_sample_suite -G Ninja \
+            -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm \
+            -DCMAKE_LIBRARY_OUTPUT_DIRECTORY="${GITHUB_WORKSPACE}/build_sample_suite/pass_plugins"
           cmake --build build_sample_suite -j 4 --target \
+            eippf_protection_suite_pass \
             eippf_post_link_mutator \
             eippf_dex_toolchain \
             eippf_script_guard
+          test -f "${GITHUB_WORKSPACE}/build_sample_suite/pass_plugins/eippf_protection_suite_pass.so"
 
       - name: Protect Reverse Evaluate
         shell: bash
@@ -182,6 +291,7 @@ jobs:
             sample_manifest.json
             original
             protected
+            signed_policy
             manifests
             audit
             reverse

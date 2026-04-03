@@ -1,0 +1,361 @@
+# 2026-04-03 样例评估链整改 Superseding 计划
+
+Execution Mode
+- `real-multi-agent`
+
+Assurance Level
+- `heavy`
+
+Task Summary
+- 本轮只做样例评估链的剩余收口，不扩新产品线。
+- 目标是把三位 reviewer 指出的 4 个 blocker 全部消除：
+  1. old `post_link_mutator` tests 仍未完成对新 kernel 语义的适配收口。
+  2. sample build scripts / workflow 尚未完成集成验收。
+  3. `protect_and_evaluate.py` 仍缺 `validation_scope / known_limits / input_sha256 / output_sha256` 的 HTML 展示、reverse layout 兼容、summary contract 强化、`implementation_defect` 与 hard-fail 分离。
+  4. sample-suite 尚未完成全链路跑通验证。
+- 本轮完成标准不是“报告看起来更好”，而是：
+  - `artifact_shape` 与 `signed_policy` 双视图契约完全闭合。
+  - old/new `post_link_mutator` 测试在新 kernel 语义下重新通过。
+  - sample build scripts/workflow 真正跑到 wrapper + pass plugin。
+  - sample-suite 全链路在本地可跑的部分通过，GitHub Actions `sample-suite-eval` 全绿。
+
+Task Charter
+- Objective
+  - 修掉最新样例报告中的实现缺陷，并把样例评估链升级到可重复、可审计、可在 CI 稳定复跑的状态。
+- Scope
+  - `.github/workflows/sample-suite-eval.yml`
+  - `core/tools/sample_suite/*`
+  - `core/tests/sample_suite/*`
+  - `core/post_link_mutator/*`
+  - `core/tests/post_link_mutator/*`
+  - `core/tools/artifact_audit.py`
+  - `core/tests/tools/artifact_audit_strict_test.cpp`
+  - `core/passes/CMakeLists.txt`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+- Non-Goals
+  - 不宣称真实 Apple/微软/内核发行签名量产闭环。
+  - 不在本轮新增保护类型、runtime lane 或发布流程。
+  - 不通过放宽 strict/audit 规则“洗绿”报告。
+- Constraints
+  - 所有 C/C++ 样例编译都必须走 `core/wrapper/eippf_cc.py`。
+  - sample-suite 总 gate 必须区分 `artifact_shape` 与 `signed_policy`。
+  - `protected/` 与 `signed_policy/` 必须物理隔离。
+  - PM 不写实现代码，只负责计划、任务分发、集成验收、CI 跟踪。
+  - old `post_link_mutator` tests 不只是“补 build target”，还必须修正 fixture 和语义预期。
+- Acceptance Criteria
+  - `artifact_audit_strict_test`、`string_protection_pass_test`、`sample_suite_report_contract_test`、`post_link_mutator_kernel_mutator_contract_test`、`ctest -R post_link_mutator` 全部通过。
+  - `protect_and_evaluate.py` 输出的 `summary.json` 满足 schema v2 且精确覆盖 11 个样例、4 个 `signed_policy` 目标、每个样例都含 `input_sha256` 与 `output_sha256`。
+  - `report.html` 同时展示：
+    - `Artifact Shape`
+    - `Signed Policy`
+    - `Implementation Defects`
+    - `validation_scope`
+    - `known_limits`
+    - `input_sha256`
+    - `output_sha256`
+  - `implementation_defect` 只进入报告与 summary，不直接导致脚本返回非 0；只有硬失败才允许脚本失败。
+  - GitHub Actions `sample-suite-eval` 通过，且上传完整证据树。
+- Forbidden Shortcuts
+  - 禁止把 unsigned 缺口改成报告豁免。
+  - 禁止回退到裸编译样例。
+  - 禁止在 `protected/` 上原位 patch `signed_policy` 副本。
+  - 禁止继续用 8 字节极简 ELF 伪装 kernel `.ko` success path。
+  - 禁止只修 `ctest` 构建目标，不修 old tests 的语义预期。
+
+Architecture Contract
+- 双视图是硬契约：
+  - `artifact_shape` 只回答“保护工具是否把产物做坏/是否完成字符串压制/是否满足形状约束”。
+  - `signed_policy` 只回答“需要签名的四类目标在 CI fixture + trusted verifier 下是否满足严格策略”。
+- `implementation_defect` 与 hard-fail 必须分离：
+  - `implementation_defect` 进入 `summary.json` 与 `report.html`。
+  - hard-fail 只用于：
+    - 输入缺失
+    - 命令执行失败
+    - manifest/summary 契约破坏
+    - required output 缺失
+    - trusted verifier/fixture signer 基础设施损坏
+- reverse evidence layout 必须同时满足两类消费者：
+  - 新布局：`original.file.txt / original.strings.txt / original.readelf.txt / original.objdump.txt`
+  - 兼容布局：`reverse/<sample-id>/strings.txt` 与 `reverse/<sample-id>/metadata.txt`
+  - `metadata.txt` 至少包含：
+    - `sample_id`
+    - `input_relpath`
+    - `protected_relpath`
+    - `input_sha256`
+    - `output_sha256`
+    - `validation_scope`
+    - `known_limits`
+- kernel mutator 语义固定为：
+  - `.ko` 成功路径必须基于合法 `ET_REL` + section table fixture。
+  - `.ko` 验收看 `.note.eippf` 注入，不再看 EOF trailer。
+  - `.sys` 仍看 overlay trailer，不改 section table。
+- sample build integration 固定为：
+  - Linux/Android/iOS/Windows 样例都先构建 `eippf_protection_suite_pass`。
+  - wrapper 必须拿到平台对应的 pass plugin 产物。
+  - Windows 缺 `clang-cl` 直接失败，不回退 `cl.exe`。
+- full-chain 验收固定分层：
+  - 本地：脚本/测试/summary/report 契约闭环。
+  - CI：跨平台样例编译 + protect/evaluate + evidence upload 闭环。
+
+Parallel Tracks
+- Track A / old post_link tests 语义收口
+  - Owner: `Engineer-A`
+  - Files
+    - `core/tests/post_link_mutator/CMakeLists.txt`
+    - `core/tests/post_link_mutator/post_link_mutator_smoke_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_exit_code_trailer_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_fault_isolation_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_derived_target_kind_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_user_mode_contract_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+    - `core/tests/post_link_mutator/post_link_mutator_hardened_pipeline_contract_test.cpp`
+  - 必做改动
+    - old tests 成功路径里的 kernel `.ko` fixture 改成合法 `ET_REL + section table` fixture。
+    - kernel success 断言改为检查 `.note.eippf`、新 manifest envelope/status，不再检查 EOF trailer。
+    - `.sys` 保持 overlay 语义，断言 `PE overlay trailer` 相关结果。
+    - `ctest -R post_link_mutator` 所有依赖的 test target 都必须在本地构建命令里显式覆盖。
+    - 修正 fault-isolation 中对最小 ELF fixture 的错误预期；凡 success path 要求合法 fixture，fault path 要求 fault 先于语义校验时才允许极简 fixture。
+  - 禁止事项
+    - 禁止只补 `eippf_post_link_mutator` 可执行文件而不改语义断言。
+    - 禁止把 kernel lane 回退成 user-mode trailer 语义。
+  - 完成标准
+    - `ctest --test-dir <build> --output-on-failure -R post_link_mutator` 全绿。
+  - 本地验证命令
+    - `cmake --build <build> -j --target eippf_post_link_mutator post_link_mutator_smoke_test post_link_mutator_thin_entry_proof_test post_link_mutator_exit_code_trailer_contract_test post_link_mutator_derived_target_kind_contract_test post_link_mutator_hardened_pipeline_contract_test post_link_mutator_fault_isolation_contract_test post_link_mutator_target_classifier_test post_link_mutator_user_mode_contract_test post_link_mutator_kernel_mutator_contract_test`
+    - `ctest --test-dir <build> --output-on-failure -R post_link_mutator`
+
+- Track B / sample build scripts 与 workflow 集成收口
+  - Owner: `Engineer-B`
+  - Files
+    - `.github/workflows/sample-suite-eval.yml`
+    - `core/tools/sample_suite/build_linux_android.sh`
+    - `core/tools/sample_suite/build_macos_ios.sh`
+    - `core/tools/sample_suite/build_windows.ps1`
+    - `core/passes/CMakeLists.txt`
+    - `core/tests/passes/string_protection_pass_test.cpp`
+    - `core/tests/sample_suite/sources/windows/windows_dll.c`
+    - `core/tests/sample_suite/sources/linux/linux_so.c`
+    - `core/tests/sample_suite/sources/android/android_so.c`
+    - `core/tests/sample_suite/sources/kernel/linux_module.c`
+    - `core/tests/sample_suite/sources/kernel/android_module.c`
+  - 必做改动
+    - 保证三平台脚本都先构建 `eippf_protection_suite_pass`，再通过 wrapper 编译样例。
+    - 本地可跑平台上补集成验证命令，并在 workflow 中显式构建/检查：
+      - `eippf_protection_suite_pass`
+      - `eippf_post_link_mutator`
+      - `eippf_dex_toolchain`
+      - `eippf_script_guard`
+    - 样例锚点继续保持“真实可达但保护后不可见”。
+    - `string_protection_pass_test.cpp` 必须覆盖 sample anchor。
+  - 禁止事项
+    - 禁止回退到 raw compiler。
+    - 禁止通过删除 anchor 让报告变绿。
+  - 完成标准
+    - `string_protection_pass_test` 通过。
+    - 本地 Linux 可跑的样例构建脚本通过。
+    - workflow 逻辑与脚本参数完全一致。
+  - 本地验证命令
+    - `cmake --build <build> -j --target eippf_protection_suite_pass string_protection_pass_test`
+    - `ctest --test-dir <build> --output-on-failure -R string_protection_pass_test`
+    - `bash -n core/tools/sample_suite/build_linux_android.sh`
+    - `bash -n core/tools/sample_suite/build_macos_ios.sh`
+    - `python3 -m py_compile core/tools/sample_suite/protect_and_evaluate.py`
+
+- Track C / report、summary、evidence layout 收口
+  - Owner: `Engineer-C`
+  - Files
+    - `core/tools/sample_suite/protect_and_evaluate.py`
+    - `core/tools/sample_suite/report_template.html`
+    - `core/tests/sample_suite/fixture_signers.py`
+    - `core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `core/tests/tools/CMakeLists.txt`
+  - 必做改动
+    - HTML 展示补齐：
+      - `validation_scope`
+      - `known_limits`
+      - `input_sha256`
+      - `output_sha256`
+    - `validate_summary_contract()` 强化为：
+      - 精确 11 个 sample id
+      - 每个样例都有 `input_sha256` 与 `output_sha256`
+      - 4 个 `signed_policy` 目标必须完整
+    - reverse layout 兼容：
+      - 保留现有 `original.* / protected.*`
+      - 额外产出 `reverse/<sample>/strings.txt`
+      - 额外产出 `reverse/<sample>/metadata.txt`
+    - `implementation_defect` 与 hard-fail 分离：
+      - 只有硬失败置非 0
+      - 仅缺陷不允许让脚本提前退出
+    - `sample_suite_report_contract_test.py` 补齐对上述契约的断言。
+  - 禁止事项
+    - 禁止通过弱化 summary 契约让测试过。
+    - 禁止删除 defect 分类字段。
+  - 完成标准
+    - `sample_suite_report_contract_test` 通过。
+    - 生成的 `report.html` 与 `summary.json` 满足新契约。
+  - 本地验证命令
+    - `python3 -m py_compile core/tools/sample_suite/protect_and_evaluate.py core/tests/sample_suite/fixture_signers.py core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `python3 core/tests/sample_suite/sample_suite_report_contract_test.py`
+    - `ctest --test-dir <build> --output-on-failure -R sample_suite_report_contract_test`
+
+- Track D / audit 契约与 dex bundle invariant 稳定收口
+  - Owner: `Engineer-D`
+  - Files
+    - `core/tools/artifact_audit.py`
+    - `core/tests/tools/artifact_audit_strict_test.cpp`
+  - 必做改动
+    - 保持 dex bundle key-marker 偏移修正。
+    - 保持 bundle header 常量化。
+    - 保持 strict 回归：
+      - `flags!=0 && key_marker==0` 通过
+      - `key_marker!=0` 失败
+    - 不得扩大 strict 豁免面。
+  - 禁止事项
+    - 禁止放宽 strict 规则修绿报告。
+  - 完成标准
+    - `artifact_audit_strict_test` 与 `artifact_audit.py --self-test` 通过。
+  - 本地验证命令
+    - `python3 -m py_compile core/tools/artifact_audit.py`
+    - `cmake --build <build> -j --target artifact_audit_strict_test`
+    - `ctest --test-dir <build> --output-on-failure -R 'artifact_audit_strict_test|tools_artifact_audit_selftest'`
+
+- Track E / sample-suite 全链路收口
+  - Owner: `Engineer-E`
+  - Files
+    - `.github/workflows/sample-suite-eval.yml`
+    - `core/tools/sample_suite/protect_and_evaluate.py`
+    - `core/tests/sample_suite/sample_manifest.json`
+    - `core/tools/sample_suite/report_template.html`
+  - 必做改动
+    - 对接前 4 个轨的产物与契约。
+    - 本地在 Linux 环境至少跑通：
+      - manifest 复制
+      - protect/evaluate
+      - summary/report/evidence layout
+    - GitHub Actions `sample-suite-eval` 全链打通，并验证证据上传路径。
+  - 禁止事项
+    - 禁止在未跑通本地契约前直接推 CI 试错。
+  - 完成标准
+    - 本地可跑段全绿。
+    - GitHub Actions `sample-suite-eval` 通过。
+  - 本地验证命令
+    - `python3 core/tools/sample_suite/protect_and_evaluate.py --manifest core/tests/sample_suite/sample_manifest.json --input-root <prepared-input-root> --build-root <build-root> --output-root <evidence-root>`
+    - `python3 core/tests/sample_suite/sample_suite_report_contract_test.py`
+
+File Ownership
+- PM
+  - `plan/2026-04-03-sample-suite-remediation-superseding-plan.txt`
+  - 任务分发、merge 顺序、集成验收、CI 跟踪
+- Engineer-A
+  - Track A 全部文件
+- Engineer-B
+  - Track B 全部文件
+- Engineer-C
+  - Track C 全部文件
+- Engineer-D
+  - Track D 全部文件
+- Engineer-E
+  - Track E 全部文件
+- Reviewer
+  - 不改实现文件，只读审查计划与证据
+
+Dependencies
+- Track D 可先独立收口。
+- Track A 与 Track B 并行。
+- Track C 依赖 Track D 的 summary/audit 基线，但可以先做 HTML/reverse/hard-fail 分离。
+- Track E 必须等 Track A/B/C/D 合并后再做最终全链。
+
+Regression Perimeter
+- Directly Changed
+  - sample build scripts/workflow
+  - sample-suite report/evidence contract
+  - post_link_mutator old tests
+  - artifact audit strict bundle checks
+- Adjacent
+  - `core/tests/post_link_mutator/*`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+  - `core/tests/tools/*`
+  - `core/tools/artifact_audit.py --self-test`
+  - `core/tools/sample_suite/protect_and_evaluate.py`
+- Unchanged Guarantees
+  - 生产 `runtime` 行为不降级
+  - sample-suite 不把 test signer 泄漏进生产路径
+  - kernel target fail-closed 保持
+- Second-Order Risks
+  - Windows hosted runner LLVM/choco 环境不稳定
+  - macOS runner LLVM + xcrun 组合路径冲突
+  - old post_link tests 若仍沿用极简 fixture，会继续误报
+  - `implementation_defect` 与 hard-fail 若分离不干净，会出现 CI 误绿或误红
+
+Quality Gates
+- G1 Script Parse Gate
+  - `python3 -m py_compile core/tools/artifact_audit.py core/tools/sample_suite/protect_and_evaluate.py core/tests/sample_suite/fixture_signers.py core/tests/sample_suite/sample_suite_report_contract_test.py`
+  - `bash -n core/tools/sample_suite/build_linux_android.sh`
+  - `bash -n core/tools/sample_suite/build_macos_ios.sh`
+- G2 Unit/Test Gate
+  - `artifact_audit_strict_test`
+  - `string_protection_pass_test`
+  - `sample_suite_report_contract_test`
+  - `post_link_mutator_kernel_mutator_contract_test`
+  - `ctest -R post_link_mutator`
+- G3 Summary/Report Contract Gate
+  - summary 精确 11 个 sample id
+  - 4 个 signed-policy target 完整
+  - 每个样例都有 `input_sha256/output_sha256`
+  - HTML 有 scope/limits/hash
+  - reverse layout 兼容文件存在
+- G4 Full-Chain Local Gate
+  - 本地 Linux 可跑段成功生成 evidence root
+  - `report.html`、`summary.json`、`sample_manifest.json`、`audit/`、`logs/`、`reverse/` 都存在
+- G5 CI Gate
+  - GitHub Actions `sample-suite-eval` 通过
+  - evidence artifact 上传成功
+
+Merge Order
+1. Track D
+2. Track A
+3. Track B
+4. Track C
+5. Track E
+6. 全量集成验证
+7. GitHub Actions 验收
+
+Open Risks
+- 本地无法完整模拟 Windows/macOS 样例编译，需要 CI 补齐。
+- sample-suite full-chain 的输入根目录准备依赖各平台 artifact 下载布局。
+- 旧 `post_link` 测试历史语义多，修复时容易出现只改一半的假通过。
+
+State Snapshot
+- 已确认 blocker 不是抽象风险，而是具体可复现事实：
+  - `ctest -R post_link_mutator` 当前仍失败，原因包括：
+    - `eippf_post_link_mutator` 未纳入当前局部构建目标
+    - old tests 仍按 kernel trailer 语义断言
+    - 部分 fault/success fixture 仍是极简 ELF stub
+  - `protect_and_evaluate.py` 当前会把 `implementation_defect` 直接推高成非 0 返回。
+  - `report_template.html` 还缺 `validation_scope / known_limits / sha256` 展示。
+  - `validate_summary_contract()` 还未强制 11 个样例和 hash 字段。
+
+Agent Task Cards
+- Engineer-A
+  - 只改 Track A 文件。
+  - 先跑 `ctest -R post_link_mutator` 收集失败项。
+  - 把 kernel `.ko` 成功路径 fixture 全部换成合法 `ET_REL` fixture。
+  - 把 kernel success 断言从 trailer 改成 `.note.eippf` 与新 manifest 断言。
+  - 完成后只回报：修改文件列表、构建命令、`ctest -R post_link_mutator` 结果。
+- Engineer-B
+  - 只改 Track B 文件。
+  - 保证 build scripts/workflow 都先构建 `eippf_protection_suite_pass`，再走 wrapper。
+  - 不允许回退 raw compiler。
+  - 完成后只回报：修改文件列表、样例构建命令、`string_protection_pass_test` 结果。
+- Engineer-C
+  - 只改 Track C 文件。
+  - 先强 `validate_summary_contract()`，再补 `report_template.html`，再补 reverse 兼容布局，最后分离 hard-fail。
+  - 完成后只回报：修改文件列表、`sample_suite_report_contract_test` 结果、生成的 summary/report 关键字段。
+- Engineer-D
+  - 只改 Track D 文件。
+  - 保持当前 dex invariant 修正，不允许弱化 strict。
+  - 完成后只回报：修改文件列表、`artifact_audit_strict_test` 与 self-test 结果。
+- Engineer-E
+  - 只在前四轨合并后工作。
+  - 跑本地可跑段 full-chain，并准备 CI 推送验收。
+  - 完成后只回报：本地 full-chain 命令、输出 evidence 根目录、CI run id。

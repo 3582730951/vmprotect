@@ -18,7 +18,9 @@ add_library(eippf_post_link_mutator_core STATIC
   src/binary_io.cpp
   src/mutation_trailer.cpp
   src/pe_user_mode_mutator.cpp
+  src/pe_kernel_driver_mutator.cpp
   src/elf_user_mode_mutator.cpp
+  src/elf_kernel_module_mutator.cpp
   src/macho_user_mode_mutator.cpp
   src/manifest_writer.cpp
   src/mutator_app.cpp
