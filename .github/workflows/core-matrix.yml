@@ -24,9 +24,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev llvm-18-tools clang-18 libclang-cpp18-dev
           python -m pip install --upgrade pip cmake ninja
+          echo "/usr/lib/llvm-18/bin" >> "$GITHUB_PATH"
+          echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> "$GITHUB_ENV"
           cmake --version
           ninja --version
+          /usr/lib/llvm-18/bin/llvm-config --version
           python --version
 
       - name: Configure
@@ -34,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence/linux
-          cmake -S core -B build_ci -G Ninja 2>&1 | tee evidence/linux/configure.log
+          cmake -S core -B build_ci -G Ninja -DLLVM_DIR="${LLVM_DIR}" 2>&1 | tee evidence/linux/configure.log
 
       - name: Build
         shell: bash
@@ -99,9 +104,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          brew install llvm
           python -m pip install --upgrade pip cmake ninja
+          LLVM_PREFIX="$(brew --prefix llvm)"
+          echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
+          echo "LLVM_DIR=${LLVM_PREFIX}/lib/cmake/llvm" >> "$GITHUB_ENV"
           cmake --version
           ninja --version
+          "${LLVM_PREFIX}/bin/llvm-config" --version
           python --version
 
       - name: Configure
@@ -109,7 +119,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence/macos
-          cmake -S core -B build_ci -G Ninja 2>&1 | tee evidence/macos/configure.log
+          cmake -S core -B build_ci -G Ninja -DLLVM_DIR="${LLVM_DIR}" 2>&1 | tee evidence/macos/configure.log
 
       - name: Build
         shell: bash
