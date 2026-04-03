@@ -20,6 +20,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -1816,7 +1817,11 @@ bool canonicalize_for_vm_lowering(llvm::Function& function, llvm::FunctionAnalys
   function.removeFnAttr(llvm::Attribute::OptimizeNone);
 
   llvm::FunctionPassManager fpm;
+#if LLVM_VERSION_MAJOR >= 18
+  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+#else
   fpm.addPass(llvm::SROAPass());
+#endif
   fpm.addPass(llvm::PromotePass());
   fpm.addPass(llvm::EarlyCSEPass());
   fpm.addPass(llvm::InstCombinePass());

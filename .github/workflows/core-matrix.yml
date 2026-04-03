@@ -104,9 +104,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          brew install llvm
+          brew install llvm@18
           python -m pip install --upgrade pip cmake ninja
-          LLVM_PREFIX="$(brew --prefix llvm)"
+          LLVM_PREFIX="$(brew --prefix llvm@18)"
           echo "${LLVM_PREFIX}/bin" >> "$GITHUB_PATH"
           echo "LLVM_DIR=${LLVM_PREFIX}/lib/cmake/llvm" >> "$GITHUB_ENV"
           cmake --version
