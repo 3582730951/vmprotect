@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sample Suite Evaluation Report</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --panel: #ffffff;
+      --ink: #1d2433;
+      --muted: #5a6477;
+      --line: #d6dceb;
+      --ok: #1f8a4c;
+      --no: #b03232;
+      --accent: #2463eb;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 10% 10%, #eef3ff, #f4f6fb 55%);
+      color: var(--ink);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 28px 20px 40px;
+    }
+    .hero {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 14px 30px rgba(22, 35, 72, 0.08);
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+      letter-spacing: 0.01em;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 18px;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .section {
+      margin-top: 18px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 10px 24px rgba(22, 35, 72, 0.06);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .flag {
+      display: inline-block;
+      min-width: 42px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-weight: 700;
+      font-size: 12px;
+    }
+    .flag.yes {
+      background: rgba(31, 138, 76, 0.12);
+      color: var(--ok);
+    }
+    .flag.no {
+      background: rgba(176, 50, 50, 0.12);
+      color: var(--no);
+    }
+    code {
+      font-family: "SFMono-Regular", Menlo, Consolas, monospace;
+      font-size: 12px;
+      color: var(--accent);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <h1>Sample Suite Protection Evaluation</h1>
+      <p>Generated at <code>{{generated_at}}</code>.</p>
+    </section>
+
+    <section class="section">
+      <h2>Summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Sample ID</th>
+            <th>Target</th>
+            <th>Protection Tool</th>
+            <th>Original Anchor Visible</th>
+            <th>Protected Anchor Visible</th>
+            <th>Original Strings</th>
+            <th>Protected Strings</th>
+            <th>Protected Strict Failures</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{summary_table_rows}}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Validation Scope And Limits</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Sample ID</th>
+            <th>Validated Scope</th>
+            <th>Known Limits</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{scope_rows}}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>

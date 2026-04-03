@@ -1,0 +1,232 @@
+# 2026-04-03 样例程序集编译 / 保护 / 逆向评估计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 为当前项目补一套“覆盖全部保护类型”的样例程序集，并通过 GitHub Actions 完成编译。
+- 使用当前仓库的真实保护入口对样例产物执行一次保护。
+- 对原始产物与保护后产物执行一次逆向视角的静态审计与可见性对比。
+- 输出一份可视化 HTML 报告，附带原始证据。
+
+Task Charter:
+- Objective:
+  - 建立一条可重复执行的样例评估链路，覆盖：
+    - Windows `.exe/.dll/.sys`
+    - Linux `ELF/.so/.ko`
+    - Android `.so/.dex/.ko`
+    - iOS Mach-O
+    - `.sh`
+- Scope:
+  - `core/tests/sample_suite/`
+  - `core/tools/sample_suite/`
+  - `.github/workflows/`
+  - `plan/`
+- Non-Goals:
+  - 不伪装成真实商店分发或真实驱动签名发布。
+  - 不把 Android `.ko` 伪装成带真实 GKI 兼容性证明的量产模块。
+  - 不做动态破解、绕过、注入类逆向，只做产物静态可见性评估与保护前后对比。
+- Constraints:
+  - 样例产物编译必须走 GitHub CI。
+  - 保护必须调用仓库现有入口：
+    - `eippf_post_link_mutator`
+    - `eippf_dex_toolchain`
+    - `eippf_script_guard`
+  - PM 负责任务拆分、验收、证据闭环；工程 agent 只按文件级任务卡落地。
+- Acceptance Criteria:
+  - 存在一条新的 CI workflow，在 CI 内完成：
+    - 编译样例程序集
+    - 保护样例产物
+    - 逆向静态评估
+    - 生成 HTML + JSON 报告
+    - 上传证据包
+  - 对每类样例至少生成 1 个保护后 artifact 和 1 条逆向审计记录。
+  - 生成 HTML 可视化报告，至少包含：
+    - 样例类型矩阵
+    - 原始/保护后文件信息对比
+    - strings 可见性对比
+    - artifact audit / mutation / bundle / launcher 结果
+    - 每类样例的结论与限制
+  - 证据可下载，可由本地复查。
+- Forbidden Shortcuts:
+  - 禁止伪造 `.sys/.ko/.dex/.Mach-O` 文件头充数。
+  - 禁止只跑本地编译然后声称“CI 已编译”。
+  - 禁止只给口头结论，不落 HTML 报告和原始 JSON/日志。
+  - 禁止把 hosted runner 缺失的真实平台约束伪装成“已验证量产可装载”。
+
+Canonical Artifacts:
+- `Task Charter`
+- `Decision Log`
+- `State Snapshot`
+- `Sample Suite Manifest`
+- `Sample Evaluation Report (HTML)`
+- `Sample Evaluation Evidence Pack`
+
+Agent Roster:
+- `Agent 1 / PM / main_agent`
+  - 负责计划、任务卡、验收、push、CI 跟踪
+- `Agent 2 / Architect`
+  - 负责样例类型矩阵、编译边界、保护链路、报告结构
+- `Agent 3 / Security Reviewer`
+  - 负责确认逆向评估只停留在防护验证，不越过边界
+- `Agent 4 / Validation Reviewer`
+  - 负责确认 CI / 报告 / 证据闭环
+- `Agent 5 / Engineer A`
+  - 负责样例源文件与样例 manifest
+- `Agent 6 / Engineer B`
+  - 负责 CI workflow 与平台编译脚本
+- `Agent 7 / Engineer C`
+  - 负责保护/逆向/报告脚本
+
+Architecture Contract:
+- 样例程序集不放仓库根目录，统一放在 `core/tests/sample_suite/`。
+- 每类 artifact 至少一个最小样例：
+  - `windows_exe`
+  - `windows_dll`
+  - `windows_sys`
+  - `linux_elf`
+  - `linux_so`
+  - `linux_ko`
+  - `android_so`
+  - `android_dex`
+  - `android_ko`
+  - `ios_macho`
+  - `shell_script`
+- 驱动/模块样例允许是“最小可编译、最小导出、最小元数据”的样例，不要求真实安装运行。
+- Android `.ko` 与 Linux `.ko` 的 artifact format 相同；如 hosted CI 无 Android kernel headers，可复用同一 `.ko` 编译方法产出独立命名样例，并在报告中明确“Android lane policy evaluation”。
+- 保护入口固定：
+  - `post_link_mutator` 处理 `PE/ELF/Mach-O/.sys/.ko`
+  - `dex_toolchain` 处理 `.dex`
+  - `script_guard` 处理 `.sh`
+- `protect_and_evaluate.py` 只能消费“CI 编译阶段产出的原始 artifacts”，不得回退到仓库内其他 fixture。
+- `protect_and_evaluate.py` 必须为每个输入/输出写入 `sha256`，并将 hash 绑定到 JSON summary 与 HTML 报告。
+- 逆向评估固定为静态视角：
+  - `file`
+  - `strings`
+  - `readelf` / `llvm-objdump` / `objdump`
+  - `artifact_audit.py`
+  - manifest / trailer / bundle header 解析
+- 报告以 HTML 形式落盘，并同时导出 JSON summary。
+
+Parallel Tracks:
+- Track A / Sample Sources
+  - Owner: `Engineer A`
+  - Files:
+    - `core/tests/sample_suite/sources/*`
+    - `core/tests/sample_suite/sample_manifest.json`
+  - Output:
+    - 各类型样例源程序与样例清单
+- Track B / CI Build Matrix
+  - Owner: `Engineer B`
+  - Files:
+    - `.github/workflows/sample-suite-eval.yml`
+    - `core/tools/sample_suite/build_linux_android.sh`
+    - `core/tools/sample_suite/build_windows.ps1`
+    - `core/tools/sample_suite/build_macos_ios.sh`
+  - Output:
+    - GitHub Actions 编译 workflow
+- Track C / Protect + Reverse + Report
+  - Owner: `Engineer C`
+  - Files:
+    - `core/tools/sample_suite/protect_and_evaluate.py`
+    - `core/tools/sample_suite/report_template.html`
+  - Output:
+    - 原始/保护后 artifacts
+    - JSON summary
+    - HTML 报告
+    - 哈希绑定与执行日志
+
+File Ownership:
+- PM:
+  - `plan/2026-04-03-sample-suite-evaluation-plan.txt`
+- Engineer A:
+  - `core/tests/sample_suite/`
+- Engineer B:
+  - `.github/workflows/sample-suite-eval.yml`
+  - `core/tools/sample_suite/build_linux_android.sh`
+  - `core/tools/sample_suite/build_windows.ps1`
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Engineer C:
+  - `core/tools/sample_suite/protect_and_evaluate.py`
+  - `core/tools/sample_suite/report_template.html`
+
+Dependencies:
+- 先冻结样例矩阵和报告字段，再并行编码。
+- Track C 可在 Track A/B 开工后并行实现，但最终调通依赖 CI 样例 artifacts 命名稳定。
+- 合并顺序：
+  1. Track A
+  2. Track B + Track C
+  3. CI 运行
+  4. 报告下载复核
+
+Regression Perimeter:
+- Directly Changed:
+  - 新 workflow
+  - 新样例源程序
+  - 新保护/逆向/报告脚本
+- Adjacent:
+  - `core-matrix` 不能被破坏
+  - `post_link_mutator` / `dex_toolchain` / `script_guard` 入口行为不能被改变
+- Unchanged Guarantees:
+  - 现有测试矩阵继续保持
+  - 样例评估不改动生产保护逻辑
+- Second-Order Risks:
+  - Windows `.sys` 最小驱动样例可能需要无 CRT / 特殊链接参数
+  - iOS Mach-O 样例可能依赖 simulator SDK
+  - Android `.dex` 依赖 Android build tools
+  - Android `.ko` 可能只能验证 artifact lane，而非真实 GKI 装载兼容性
+
+Quality Gates:
+- G1:
+  - `sample_manifest.json` 覆盖 11 类样例
+- G2:
+  - `sample-suite-eval` workflow 在 CI 中完成编译、保护、逆向评估、HTML/JSON 生成、证据上传
+- G3:
+  - `protect_and_evaluate.py` 对 11 类样例全部产生结果记录；任一类型缺失即 workflow 失败
+- G4:
+  - HTML 报告生成并上传
+- G5:
+  - 报告必须显式标注每类样例的“已验证范围”和“未验证现实边界”
+- G6:
+  - `Sample Evaluation Evidence Pack` 必含：
+    - `sample_manifest.json`
+    - `original/`
+    - `protected/`
+    - `manifests/`
+    - `audit/`
+    - `reverse/`
+    - `report.html`
+    - `summary.json`
+    - `tool_versions.json`
+    - `logs/`
+  - 缺任一项 CI 必须失败
+- G7:
+  - `summary.json` 必须覆盖 11 类样例，并含每个输入/输出的 `sha256`
+
+Evidence Pack Layout:
+- `sample_manifest.json`
+- `original/<sample-id>/...`
+- `protected/<sample-id>/...`
+- `manifests/<sample-id>.manifest.json`
+- `audit/<sample-id>.audit.json`
+- `reverse/<sample-id>/strings.txt`
+- `reverse/<sample-id>/metadata.txt`
+- `report.html`
+- `summary.json`
+- `tool_versions.json`
+- `logs/*.log`
+
+Recheck Commands:
+- 下载证据包:
+  - `gh run download <run-id> -n sample-suite-evidence -D /tmp/sample-suite-evidence`
+- 本地复跑评估:
+  - `python3 core/tools/sample_suite/protect_and_evaluate.py --input-root /tmp/sample-suite-evidence/original --output-root /tmp/sample-suite-recheck`
+- 覆盖与哈希复核:
+  - `python3 - <<'PY'\nimport json, pathlib\np=pathlib.Path('/tmp/sample-suite-evidence/summary.json')\ndata=json.loads(p.read_text())\nassert len(data['samples']) == 11\nassert all('input_sha256' in s and 'output_sha256' in s for s in data['samples'])\nprint('ok')\nPY`
+
+State Snapshot:
+- 仓库已有稳定保护入口与 CI 基线。
+- 当前缺的是“统一样例程序 + CI 编译 + 一次真实保护 + 逆向可视化报告”的完整闭环。

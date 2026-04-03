@@ -1,0 +1,159 @@
+{
+  "schema_version": 1,
+  "samples": [
+    {
+      "id": "windows_exe",
+      "platform": "windows",
+      "artifact_kind": "pe",
+      "target_kind": "desktop_native",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "windows_exe/sample_windows.exe",
+      "output_name": "sample_windows.exe",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_WINDOWS_EXE"
+      ],
+      "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Windows user-mode executable lane.",
+      "known_limits": "No Authenticode signing and no runtime deployment verification."
+    },
+    {
+      "id": "windows_dll",
+      "platform": "windows",
+      "artifact_kind": "pe",
+      "target_kind": "desktop_native",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "windows_dll/sample_windows.dll",
+      "output_name": "sample_windows.dll",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_WINDOWS_DLL"
+      ],
+      "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Windows user-mode shared-library lane.",
+      "known_limits": "No Authenticode signing and no in-process loader compatibility verification."
+    },
+    {
+      "id": "windows_sys",
+      "platform": "windows",
+      "artifact_kind": "pe",
+      "target_kind": "windows_driver",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "windows_sys/sample_windows.sys",
+      "output_name": "sample_windows.sys",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_WINDOWS_SYS"
+      ],
+      "validation_scope": "Artifact and lane-policy evaluation for Windows driver target using SYS-shaped sample.",
+      "known_limits": "No real driver signing, no kernel loading, and no production HVCI deployment validation."
+    },
+    {
+      "id": "linux_elf",
+      "platform": "linux",
+      "artifact_kind": "elf",
+      "target_kind": "desktop_native",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "linux_elf/sample_linux_elf",
+      "output_name": "sample_linux_elf",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_LINUX_ELF"
+      ],
+      "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Linux ELF executable lane.",
+      "known_limits": "No runtime deployment hardening verification beyond static artifact checks."
+    },
+    {
+      "id": "linux_so",
+      "platform": "linux",
+      "artifact_kind": "elf",
+      "target_kind": "desktop_native",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "linux_so/libsample_linux.so",
+      "output_name": "libsample_linux.so",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_LINUX_SO"
+      ],
+      "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Linux shared-library lane.",
+      "known_limits": "No runtime linker compatibility validation across full distro matrix."
+    },
+    {
+      "id": "linux_ko",
+      "platform": "linux",
+      "artifact_kind": "elf",
+      "target_kind": "linux_kernel_module",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "linux_ko/sample_linux_module.ko",
+      "output_name": "sample_linux_module.ko",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_LINUX_KO"
+      ],
+      "validation_scope": "Artifact and lane-policy evaluation for Linux kernel-module target using KO-shaped sample.",
+      "known_limits": "No real module signing, no vermagic/runtime loading validation on production kernels."
+    },
+    {
+      "id": "android_so",
+      "platform": "android",
+      "artifact_kind": "elf",
+      "target_kind": "android_so",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "android_so/libsample_android.so",
+      "output_name": "libsample_android.so",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_ANDROID_SO"
+      ],
+      "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Android native shared-library lane.",
+      "known_limits": "No on-device runtime hook/frida resistance validation in this sample run."
+    },
+    {
+      "id": "android_dex",
+      "platform": "android",
+      "artifact_kind": "dex",
+      "target_kind": "android_dex",
+      "protect_via": "dex_toolchain",
+      "input_relpath": "android_dex/classes.dex",
+      "output_name": "classes.dex",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_ANDROID_DEX"
+      ],
+      "validation_scope": "DEX bundle protection and static reverse-visibility evaluation for Android DEX lane.",
+      "known_limits": "No full APK packaging, no app-store distribution, and no runtime app behavior verification."
+    },
+    {
+      "id": "android_ko",
+      "platform": "android",
+      "artifact_kind": "elf",
+      "target_kind": "android_kernel_module",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "android_ko/sample_android_module.ko",
+      "output_name": "sample_android_module.ko",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_ANDROID_KO"
+      ],
+      "validation_scope": "Artifact and lane-policy evaluation for Android kernel-module target using KO-shaped sample.",
+      "known_limits": "No real Android GKI signing/load validation; artifact-level and lane-level checks only."
+    },
+    {
+      "id": "ios_macho",
+      "platform": "ios",
+      "artifact_kind": "macho",
+      "target_kind": "ios_appstore",
+      "protect_via": "post_link_mutator",
+      "input_relpath": "ios_macho/sample_ios_macho",
+      "output_name": "sample_ios_macho",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_IOS_MACHO"
+      ],
+      "validation_scope": "Artifact and lane-policy evaluation for iOS Mach-O target in App Store safe lane.",
+      "known_limits": "No real Apple signing/notarization/store submission verification; artifact and lane checks only."
+    },
+    {
+      "id": "shell_script",
+      "platform": "shell",
+      "artifact_kind": "shell_script",
+      "target_kind": "shell_ephemeral",
+      "protect_via": "script_guard",
+      "input_relpath": "shell_script/sample_eval.sh",
+      "output_name": "sample_eval.sh",
+      "anchor_strings": [
+        "EIPPF_SAMPLE_ANCHOR_SHELL_SCRIPT"
+      ],
+      "validation_scope": "Encrypted shell bundle generation and static reverse-visibility evaluation for shell launcher lane.",
+      "known_limits": "No full production environment hardening validation for all shell runtime variants."
+    }
+  ]
+}

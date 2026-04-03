@@ -1,0 +1,213 @@
+name: sample-suite-eval
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - core/tests/sample_suite/**
+      - core/tools/sample_suite/**
+      - .github/workflows/sample-suite-eval.yml
+
+jobs:
+  build-linux-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install Build Tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang lld binutils curl unzip ca-certificates file python3
+
+      - name: Install Android SDK Build Tools + NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ANDROID_SDK_ROOT="${RUNNER_TEMP}/android-sdk"
+          CMDLINE_TOOLS_ZIP="${RUNNER_TEMP}/android-commandline-tools.zip"
+
+          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
+          curl -fsSL \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip \
+            -o "${CMDLINE_TOOLS_ZIP}"
+          unzip -q "${CMDLINE_TOOLS_ZIP}" -d "${ANDROID_SDK_ROOT}/cmdline-tools"
+          mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
+
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT}" >> "${GITHUB_ENV}"
+          echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> "${GITHUB_PATH}"
+
+          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="${ANDROID_SDK_ROOT}" --licenses >/dev/null
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" \
+            --sdk_root="${ANDROID_SDK_ROOT}" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.3.11579264"
+
+      - name: Map Workspace To /workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -e /workspace ]; then
+            sudo rm -rf /workspace
+          fi
+          sudo ln -s "${GITHUB_WORKSPACE}" /workspace
+          test -x /workspace/core/tools/sample_suite/build_linux_android.sh
+
+      - name: Build Linux Android Samples
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x /workspace/core/tools/sample_suite/build_linux_android.sh
+          /workspace/core/tools/sample_suite/build_linux_android.sh \
+            "${GITHUB_WORKSPACE}/sample_suite_inputs"
+
+      - name: Upload Linux Android Samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-suite-linux-android
+          path: sample_suite_inputs
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build Windows Samples
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./core/tools/sample_suite/build_windows.ps1 -OutputRoot "$PWD\sample_suite_inputs"
+
+      - name: Upload Windows Samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-suite-windows
+          path: sample_suite_inputs
+          if-no-files-found: error
+
+  build-macos-ios:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build iOS Mach-O Sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x core/tools/sample_suite/build_macos_ios.sh
+          core/tools/sample_suite/build_macos_ios.sh \
+            "${GITHUB_WORKSPACE}/sample_suite_inputs"
+
+      - name: Upload macOS iOS Samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-suite-macos-ios
+          path: sample_suite_inputs
+          if-no-files-found: error
+
+  protect-and-evaluate:
+    runs-on: ubuntu-latest
+    needs:
+      - build-linux-android
+      - build-windows
+      - build-macos-ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Linux Android Samples
+        uses: actions/download-artifact@v4
+        with:
+          name: sample-suite-linux-android
+          path: sample_suite_downloaded
+
+      - name: Download Windows Samples
+        uses: actions/download-artifact@v4
+        with:
+          name: sample-suite-windows
+          path: sample_suite_downloaded
+
+      - name: Download macOS iOS Samples
+        uses: actions/download-artifact@v4
+        with:
+          name: sample-suite-macos-ios
+          path: sample_suite_downloaded
+
+      - name: Install Build Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y llvm-18 llvm-18-dev llvm-18-tools clang-18 libclang-cpp18-dev
+          python3 -m pip install --upgrade pip cmake ninja
+          echo "/usr/lib/llvm-18/bin" >> "${GITHUB_PATH}"
+          echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> "${GITHUB_ENV}"
+
+      - name: Build Protection Binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S core -B build_sample_suite -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm
+          cmake --build build_sample_suite -j 4 --target \
+            eippf_post_link_mutator \
+            eippf_dex_toolchain \
+            eippf_script_guard
+
+      - name: Protect Reverse Evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 core/tools/sample_suite/protect_and_evaluate.py \
+            --manifest core/tests/sample_suite/sample_manifest.json \
+            --input-root sample_suite_downloaded \
+            --build-root build_sample_suite \
+            --output-root sample_suite_evidence
+
+      - name: Validate Evidence Layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            sample_manifest.json
+            original
+            protected
+            manifests
+            audit
+            reverse
+            report.html
+            summary.json
+            tool_versions.json
+            logs
+          )
+          for entry in "${required[@]}"; do
+            if [ ! -e "sample_suite_evidence/${entry}" ]; then
+              echo "[FAIL] missing evidence entry: ${entry}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Upload Evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-suite-evidence
+          path: sample_suite_evidence
+          if-no-files-found: error
