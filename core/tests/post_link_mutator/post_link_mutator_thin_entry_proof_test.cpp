@@ -6,9 +6,12 @@
 #include <string>
 #include <string_view>
 
+#ifndef EIPPF_POST_LINK_MUTATOR_MAIN_CPP
+#error "EIPPF_POST_LINK_MUTATOR_MAIN_CPP must be defined"
+#endif
+
 namespace {
 
-constexpr std::string_view kMainPath = "/workspace/core/post_link_mutator/src/main.cpp";
 constexpr std::string_view kThinEntryDelegationLine =
     "return eippf::post_link_mutator::run_mutator(argc, argv, std::cout, std::cerr);";
 
@@ -40,7 +43,12 @@ bool expect(bool condition, const char* message) {
 }  // namespace
 
 int main() {
-  const std::string main_cpp = read_text_file(kMainPath);
+  const std::filesystem::path main_cpp_path = EIPPF_POST_LINK_MUTATOR_MAIN_CPP;
+  if (!expect(std::filesystem::exists(main_cpp_path), "main.cpp path must exist")) {
+    return 1;
+  }
+
+  const std::string main_cpp = read_text_file(main_cpp_path);
   if (!expect(!main_cpp.empty(), "failed to read main.cpp")) {
     return 1;
   }

@@ -1,0 +1,167 @@
+# 2026-04-03 Phase 8 CI 解阻增量计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `standard`
+
+Task Summary:
+- 目标不是重做终局计划，而是修复远端 `core-matrix` 工作流当前剩余的 3 个阻塞点，使 GitHub Actions 达到与本地 Phase 7/8 冻结结论一致的验收状态。
+
+Task Charter:
+- Objective:
+  - 修复 `core-matrix` 的 Linux 与 macOS hosted runner 失败，达成远端工作流全绿。
+- Scope:
+  - `.github/workflows/core-matrix.yml`
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+  - `plan/`
+- Non-Goals:
+  - 不重做 `Phase 7/8` 代码主体。
+  - 不在本轮扩展新的平台能力或安全特性。
+  - 不把 workflow 失败通过跳过测试、关闭 gate、删 target 的方式“修绿”。
+- Constraints:
+  - 先计划、三审通过、再实施。
+  - PM 不写实现方案之外的工程逻辑，工程 agent 只执行明确任务卡。
+  - 修复后必须重新跑本地针对性验证，并推送触发远端 Actions。
+- Acceptance Criteria:
+  - GitHub Actions `core-matrix` 的 `linux-core` job 通过。
+  - GitHub Actions `core-matrix` 的 `macos-ios-safe` job 通过。
+  - `core-matrix` 绿灯必须伴随 `ios_safe` 相关测试与 `artifact_audit.py --self-test` 的执行证据。
+  - macOS job 必须至少构建以下 target：
+    - `artifact_audit_strict_test`
+    - `post_link_mutator_smoke_test`
+    - `ios_safe_success_test`
+    - `ios_safe_failure_test`
+    - `ios_safe_security_edge_test`
+    - `ios_safe_perf_smoke_test`
+  - macOS job 必须至少执行以下测试：
+    - `artifact_audit_strict_test`
+    - `post_link_mutator_smoke_test`
+    - `ios_safe_success_test`
+    - `ios_safe_failure_test`
+    - `ios_safe_security_edge_test`
+    - `ios_safe_perf_smoke_test`
+  - 本地对应路径验证通过：
+    - `post_link_mutator_thin_entry_proof_test`
+    - `runtime_rust_transparent_link_test`
+    - `artifact_audit_strict_test`
+    - `ios_safe*`
+  - 不降低已有 `ctest` / `perf_smoke` / strict audit 安全门。
+- Forbidden Shortcuts:
+  - 禁止在 CI 中直接排除失败测试以换取绿灯。
+  - 禁止把 `Permission denied` 改成 test skip。
+  - 禁止继续使用硬编码 `/workspace/...` 绝对路径。
+  - 禁止在 macOS job 上靠“全量 build 失败也继续测试”伪造通过。
+
+Canonical Artifacts:
+- `Task Charter`
+- `Decision Log`
+- `State Snapshot`
+- `GitHub Actions run evidence`
+
+Agent Roster:
+- `Agent 1 / PM / main_agent`
+  - 负责计划、分配、合并顺序、验收、推送、CI 追踪。
+- `Agent 2 / Architect`
+  - 负责确认 workflow seam、测试路径契约、避免引入伪绿方案。
+- `Agent 3 / Security Reviewer`
+  - 负责确认修复不会降级 strict gate、不会引入 fail-open。
+- `Agent 4 / Validation Reviewer`
+  - 负责确认验收矩阵足够覆盖当前 3 个 blocker。
+- `Agent 5 / Engineer A`
+  - 负责 `.github/workflows/core-matrix.yml`
+- `Agent 6 / Engineer B`
+  - 负责 `core/tests/post_link_mutator/*`
+
+Delegation Map:
+- Track A / workflow 修复 / Engineer A / 实现 agent
+- Track B / post_link_mutator test 路径去绝对化 / Engineer B / 实现 agent
+- Track C / 审核与验收 / PM + Reviewers / 审核 agent
+
+Parallel Tracks:
+- Track A:
+  - Owner: `Engineer A`
+  - Files:
+    - `.github/workflows/core-matrix.yml`
+  - Output:
+    - Linux 与 macOS job 都显式修正 `weaver_proxy.py` 执行权限。
+    - macOS job 改为目标化 build，不再触发与 iOS lane 无关的 Mach-O hardened fixture 全量失败。
+- Track B:
+  - Owner: `Engineer B`
+  - Files:
+    - `core/tests/post_link_mutator/CMakeLists.txt`
+    - `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+  - Output:
+    - `thin_entry_proof_test` 改为使用编译时注入的源码路径，不再硬编码 `/workspace/...`。
+
+File Ownership:
+- PM:
+  - `plan/2026-04-03-phase-8-ci-unblock-plan.txt`
+- Engineer A:
+  - `.github/workflows/core-matrix.yml`
+- Engineer B:
+  - `core/tests/post_link_mutator/CMakeLists.txt`
+  - `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+
+Dependencies:
+- 审核通过后，Track A 与 Track B 可并行。
+- 合并顺序：
+  1. Track B
+  2. Track A
+  3. 本地验证
+  4. push + 远端 CI 观察
+
+Regression Perimeter:
+- Directly Changed:
+  - CI workflow 安装/构建/测试步骤
+  - `post_link_mutator` source-inspection test 的路径契约
+- Adjacent:
+  - `runtime_rust_transparent_link_test`
+  - `post_link_mutator_fault_isolation_contract_test`
+  - `artifact_audit_strict_test`
+  - `lane_ios_safe/*`
+- Unchanged Guarantees:
+  - strict audit 仍必须开启
+  - `ios_safe` job 仍要执行真实 configure/build/test/self-test/evidence
+  - Linux job 仍要执行全量 `ctest`
+- Second-Order Risks:
+  - workflow 目标化 build 若 target list 缺项，可能出现“计划覆盖不完整”的假绿
+  - `chmod +x` 若只加在 Linux，未来 macOS rust/wrapper 测试可能复现同类权限问题
+  - `thin_entry_proof_test` 若路径宏注入错误，会转化为编译期失败
+
+Quality Gates:
+- G1:
+  - 本地 configure 通过
+- G2:
+  - `post_link_mutator_thin_entry_proof_test` 通过
+  - `runtime_rust_transparent_link_test` 通过
+  - `artifact_audit_strict_test` 通过
+  - `ios_safe` focused tests 通过
+- G2.5:
+  - `rg -n "/workspace/" core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp core/tests/post_link_mutator/CMakeLists.txt` 必须无命中
+  - `rg -n "chmod \\+x .*weaver_proxy.py|artifact_audit.py --self-test|ctest .*ios_safe|artifact_audit_strict_test" .github/workflows/core-matrix.yml` 必须命中
+  - `rg -n "continue-on-error|\\|\\| true|--exclude-regex|--label-exclude" .github/workflows/core-matrix.yml` 必须无命中
+- G3:
+  - 推送后 `core-matrix` 两个 job 全绿
+- G4:
+  - 不得新增 skip，不得删 test，不得关闭 strict 模式
+
+Merge Order:
+- M1: `post_link_mutator` test path contract
+- M2: workflow permission + targeted macOS build
+- M3: 本地验证
+- M4: push
+- M5: GitHub Actions 跟踪直至两 job 通过
+
+Open Risks:
+- GitHub hosted runner 的 LLVM / Homebrew 包版本未来仍可能变化。
+- macOS 目标化 build 依赖 target 名稳定；若后续 target 改名，workflow 需要同步维护。
+
+State Snapshot:
+- 当前本地代码与 Phase 7/8 冻结状态一致。
+- 远端失败点已明确：
+  - Linux: `weaver_proxy.py` 权限
+  - Linux: `post_link_mutator_thin_entry_proof_test` 绝对路径
+  - macOS: 全量 build 触发与 iOS lane 无关的 hardened fixture 失败

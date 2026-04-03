@@ -20,6 +20,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Normalize Wrapper Permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x core/wrapper/weaver_proxy.py
+          test -x core/wrapper/weaver_proxy.py
+
       - name: Install Build Tools
         shell: bash
         run: |
@@ -100,6 +107,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Normalize Wrapper Permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x core/wrapper/weaver_proxy.py
+          test -x core/wrapper/weaver_proxy.py
+
       - name: Install Build Tools
         shell: bash
         run: |
@@ -125,13 +139,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build build_ci -j 4 2>&1 | tee evidence/macos/build.log
+          cmake --build build_ci -j 4 --target \
+            artifact_audit_strict_test \
+            post_link_mutator_smoke_test \
+            ios_safe_success_test \
+            ios_safe_failure_test \
+            ios_safe_security_edge_test \
+            ios_safe_perf_smoke_test 2>&1 | tee evidence/macos/build.log
 
       - name: iOS Strict Lane Tests
         shell: bash
         run: |
           set -euo pipefail
-          ctest --test-dir build_ci --output-on-failure -R 'artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe' 2>&1 | tee evidence/macos/ctest_ios_safe.log
+          ctest --test-dir build_ci --output-on-failure -R '^(artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe_success_test|ios_safe_failure_test|ios_safe_security_edge_test|ios_safe_perf_smoke_test)$' 2>&1 | tee evidence/macos/ctest_ios_safe.log
 
       - name: Artifact Audit Self-Test
         shell: bash

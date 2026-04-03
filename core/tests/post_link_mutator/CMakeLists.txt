@@ -25,6 +25,9 @@ if(TARGET eippf_post_link_mutator)
   add_executable(post_link_mutator_thin_entry_proof_test
     post_link_mutator_thin_entry_proof_test.cpp
   )
+  target_compile_definitions(post_link_mutator_thin_entry_proof_test PRIVATE
+    EIPPF_POST_LINK_MUTATOR_MAIN_CPP="${CMAKE_SOURCE_DIR}/post_link_mutator/src/main.cpp"
+  )
   eippf_configure_post_link_mutator_test(post_link_mutator_thin_entry_proof_test)
   add_test(NAME post_link_mutator_thin_entry_proof_test COMMAND post_link_mutator_thin_entry_proof_test)
 

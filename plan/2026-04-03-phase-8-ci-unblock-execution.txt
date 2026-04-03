@@ -1,0 +1,89 @@
+# 2026-04-03 Phase 8 CI 解阻执行记录
+
+对应计划:
+- `/workspace/plan/2026-04-03-phase-8-ci-unblock-plan.txt`
+- `/workspace/plan/2026-04-02-terminal-goal-superseding-plan.txt`
+
+执行模式:
+- `real-multi-agent`
+
+三审结论:
+- Architecture Reviewer: `PASS`
+  - 允许把 macOS 从全量 build 收敛为明确的必构建 target 清单。
+  - 认为 `thin_entry_proof_test` 使用编译期注入路径契约足够覆盖本地与 CI 路径差异。
+  - 认可 `G2.5` 中的反假绿静态门。
+- Security Reviewer: `PASS`
+  - 要求把 macOS 必构建 target / 必执行测试列成硬验收项，已满足。
+  - 要求禁止 `continue-on-error`、`|| true`、`--exclude-regex`、`--label-exclude`，已满足。
+  - 要求 Linux/macOS 都显式修正 `weaver_proxy.py` 权限，已满足。
+- Validation Reviewer: `PASS`
+  - 要求把 `ios_safe` 测试与 `artifact_audit.py --self-test` 的执行证据写成硬验收，已满足。
+  - 要求增加绝对路径回归校验与 workflow 关键命令存在性校验，已满足。
+
+工程任务卡与所有权:
+- Engineer A
+  - 文件:
+    - `.github/workflows/core-matrix.yml`
+  - 任务:
+    - Linux/macOS 增加 `chmod +x core/wrapper/weaver_proxy.py`
+    - macOS 改为目标化 build
+    - macOS 只跑指定 6 个测试
+    - 保留 `artifact_audit.py --self-test` 与 evidence 上传
+- Engineer B
+  - 文件:
+    - `core/tests/post_link_mutator/CMakeLists.txt`
+    - `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+  - 任务:
+    - 去掉 `/workspace/...` 绝对路径
+    - 改为编译期注入 `EIPPF_POST_LINK_MUTATOR_MAIN_CPP`
+    - 保持 thin-entry 语义不变
+
+本轮实际改动:
+- `.github/workflows/core-matrix.yml`
+  - Linux/macOS 新增 wrapper 权限归一化步骤
+  - macOS build 改为显式构建:
+    - `artifact_audit_strict_test`
+    - `post_link_mutator_smoke_test`
+    - `ios_safe_success_test`
+    - `ios_safe_failure_test`
+    - `ios_safe_security_edge_test`
+    - `ios_safe_perf_smoke_test`
+  - macOS ctest 改为精确匹配同一组 6 个测试
+- `core/tests/post_link_mutator/CMakeLists.txt`
+  - 为 `post_link_mutator_thin_entry_proof_test` 注入 `EIPPF_POST_LINK_MUTATOR_MAIN_CPP`
+- `core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp`
+  - 删除硬编码 `/workspace/...` 源码路径
+  - 增加 compile-time contract
+  - 运行时通过注入路径读取 `main.cpp`
+
+本地验证命令:
+- `test -x /workspace/core/wrapper/weaver_proxy.py`
+- `rg -n "/workspace/" /workspace/core/tests/post_link_mutator/post_link_mutator_thin_entry_proof_test.cpp /workspace/core/tests/post_link_mutator/CMakeLists.txt`
+- `rg -n "chmod \\+x .*weaver_proxy.py|artifact_audit.py --self-test|artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe_success_test|ios_safe_failure_test|ios_safe_security_edge_test|ios_safe_perf_smoke_test" /workspace/.github/workflows/core-matrix.yml`
+- `rg -n "continue-on-error|\\|\\| true|--exclude-regex|--label-exclude" /workspace/.github/workflows/core-matrix.yml`
+- `cmake -S /workspace/core -B /workspace/build_phase8_ci -G Ninja`
+- `cmake --build /workspace/build_phase8_ci -j 4 --target post_link_mutator_thin_entry_proof_test rust_transparent_link_test artifact_audit_strict_test post_link_mutator_smoke_test ios_safe_success_test ios_safe_failure_test ios_safe_security_edge_test ios_safe_perf_smoke_test`
+- `ctest --test-dir /workspace/build_phase8_ci --output-on-failure -R '^(post_link_mutator_thin_entry_proof_test|runtime_rust_transparent_link_test|artifact_audit_strict_test|post_link_mutator_smoke_test|ios_safe_success_test|ios_safe_failure_test|ios_safe_security_edge_test|ios_safe_perf_smoke_test|runtime_secure_ir_engine_ios_appstore_safe_test|runtime_memory_hal_ios_appstore_safe_test)$'`
+- `python3 /workspace/core/tools/artifact_audit.py --self-test`
+- `cmake --build /workspace/build_phase8_ci -j 4`
+- `cmake --build /workspace/build_phase8_ci --target perf_smoke`
+
+本地验证结果:
+- wrapper executable bit: `PASS`
+- `/workspace/` 路径字面量回归检查: `PASS`
+- workflow 关键命令存在性: `PASS`
+- workflow 反绕过关键字检查: `PASS`
+- targeted build: `PASS`
+- targeted ctest: `10/10 PASS`
+- `artifact_audit.py --self-test`: `PASS`
+- full build: `PASS`
+- `perf_smoke`: `PASS`
+
+CI blocker 收口结论:
+1. Linux `weaver_proxy.py Permission denied` 已通过 workflow 权限归一化收口。
+2. `post_link_mutator_thin_entry_proof_test` 的 runner 绝对路径耦合已通过编译期路径契约收口。
+3. macOS `full build` 触发无关 hardened fixture 失败，已通过目标化 build/test 收口，且未引入假绿绕过。
+
+下一步:
+- 提交并推送当前改动。
+- 跟踪远端 `core-matrix` 直到 `linux-core` 与 `macos-ios-safe` 全绿。
