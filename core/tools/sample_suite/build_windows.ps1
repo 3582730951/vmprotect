@@ -13,6 +13,9 @@ $CoreRoot = Join-Path $RepoRoot "core"
 $SharedIncludeRoot = Join-Path $CoreRoot "include"
 $RuntimeIncludeRoot = Join-Path $CoreRoot "runtime\include"
 $HelperSource = Join-Path $CoreRoot "runtime\src\string_token_runtime.cpp"
+$PinnedLlvmTarballUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang%2Bllvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+$PinnedLlvmTarballSha256 = "22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8"
+$PinnedLlvmRoot = "C:\eippf\llvm18"
 
 function Resolve-RequiredPath {
     param(
@@ -90,37 +93,118 @@ function Invoke-WrappedCompileAndLink {
     Invoke-NativeCommand -Executable $script:PythonExe -Arguments $wrapperArgs -FailureLabel $FailureLabel
 }
 
+function Ensure-PinnedLlvm18Toolchain {
+    param(
+        [Parameter(Mandatory = $true)][string]$PinnedLlvmTarballUrl,
+        [Parameter(Mandatory = $true)][string]$PinnedLlvmTarballSha256,
+        [Parameter(Mandatory = $true)][string]$PinnedLlvmRoot,
+        [Parameter(Mandatory = $true)][string]$PinnedLlvmArchive,
+        [Parameter(Mandatory = $true)][string]$PinnedLlvmStage
+    )
+
+    $ResolvedRoot = [System.IO.Path]::GetFullPath($PinnedLlvmRoot.Trim().Trim('"'))
+    $ClangClPath = Join-Path $ResolvedRoot "bin\clang-cl.exe"
+    $LlvmDir = Join-Path $ResolvedRoot "lib\cmake\llvm"
+    $LlvmConfigPath = Join-Path $LlvmDir "LLVMConfig.cmake"
+    $PassPluginHeaderPath = Join-Path $ResolvedRoot "include\llvm\Passes\PassPlugin.h"
+
+    if (Test-Path -LiteralPath $PinnedLlvmArchive -PathType Leaf) {
+        $ExistingSha256 = (Get-FileHash -LiteralPath $PinnedLlvmArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($ExistingSha256 -ne $PinnedLlvmTarballSha256.ToLowerInvariant()) {
+            throw "[FAIL] pinned LLVM tarball SHA256 mismatch"
+        }
+    } else {
+        $ArchiveParent = Split-Path -Parent $PinnedLlvmArchive
+        if (-not [string]::IsNullOrWhiteSpace($ArchiveParent)) {
+            New-Item -ItemType Directory -Path $ArchiveParent -Force | Out-Null
+        }
+        Invoke-WebRequest -Uri $PinnedLlvmTarballUrl -OutFile $PinnedLlvmArchive
+        $DownloadedSha256 = (Get-FileHash -LiteralPath $PinnedLlvmArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($DownloadedSha256 -ne $PinnedLlvmTarballSha256.ToLowerInvariant()) {
+            throw "[FAIL] pinned LLVM tarball SHA256 mismatch"
+        }
+    }
+
+    $TarExe = Get-Command "tar.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $TarExe) {
+        throw "[FAIL] tar.exe is required for pinned LLVM extraction"
+    }
+
+    if (Test-Path -LiteralPath $PinnedLlvmStage) {
+        Remove-Item -LiteralPath $PinnedLlvmStage -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $ResolvedRoot) {
+        Remove-Item -LiteralPath $ResolvedRoot -Recurse -Force
+    }
+
+    New-Item -ItemType Directory -Path $PinnedLlvmStage -Force | Out-Null
+
+    & $TarExe.Source -xf $PinnedLlvmArchive -C $PinnedLlvmStage
+    if ($LASTEXITCODE -ne 0) {
+        throw "[FAIL] pinned LLVM extraction failed with code $LASTEXITCODE"
+    }
+
+    $ExtractedRoots = @(Get-ChildItem -LiteralPath $PinnedLlvmStage -Directory -Force | Where-Object { $_.Name -like "clang+llvm-*" })
+    if ($ExtractedRoots.Count -ne 1) {
+        throw "[FAIL] pinned LLVM extraction must yield exactly one clang+llvm-* root"
+    }
+
+    New-Item -ItemType Directory -Path $ResolvedRoot -Force | Out-Null
+    $ExtractedRoot = $ExtractedRoots[0].FullName
+    Get-ChildItem -LiteralPath $ExtractedRoot -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination $ResolvedRoot -Recurse -Force
+    }
+
+    if (-not (Test-Path -LiteralPath $ClangClPath -PathType Leaf)) {
+        throw "[FAIL] pinned clang-cl.exe missing after extraction: $ClangClPath"
+    }
+    if (-not (Test-Path -LiteralPath $LlvmConfigPath -PathType Leaf)) {
+        throw "[FAIL] pinned LLVMConfig.cmake missing after extraction: $LlvmConfigPath"
+    }
+    if (-not (Test-Path -LiteralPath $PassPluginHeaderPath -PathType Leaf)) {
+        throw "[FAIL] pinned PassPlugin.h missing after extraction: $PassPluginHeaderPath"
+    }
+
+    return [pscustomobject]@{
+        Root = $ResolvedRoot
+        LlvmDir = $LlvmDir
+        ClangClPath = $ClangClPath
+    }
+}
+
 if (-not (Test-Path -LiteralPath $WrapperPath)) {
     throw "[FAIL] wrapper script is missing: $WrapperPath"
 }
 
+$RunnerTempRaw = $env:RUNNER_TEMP
+if ([string]::IsNullOrWhiteSpace($RunnerTempRaw)) {
+    throw "[FAIL] RUNNER_TEMP is required"
+}
+$RunnerTemp = [System.IO.Path]::GetFullPath($RunnerTempRaw.Trim().Trim('"'))
+$PinnedLlvmArchive = Join-Path $RunnerTemp "clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
+$PinnedLlvmStage = Join-Path $RunnerTemp "llvm18_unpack"
+
 $RawPinnedLlvmSource = $env:EIPPF_WINDOWS_LLVM_SOURCE
-$RawVsLlvmDir = $env:EIPPF_VS_LLVM_DIR
-$RawFallbackLlvmDir = $env:LLVM_DIR
-$LLVMSource = ""
-$SelectedLlvmCandidate = ""
-if (-not [string]::IsNullOrWhiteSpace($RawPinnedLlvmSource)) {
-    if ([string]::IsNullOrWhiteSpace($RawFallbackLlvmDir)) {
-        throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE is set but LLVM_DIR is missing"
-    }
-    $LLVMSource = $RawPinnedLlvmSource.Trim()
-    $SelectedLlvmCandidate = $RawFallbackLlvmDir
-} elseif (-not [string]::IsNullOrWhiteSpace($RawVsLlvmDir)) {
-    $LLVMSource = "vs_bundled"
-    $SelectedLlvmCandidate = $RawVsLlvmDir
-} elseif (-not [string]::IsNullOrWhiteSpace($RawFallbackLlvmDir)) {
-    $LLVMSource = "choco_fallback"
-    $SelectedLlvmCandidate = $RawFallbackLlvmDir
-} else {
-    throw "[FAIL] LLVM_DIR source missing: expected EIPPF_VS_LLVM_DIR or LLVM_DIR"
+if ([string]::IsNullOrWhiteSpace($RawPinnedLlvmSource)) {
+    throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE is required"
 }
-$LLVMDir = Resolve-RequiredPath -InputPath $SelectedLlvmCandidate -Label "LLVM_DIR"
-$LLVMConfigPath = Join-Path $LLVMDir "LLVMConfig.cmake"
-if (-not (Test-Path -LiteralPath $LLVMConfigPath)) {
-    throw "[FAIL] LLVM_DIR does not contain LLVMConfig.cmake: $LLVMDir"
+$LLVMSource = $RawPinnedLlvmSource.Trim()
+if ($LLVMSource -ne "pinned_llvm18_tarball") {
+    throw "[FAIL] unsupported EIPPF_WINDOWS_LLVM_SOURCE: $LLVMSource"
 }
-$AllowedLlvmRoot = Resolve-RequiredPath -InputPath $env:EIPPF_ALLOWED_LLVM_ROOT -Label "EIPPF_ALLOWED_LLVM_ROOT"
-$ClangClPath = Resolve-RequiredPath -InputPath (Join-Path $AllowedLlvmRoot "bin\clang-cl.exe") -Label "clang-cl"
+
+$PinnedLlvm = Ensure-PinnedLlvm18Toolchain `
+    -PinnedLlvmTarballUrl $PinnedLlvmTarballUrl `
+    -PinnedLlvmTarballSha256 $PinnedLlvmTarballSha256 `
+    -PinnedLlvmRoot $PinnedLlvmRoot `
+    -PinnedLlvmArchive $PinnedLlvmArchive `
+    -PinnedLlvmStage $PinnedLlvmStage
+$AllowedLlvmRoot = $PinnedLlvm.Root
+$LLVMDir = $PinnedLlvm.LlvmDir
+$ClangClPath = $PinnedLlvm.ClangClPath
+
+$env:EIPPF_ALLOWED_LLVM_ROOT = $AllowedLlvmRoot
+$env:LLVM_DIR = $LLVMDir
 
 $SharedIncludeRoot = Resolve-RequiredPath -InputPath $SharedIncludeRoot -Label "core/include"
 $RuntimeIncludeRoot = Resolve-RequiredPath -InputPath $RuntimeIncludeRoot -Label "core/runtime/include"

@@ -1,0 +1,26 @@
+# 2026-04-04 sample-suite CI Delta-2.4 执行记录
+
+## Scope
+- Windows deterministic tarball provision
+- iOS sample-suite/CI `-O0` 特化
+- Linux `.ko` token 语义修正
+
+## Delivered Files
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## PM Static Gates
+- YAML parse: `PASS`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`: `PASS`
+- `git diff --check`: `PASS`
+
+## Three-Agent Implementation Review
+- Architecture Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+- Security Reviewer: `BLOCK`
+  - 原因：Windows `Ensure-PinnedLlvm18Toolchain` 命中三元组时仍会在 SHA 校验前提前 `return`
+
+## Decision
+- `Delta-2.4` 不可直接提交
+- 转入 `Delta-2.4a` 单点 Windows 微修

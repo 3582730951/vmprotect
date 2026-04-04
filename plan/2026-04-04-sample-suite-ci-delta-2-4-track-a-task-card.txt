@@ -1,0 +1,46 @@
+# 2026-04-04 Delta-2.4 Track A 任务卡
+
+## Owner
+- `Engineer-A`
+
+## Allowed File
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## No-Touch
+- 任何 workflow
+- 任何 `core/tests/*`
+- 任何 `core/passes/*`
+- 任何 `core/runtime/*`
+- 任何其它 plan 文件
+
+## Exact Changes
+1. 在文件顶部常量区新增：
+- `PinnedLlvmTarballUrl`
+- `PinnedLlvmTarballSha256`
+- `PinnedLlvmRoot = C:\eippf\llvm18`
+- `PinnedLlvmArchive = ${env:RUNNER_TEMP}\clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz`
+- `PinnedLlvmStage = ${env:RUNNER_TEMP}\llvm18_unpack`
+2. 新增 `Ensure-PinnedLlvm18Toolchain` 函数，严格按计划步骤实现：
+- 先检查 `${root}\bin\clang-cl.exe`
+- 再检查 `${root}\lib\cmake\llvm\LLVMConfig.cmake`
+- 再检查 `${root}\include\llvm\Passes\PassPlugin.h`
+- 若三者都存在直接返回
+- 否则删除旧 archive/stage/root
+- `Invoke-WebRequest` 下载 tarball
+- `Get-FileHash -Algorithm SHA256` 校验固定哈希
+- `tar.exe -xf` 解包到 staging
+- 要求 staging 下恰有一个 `clang+llvm-*` 顶层目录
+- 扁平复制其内容到固定 root
+- 再次校验三元组
+3. 读取 `EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18_tarball` 时：
+- `LLVM_DIR` 固定为 `${root}\lib\cmake\llvm`
+- `AllowedLlvmRoot` 固定为 `${root}`
+- `llvm_source` report 固定写 `pinned_llvm18_tarball`
+4. 不要保留或新增 candidate-root discovery
+5. 不要依赖 Chocolatey 目录结构
+
+## Completion Standard
+- diff 只包含 `/workspace/core/tools/sample_suite/build_windows.ps1`
+- 文件内存在固定 URL/SHA/root 常量
+- 文件内存在 `Ensure-PinnedLlvm18Toolchain`
+- `llvm_source` 可输出 `pinned_llvm18_tarball`

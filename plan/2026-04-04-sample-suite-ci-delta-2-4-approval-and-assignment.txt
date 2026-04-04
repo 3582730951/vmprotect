@@ -1,0 +1,53 @@
+# 2026-04-04 sample-suite CI Delta-2.4 审核通过与任务分发
+
+## Review Scope
+- 审核口径固定为 `plan-only`
+- 只判断当前计划包是否足够机械化，可以直接放行编码
+- 不把“当前 CI 仍失败”或“当前尚未实施”当成计划 FAIL 理由
+
+## Canonical Plan Package
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4-plan.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4-track-a-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4-track-b-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4-track-c-task-card.txt`
+
+## Review Verdicts
+- Architecture Reviewer: `PASS`
+  - 通过原因：
+    - 3 条 track 单写者边界清晰
+    - Windows/iOS/Linux 收口都已机械化
+- Security Reviewer: `PASS`
+  - 通过原因：
+    - Windows deterministic tarball + SHA256 已写死
+    - Linux `.ko` 仅修正 token 语义误判，未放宽 gate
+    - iOS 保持 pass plugin 与 fail-closed
+- Validation Reviewer: `PASS`
+  - 通过原因：
+    - 完成标准机器可判定
+    - 远端 gate 覆盖本轮 3 个 blocker
+    - task card 已避免实现者自行设计
+
+## PM Decision
+- `Delta-2.4` 计划包通过 `plan-only 3-agent PASS`
+- 允许进入编码实施阶段
+
+## File Ownership
+- Track A / Engineer-A
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Track B / Engineer-B
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Track C / Engineer-C
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## Merge Order
+1. Track A
+2. Track B
+3. Track C
+4. PM 集成验证
+5. 提交 / push / 观察新 run
+
+## PM Rules
+- PM 不写以上 3 条工程轨的实现文件
+- PM 只做任务分发、回收、集成验证、提交推送、CI 跟踪
+- 任一 Engineer 不得越权修改他人 write set
+- 任一 Track 若出现越权写文件，直接回收并重派

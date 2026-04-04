@@ -1,0 +1,39 @@
+# 2026-04-04 Delta-2.4a 任务卡
+
+## Owner
+- `Engineer-A`
+
+## Allowed File
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## No-Touch
+- 任何 workflow
+- 任何 iOS / Linux 文件
+- 任何其它 plan 文件
+
+## Exact Change
+1. 只改 `Ensure-PinnedLlvm18Toolchain`。
+2. 删除“检测到 root 三元组即直接 return”的分支。
+3. 执行顺序固定为：
+  - 固定 `root/archive/stage`
+  - 若 `archive` 已存在，先 `Get-FileHash -Algorithm SHA256`
+  - 若 `archive` 不存在，先下载，再 `Get-FileHash -Algorithm SHA256`
+  - `tar.exe` 缺失则失败
+  - 每次都删除并重建 `stage`
+  - 每次都删除并重建 `root`
+  - 每次都从 `archive` 解包到 `stage`
+  - `stage` 下必须恰有一个 `clang+llvm-*` 顶层目录
+  - 扁平复制到 `root`
+  - 复制后重新校验三元组
+  - 只有全部通过后才 return
+4. 不要改：
+  - 常量名
+  - `llvm_source=pinned_llvm18_tarball`
+  - `LLVM_DIR=<root>\\lib\\cmake\\llvm`
+  - 任何非 Windows 逻辑
+
+## Completion Standard
+- diff 只包含 `/workspace/core/tools/sample_suite/build_windows.ps1`
+- 函数中没有 SHA 校验前 return
+- 函数中每次都会重建 root
+- 三元组复检仍存在

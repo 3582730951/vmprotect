@@ -1,0 +1,54 @@
+# 2026-04-04 Delta-2.4 Track C 任务卡
+
+## Owner
+- `Engineer-C`
+
+## Allowed File
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## No-Touch
+- 任何 `core/tools/*`
+- 任何 `core/tests/*`
+- 任何其它 workflow / plan 文件
+
+## Exact Changes
+### Windows
+1. 定位 `build-windows` job。
+2. 删除 Chocolatey 安装与其结构假设。
+3. 导出固定环境变量：
+- `EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18_tarball`
+- `EIPPF_ALLOWED_LLVM_ROOT=C:\\eippf\\llvm18`
+- `LLVM_DIR=C:\\eippf\\llvm18\\lib\\cmake\\llvm`
+4. Windows validator 中：
+- 允许 `llvm_source == pinned_llvm18_tarball`
+- 要求其 root 精确绑定到 `C:\\eippf\\llvm18`
+
+### Linux/Android
+5. 定位 `.ko` token gate。
+6. 把以下 token 检查全部从 raw string 包含改成 token 语义：
+- `-nostdlib`
+- `-no-pie`
+- `-fuse-ld=lld`
+- `-Wl,-r`
+7. 不要删除：
+- `has_explicit_pie_controls`
+- no-pie leakage gate
+- Android 双输入校验
+
+### macOS/iOS
+8. 对 `ios_protected_compile_command` 增加 CI 特化 gate：
+- 必须包含 `-O0`
+- 禁止 `-O1`
+- 禁止 `-O2`
+- 禁止 `-O3`
+- 禁止 `-Ofast`
+9. 不要修改：
+- compile-only 邻接状态机
+- pass plugin 必须存在的检查
+- final link 禁止 wrapper/source/plugin 泄漏的检查
+
+## Completion Standard
+- diff 只包含 `/workspace/.github/workflows/sample-suite-eval.yml`
+- Windows 存在 `pinned_llvm18_tarball` 分支
+- Linux `.ko` gate 不再用 raw string 检查 `-Wl,-r`
+- iOS gate 明确要求 `-O0` 且禁止高优化级

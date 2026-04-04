@@ -1,0 +1,33 @@
+# 2026-04-04 sample-suite CI Delta-2.4a 审核通过与任务分发
+
+## Review Scope
+- 审核口径固定为 `plan-only`
+- 只判断当前微计划是否足够机械化，可以直接放行编码
+- 不把“当前尚未实施/尚未跑 CI”当成计划 FAIL 理由
+
+## Canonical Plan Package
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4a-plan.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-4a-task-card.txt`
+
+## Review Verdicts
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+## PM Decision
+- `Delta-2.4a` 计划包通过 `plan-only 3-agent PASS`
+- 允许进入单文件编码实施阶段
+
+## File Ownership
+- Track A / Engineer-A
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## Merge Order
+1. Windows 单文件实现
+2. PM 静态核验
+3. 三 reviewer 实现复审
+4. 通过后整体提交 / push / 观察新 run
+
+## PM Rules
+- PM 不直接修改 `build_windows.ps1`
+- 其它文件继续冻结

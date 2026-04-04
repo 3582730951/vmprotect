@@ -576,10 +576,10 @@ jobs:
           linux_ko_command = Path(kv["linux_ko_link_command"]).read_text(encoding="ascii")
           android_ko_command = Path(kv["android_ko_link_command"]).read_text(encoding="ascii")
           for token in ["-nostdlib", "-no-pie", "-fuse-ld=lld", "-Wl,-r"]:
-              if token not in linux_ko_command:
+              if not contains_token(linux_ko_command, token):
                   raise SystemExit(f"[FAIL] linux_ko command missing token: {token}")
           for token in ["--target=aarch64-linux-android24", "-nostdlib", "-no-pie", "-fuse-ld=lld", "-Wl,-r"]:
-              if token not in android_ko_command:
+              if not contains_token(android_ko_command, token):
                   raise SystemExit(f"[FAIL] android_ko command missing token: {token}")
           if not contains_token(linux_ko_command, "-no-pie"):
               raise SystemExit("[FAIL] linux_ko command missing explicit -no-pie token")
@@ -622,61 +622,17 @@ jobs:
       - name: Setup MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install Pinned LLVM 18
+      - name: Configure Pinned LLVM Contract
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
-          $pinnedRoot = "C:\Program Files\LLVM"
-          $clangPath = Join-Path $pinnedRoot "bin\clang-cl.exe"
-          $llvmConfig = Join-Path $pinnedRoot "lib\cmake\llvm\LLVMConfig.cmake"
-          $passPluginHeader = Join-Path $pinnedRoot "include\llvm\Passes\PassPlugin.h"
-          $needsInstall = $true
-
-          if ((Test-Path -LiteralPath $clangPath -PathType Leaf) -and
-              (Test-Path -LiteralPath $llvmConfig -PathType Leaf) -and
-              (Test-Path -LiteralPath $passPluginHeader -PathType Leaf)) {
-            $versionLine = (& $clangPath --version | Select-Object -First 1)
-            if ($versionLine -match "clang version 18") {
-              $needsInstall = $false
-            }
-          }
-
-          if ($needsInstall) {
-            choco install llvm --version=18.1.8 --allow-downgrade --force --yes --no-progress
-          }
-
-          if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "[FAIL] missing pinned clang-cl.exe: $clangPath" }
-          if (-not (Test-Path -LiteralPath $llvmConfig -PathType Leaf)) { throw "[FAIL] missing pinned LLVMConfig.cmake: $llvmConfig" }
-          if (-not (Test-Path -LiteralPath $passPluginHeader -PathType Leaf)) { throw "[FAIL] missing pinned PassPlugin.h: $passPluginHeader" }
-          $postInstallVersion = (& $clangPath --version | Select-Object -First 1)
-          if ($postInstallVersion -notmatch "clang version 18") {
-            throw "[FAIL] pinned clang-cl.exe is not version 18: $postInstallVersion"
-          }
-
-      - name: Preflight LLVM Toolchain
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-          $pinnedRoot = "C:\Program Files\LLVM"
-          $normalizedRoot = [System.IO.Path]::GetFullPath($pinnedRoot).TrimEnd('\')
-          $clangPath = Join-Path $normalizedRoot "bin\clang-cl.exe"
-          $llvmDir = Join-Path $normalizedRoot "lib\cmake\llvm"
-          $llvmConfig = Join-Path $llvmDir "LLVMConfig.cmake"
-          $passPluginHeader = Join-Path $normalizedRoot "include\llvm\Passes\PassPlugin.h"
-
-          if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { throw "[FAIL] pinned clang-cl.exe missing: $clangPath" }
-          if (-not (Test-Path -LiteralPath $llvmConfig -PathType Leaf)) { throw "[FAIL] pinned LLVMConfig.cmake missing: $llvmConfig" }
-          if (-not (Test-Path -LiteralPath $passPluginHeader -PathType Leaf)) { throw "[FAIL] pinned PassPlugin.h missing: $passPluginHeader" }
-          $versionLine = (& $clangPath --version | Select-Object -First 1)
-          if ($versionLine -notmatch "clang version 18") {
-            throw "[FAIL] pinned clang-cl.exe is not version 18: $versionLine"
-          }
-
+          $pinnedRoot = [System.IO.Path]::GetFullPath("C:\eippf\llvm18").TrimEnd('\')
+          $llvmDir = Join-Path $pinnedRoot "lib\cmake\llvm"
           "LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "EIPPF_ALLOWED_LLVM_DIR=$llvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "EIPPF_ALLOWED_LLVM_ROOT=$normalizedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          Write-Host "[INFO] Using pinned LLVM root: $normalizedRoot"
+          "EIPPF_ALLOWED_LLVM_ROOT=$pinnedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18_tarball" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "[INFO] Using deterministic LLVM contract root: $pinnedRoot"
 
       - name: Build Windows Samples
         shell: powershell
@@ -687,10 +643,11 @@ jobs:
       - name: Validate Windows Toolchain Report
         shell: powershell
         run: |
-          $hasVsLlvmDir = -not [string]::IsNullOrWhiteSpace($env:EIPPF_VS_LLVM_DIR)
           $hasLlvmDir = -not [string]::IsNullOrWhiteSpace($env:LLVM_DIR)
           $hasPinnedLlvmSource = -not [string]::IsNullOrWhiteSpace($env:EIPPF_WINDOWS_LLVM_SOURCE)
-          if ($hasVsLlvmDir -and $hasLlvmDir) { throw "[FAIL] mixed LLVM env exports: both EIPPF_VS_LLVM_DIR and LLVM_DIR are set" }
+          if (-not [string]::IsNullOrWhiteSpace($env:EIPPF_VS_LLVM_DIR)) { throw "[FAIL] EIPPF_VS_LLVM_DIR must be unset" }
+          if (-not $hasLlvmDir) { throw "[FAIL] LLVM_DIR must be set" }
+          if (-not $hasPinnedLlvmSource -or $env:EIPPF_WINDOWS_LLVM_SOURCE -ne "pinned_llvm18_tarball") { throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE mismatch" }
           $report = "sample_suite_inputs/toolchain_reports/windows.txt"
           if (!(Test-Path $report)) { throw "[FAIL] missing report: $report" }
           $bytes = [System.IO.File]::ReadAllBytes($report)
@@ -706,12 +663,7 @@ jobs:
           foreach ($key in $required) { if (-not $kv.ContainsKey($key)) { throw "[FAIL] missing key: $key" } }
           if (($kv.Keys | Sort-Object) -join ';' -ne ($required | Sort-Object) -join ';') { throw "[FAIL] key set mismatch" }
           if ($kv["platform"] -ne "windows") { throw "[FAIL] platform mismatch" }
-          if ($kv["llvm_source"] -notin @("vs_bundled","choco_fallback","pinned_llvm18")) { throw "[FAIL] llvm_source mismatch" }
-          if ($kv["llvm_source"] -eq "pinned_llvm18") {
-            if ($hasVsLlvmDir) { throw "[FAIL] EIPPF_VS_LLVM_DIR must be unset for pinned_llvm18" }
-            if (-not $hasLlvmDir) { throw "[FAIL] LLVM_DIR must be set for pinned_llvm18" }
-            if (-not $hasPinnedLlvmSource -or $env:EIPPF_WINDOWS_LLVM_SOURCE -ne "pinned_llvm18") { throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE mismatch" }
-          }
+          if ($kv["llvm_source"] -ne "pinned_llvm18_tarball") { throw "[FAIL] llvm_source mismatch" }
           foreach ($key in @("compiler_path","llvm_dir","plugin_path","helper_user_o","helper_kernel_o","plugin_build_command","helper_user_compile_command","helper_kernel_compile_command","windows_exe_link_command","windows_dll_link_command","windows_sys_link_command")) {
             if (-not [System.IO.Path]::IsPathRooted($kv[$key])) { throw "[FAIL] non-absolute path for $key" }
             if (!(Test-Path $kv[$key])) { throw "[FAIL] missing path for $key" }
@@ -777,15 +729,11 @@ jobs:
           if (-not (Test-PathEquals $llvmDir $expectedLlvmDir)) { throw "[FAIL] llvm_dir provenance mismatch" }
           $vsLlvmBase = [System.IO.Path]::GetFullPath((Join-Path $env:VCINSTALLDIR "Tools\\Llvm")).TrimEnd('\')
           $allowedRootPath = [System.IO.Path]::GetFullPath($allowedRoot.Path).TrimEnd('\')
-          $pinnedRootPath = [System.IO.Path]::GetFullPath("C:\\Program Files\\LLVM").TrimEnd('\')
+          $pinnedRootPath = [System.IO.Path]::GetFullPath("C:\\eippf\\llvm18").TrimEnd('\')
           $isVsBundledRoot = $allowedRootPath.Equals($vsLlvmBase, [System.StringComparison]::OrdinalIgnoreCase) -or $allowedRootPath.StartsWith($vsLlvmBase + "\", [System.StringComparison]::OrdinalIgnoreCase)
-          if ($kv["llvm_source"] -eq "vs_bundled" -and -not $isVsBundledRoot) { throw "[FAIL] llvm_source/root mismatch for vs_bundled" }
-          if ($kv["llvm_source"] -eq "choco_fallback" -and $isVsBundledRoot) { throw "[FAIL] llvm_source/root mismatch for choco_fallback" }
-          if ($kv["llvm_source"] -eq "pinned_llvm18") {
-            if (-not $allowedRootPath.Equals($pinnedRootPath, [System.StringComparison]::OrdinalIgnoreCase)) { throw "[FAIL] llvm_source/root mismatch for pinned_llvm18" }
-            if ($isVsBundledRoot) { throw "[FAIL] pinned_llvm18 cannot use VS bundled root" }
-            if ($kv["compiler_version_first_line"] -notmatch "clang version 18") { throw "[FAIL] compiler_version_first_line mismatch for pinned_llvm18" }
-          }
+          if (-not $allowedRootPath.Equals($pinnedRootPath, [System.StringComparison]::OrdinalIgnoreCase)) { throw "[FAIL] llvm_source/root mismatch for pinned_llvm18_tarball" }
+          if ($isVsBundledRoot) { throw "[FAIL] pinned_llvm18_tarball cannot use VS bundled root" }
+          if ($kv["compiler_version_first_line"] -notmatch "clang version 18") { throw "[FAIL] compiler_version_first_line mismatch for pinned_llvm18_tarball" }
           foreach ($key in @("plugin_path","helper_user_o","helper_kernel_o")) {
             $resolved = (Resolve-Path $kv[$key]).Path
             if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] output path escaped sample_suite_inputs for $key" }
@@ -1225,6 +1173,12 @@ jobs:
               raise SystemExit("[FAIL] ios_protected_compile_command must not include -shared")
           if str(Path(kv["ios_protected_o"]).resolve()) not in protected_compile_text:
               raise SystemExit("[FAIL] ios_protected_compile_command missing protected object output")
+          protected_compile_payload_tokens = command_payload_tokens(protected_compile_text)
+          if "-O0" not in protected_compile_payload_tokens:
+              raise SystemExit("[FAIL] ios_protected_compile_command missing -O0")
+          for forbidden_opt in ["-O1", "-O2", "-O3", "-Ofast"]:
+              if forbidden_opt in protected_compile_payload_tokens:
+                  raise SystemExit(f"[FAIL] ios_protected_compile_command contains forbidden optimization flag: {forbidden_opt}")
           enforce_compile_only_language_token_state_machine(
               protected_compile_text,
               "ios_protected_compile_command",

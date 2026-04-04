@@ -1,0 +1,199 @@
+# 2026-04-04 sample-suite CI Delta-2.4 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 收口 run `23983995675` 的 3 个真实 blocker：
+  1. Windows：`LLVMConfig.cmake` 在 pinned LLVM18 provision 路径下缺失
+  2. macOS/iOS：`clang 18 + eippf_protection_suite_pass` 在 iOS protected compile 阶段崩溃
+  3. Linux/Android：`.ko` validator 用 raw string 匹配 `-Wl,-r`，被 `%q` 转义误判
+
+## Evidence Snapshot
+- Run：
+  - `23983995675`
+- Jobs：
+  - Windows `69952816147`
+    - 失败点：`[FAIL] missing pinned LLVMConfig.cmake: C:\\Program Files\\LLVM\\lib\\cmake\\llvm\\LLVMConfig.cmake`
+  - macOS/iOS `69952816141`
+    - 失败点：`clang++` 在 `-fpass-plugin=eippf_protection_suite_pass.dylib` 下于 Optimizer/CVP 阶段崩溃
+  - Linux/Android `69952816146`
+    - 失败点：`[FAIL] linux_ko command missing token: -Wl,-r`
+- 本地已复核：
+  - `printf %q "-Wl,-r"` 会记录成 `-Wl\\,-r`
+  - `'-Wl,-r' in raw_string == false`
+  - `any(tok == '-Wl,-r' for tok in shlex.split(raw_string)) == true`
+- Windows release asset 依据：
+  - GitHub release 资产存在：
+    - `clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz`
+  - LLVM Discourse `18.1.8 has been tagged` 中给出的 SHA256：
+    - `22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8`
+
+## Scope
+- 只允许改 3 个文件：
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## Non-Goals
+- 不改 `core/passes/*`
+- 不改 `core/runtime/*`
+- 不改 `core/tests/*`
+- 不回退到 LLVM root 猜测
+- 不放宽 `.ko` relocatable link gate
+- 不删除 iOS protected compile 的 pass plugin
+
+## Parallel Tracks
+- Track A / Windows deterministic tarball provision
+  - Owner: `Engineer-A`
+  - File: `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - Output: 固定 root 的 LLVM18 tarball provision 与 `llvm_source=pinned_llvm18_tarball`
+- Track B / iOS CI crash closure
+  - Owner: `Engineer-B`
+  - File: `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - Output: sample-suite/CI 特化的 iOS protected compile 稳定路径
+- Track C / Workflow contract repair
+  - Owner: `Engineer-C`
+  - File: `/workspace/.github/workflows/sample-suite-eval.yml`
+  - Output: Windows/Linux/iOS validator 与 env contract 收口
+
+## File Ownership
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 单写者：`Engineer-A`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 单写者：`Engineer-B`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 单写者：`Engineer-C`
+- PM 不直接编辑以上 3 个实现文件
+
+## Exact Changes
+### Track A
+- 在 `build_windows.ps1` 中新增固定常量：
+  - URL：
+    - `https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang%2Bllvm-18.1.8-x86_64-pc-windows-msvc.tar.xz`
+  - SHA256：
+    - `22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8`
+  - 固定 root：
+    - `C:\eippf\llvm18`
+  - 固定下载路径：
+    - `${env:RUNNER_TEMP}\clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz`
+  - 固定解包 staging：
+    - `${env:RUNNER_TEMP}\llvm18_unpack`
+- 新增 `Ensure-PinnedLlvm18Toolchain`：
+  - 若以下 3 个文件都存在则直接复用：
+    - `${root}\bin\clang-cl.exe`
+    - `${root}\lib\cmake\llvm\LLVMConfig.cmake`
+    - `${root}\include\llvm\Passes\PassPlugin.h`
+  - 否则：
+    - 删除旧 archive/staging/root
+    - 用 `Invoke-WebRequest` 下载 tar.xz 到固定下载路径
+    - 用 `Get-FileHash -Algorithm SHA256` 校验固定 SHA
+    - 若 `tar.exe` 缺失则直接 `throw`
+    - 用 `tar.exe -xf <archive> -C <staging>` 解包
+    - 要求 staging 下恰有一个 `clang+llvm-*` 顶层目录
+    - 把该目录内容扁平复制到固定 root
+    - 再次校验 3 个关键文件
+- `LLVM_DIR` 固定为 `${root}\lib\cmake\llvm`
+- report 中 `llvm_source` 固定写：
+  - `pinned_llvm18_tarball`
+
+### Track B
+- 仅修改 `build_macos_ios.sh` 的 `ios_protected_compile_cmd`
+  - 把 `-O2` 改成 `-O0`
+- 其余必须保持不变：
+  - `python3 ${WRAPPER}`
+  - `--pass-plugin ${PASS_PLUGIN_PATH}`
+  - `--compiler ${HOST_CLANGXX}`
+  - `-target arm64-apple-ios17.0-simulator`
+  - `-isysroot ${IOS_SDK}`
+  - `-x c`
+  - `-c`
+  - `-o ${IOS_PROTECTED_O}`
+- final link 阶段继续保持 object-only
+- 这是 sample-suite/CI 特化，不是生产链路策略修改
+
+### Track C
+- Windows workflow：
+  - 移除 Chocolatey 安装步骤与其对应的 `LLVMConfig.cmake` 结构假设
+  - 改为只导出 deterministic tarball contract 环境变量：
+    - `EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18_tarball`
+    - `EIPPF_ALLOWED_LLVM_ROOT=C:\eippf\llvm18`
+    - `LLVM_DIR=C:\eippf\llvm18\lib\cmake\llvm`
+  - validator 中新增 `pinned_llvm18_tarball` 分支
+  - `pinned_llvm18_tarball` 分支必须绑定到固定 root
+- Linux/Android workflow：
+  - `.ko` token gate 的以下检查全部改成 token 语义，不再用 raw string `if token not in linux_ko_command`
+    - `-nostdlib`
+    - `-no-pie`
+    - `-fuse-ld=lld`
+    - `-Wl,-r`
+  - 继续保留：
+    - `has_explicit_pie_controls`
+    - no-pie leakage gate
+    - Android 双输入 link gate
+- macOS/iOS workflow：
+  - `ios_protected_compile_command` 新增 CI 特化约束：
+    - 必须含 `-O0`
+    - 禁止 `-O1`
+    - 禁止 `-O2`
+    - 禁止 `-O3`
+    - 禁止 `-Ofast`
+  - 保留：
+    - compile-only 邻接状态机
+    - pass plugin 必须存在
+    - final link 不得含 plugin/source/wrapper
+
+## Regression Perimeter
+- Windows：
+  - `llvm_source` report 值
+  - `LLVM_DIR` provenance
+  - `EIPPF_ALLOWED_LLVM_ROOT` 与固定 root 绑定
+  - `clang-cl.exe`/`LLVMConfig.cmake`/`PassPlugin.h` 三元组
+- iOS：
+  - `ios_protected_compile_command` sidecar
+  - iOS compile-only 状态机
+  - iOS final link object-only contract
+- Linux/Android：
+  - `.ko` relocatable link token gate
+  - no-pie leakage
+  - Android 双输入 protected/helper 顺序
+
+## Quality Gates
+### Static
+- YAML parse pass
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+
+### Contract
+- Windows：
+  - `pinned_llvm18_tarball` 分支存在
+  - 固定 URL / SHA / root 存在
+  - 无 candidate-root discovery
+- Linux/Android：
+  - `.ko` token 检查不再使用 raw string 包含
+  - `-Wl,-r` 改为 token 语义判定
+- iOS：
+  - `ios_protected_compile_cmd` 含 `-O0`
+  - workflow 明确禁止 `-O1/-O2/-O3/-Ofast`
+
+### Remote
+- `build-windows` pass，且不再报 `LLVMConfig.cmake missing`
+- `build-linux-android` pass，且不再报 `linux_ko command missing token: -Wl,-r`
+- `build-macos-ios` pass，且不再出现 CVP crash
+- `protect-and-evaluate` 不再 skip
+
+## Merge Order
+1. Track A
+2. Track B
+3. Track C
+4. PM static integration validation
+5. push
+6. 观察新 run
+
+## Open Risks
+- iOS `-O0` 仍可能无法完全规避 pass 引起的 IR 问题；若复现，下一轮必须进入 pass 级定位
+- Windows tarball provision 依赖 GitHub release 资产可用；若下载失败必须 fail-closed
+- 若 Windows runner 缺 `tar.exe`，脚本必须给出明确失败信息，不允许静默 fallback

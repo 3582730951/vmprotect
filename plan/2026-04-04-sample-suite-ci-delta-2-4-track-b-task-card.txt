@@ -1,0 +1,43 @@
+# 2026-04-04 Delta-2.4 Track B 任务卡
+
+## Owner
+- `Engineer-B`
+
+## Allowed File
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## No-Touch
+- 任何 workflow
+- 任何 `core/passes/*`
+- 任何 `core/tests/*`
+- 任何其它脚本与 plan 文件
+
+## Exact Changes
+1. 只定位 `ios_protected_compile_cmd` 数组。
+2. 把其中唯一的优化级别参数从：
+- `-O2`
+3. 改成：
+- `-O0`
+4. 数组中的其余 token 完全不改：
+- `python3`
+- `${WRAPPER}`
+- `--pass-plugin`
+- `${PASS_PLUGIN_PATH}`
+- `--compiler`
+- `${HOST_CLANGXX}`
+- `-target arm64-apple-ios17.0-simulator`
+- `-isysroot ${IOS_SDK}`
+- `-fvisibility=hidden`
+- `-fPIC`
+- `-x c`
+- `${SRC_FILE}`
+- `-c`
+- `-o ${IOS_PROTECTED_O}`
+5. 不要改 final link 阶段
+6. 不要移除 pass plugin
+7. 不要加任何 fallback
+
+## Completion Standard
+- diff 只包含 `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- 该文件中 `ios_protected_compile_cmd` 使用 `-O0`
+- 该文件中不再有该命令对应的 `-O2`

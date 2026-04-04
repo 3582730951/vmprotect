@@ -1,0 +1,62 @@
+# 2026-04-04 sample-suite CI Delta-2.4a 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 关闭 Windows tarball provision 的安全缺口：
+  - 禁止 `Ensure-PinnedLlvm18Toolchain` 在三元组存在时直接 `return`
+  - 要求每次运行都从“已验 SHA 的 tarball”重建固定 root
+
+## Scope
+- 仅改：
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- 不改：
+  - workflow
+  - iOS
+  - Linux
+  - 任何其它文件
+
+## Single Writer
+- `Engineer-A`
+
+## Exact Change
+1. 在 `Ensure-PinnedLlvm18Toolchain` 中删除“三元组存在即 return”分支。
+2. 固定执行顺序：
+  - 计算并固定 `root/archive/stage`
+  - 若 `archive` 存在，先做 `SHA256`
+  - 若 `archive` 不存在，下载后再做 `SHA256`
+  - 校验 `tar.exe`
+  - 每次都删除并重建 `stage` 与 `root`
+  - 每次都从 `archive` 解包到 `stage`
+  - 强制 `stage` 下仅允许一个 `clang+llvm-*` 顶层目录
+  - 扁平复制到 `root`
+  - 强制校验三元组：
+    - `bin\\clang-cl.exe`
+    - `lib\\cmake\\llvm\\LLVMConfig.cmake`
+    - `include\\llvm\\Passes\\PassPlugin.h`
+  - 仅在以上步骤全部通过后 return
+3. 保持：
+  - `llvm_source=pinned_llvm18_tarball`
+  - `LLVM_DIR=<root>\\lib\\cmake\\llvm`
+  - 其它 Windows contract 不变
+
+## Quality Gates
+- `git diff --name-only` 仅包含 `build_windows.ps1`
+- 函数中不存在 “SHA 校验之前的 return”
+- 所有 return 路径都在 “SHA 校验 + 解包 + 三元组复检” 之后
+- `pinned_llvm18_tarball` 分支仍存在
+- 下载失败、SHA 不匹配、`tar.exe` 缺失、目录结构异常、三元组缺失都必须 `throw`
+
+## Merge Order
+1. Windows 单文件实现
+2. PM 静态核验
+3. 三 reviewer 复审
+4. 通过后进入整体提交 / CI
+
+## Open Risks
+- 每次重解包会增加 Windows job 时间
+- release 资产下载失败会 fail-closed

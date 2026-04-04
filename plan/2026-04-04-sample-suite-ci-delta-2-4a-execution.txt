@@ -1,0 +1,25 @@
+# 2026-04-04 sample-suite CI Delta-2.4a 执行记录
+
+## Scope
+- 仅修补 Windows `Ensure-PinnedLlvm18Toolchain` 的 SHA 前提前返回路径
+
+## Delivered File
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## PM Static Gates
+- `git diff --check`: `PASS`
+- `single_return_in_function_window=true`
+- `has_hash_before_tar=true`
+- `rebuilds_stage=true`
+- `rebuilds_root=true`
+
+## Three-Agent Implementation Review
+- Architecture Reviewer: `PASS`
+- Security Reviewer: `PASS`
+- Validation Reviewer: `PASS`
+
+## Outcome
+- Windows tarball provision 已满足：
+  - SHA 校验在解包前必经
+  - `stage/root` 每次重建
+  - 三元组复检后才返回
