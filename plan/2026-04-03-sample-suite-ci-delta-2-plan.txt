@@ -1,0 +1,779 @@
+# 2026-04-03 sample-suite CI Delta-2 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 本轮只修 `sample-suite-eval` 第二轮 CI 新暴露的 4 个真实阻塞点，不扩新范围：
+  1. Windows 仍未采纳 Visual Studio bundled LLVM，且无条件 choco 路径污染了 `LLVM_DIR`。
+  2. macOS workflow 漂到 Homebrew `llvm 22.x`，pass plugin 头文件契约失效。
+  3. Linux/Android 脚本仍把 host-built helper/runtime 当成可跨 target 复用的事实，导致 Android 用户态链路没有真正用目标工具链闭环。
+  4. iOS 样例仍链接 host-built helper/runtime，存在 target/SDK/ABI 错配风险。
+- 本轮目标是恢复 `sample-suite-eval` 全绿，并把 sample-suite 的 host/plugin 构建、target helper 构建、样例最终链接边界彻底冻结，避免第三次返工。
+
+## Task Charter
+- Objective
+  - 让 GitHub Actions `sample-suite-eval` 重新全绿，并把平台样例构建链收敛到稳定、可复现、不会再因 toolchain 漂移或 target/host 混用而失效的状态。
+- Scope
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Non-Goals
+  - 不修改 `artifact_audit` 语义。
+  - 不修改 `post_link_mutator`、`dex_toolchain`、`script_guard` 逻辑。
+  - 不扩展新的保护 pass，不改 `eippf_cc.py` CLI 契约。
+  - 不把这轮 CI 修复伪装成真实平台分发签名完成。
+- Constraints
+  - workflow 只负责准备依赖、做受控 preflight、调用平台脚本；平台脚本是 sample 构建链唯一事实来源。
+  - plugin 只允许由 host LLVM toolchain 构建。
+  - helper 统一改成 target-specific object 直编直链；非 Windows 平台不再使用 helper archive。
+  - Windows 只能使用 `clang-cl`；禁止回退 `cl.exe`。
+  - Windows 不再无条件依赖 `choco llvm`；只允许在 VS bundled LLVM 缺失时走受控 fallback。
+  - macOS 必须固定到 `llvm@18`，禁止再用 `brew install llvm` 漂到 22.x。
+  - Android user-mode 样例必须使用 NDK target compiler，禁止继续用 host clang + `--target` 侥幸通过。
+  - Android kernel sample 的 relocatable link 必须固定使用 Android target clang driver + `lld`，禁止继续调用 host `ld`。
+  - Android/iOS/Linux-kernel target helper 必须冻结到命令级契约，不留给 engineer 自行决定 include/flags/linker。
+  - 每个平台脚本必须产出单独命名的 `toolchain_report` 文件，workflow 必须机器化校验，不允许只靠人工看日志。
+- Acceptance Criteria
+  - GitHub Actions run 中以下 4 个 job 全部 `success`：
+    - `build-linux-android`
+    - `build-windows`
+    - `build-macos-ios`
+    - `protect-and-evaluate`
+  - Windows job 必须采用 VS bundled LLVM；若 bundled 缺失，只允许 workflow preflight 后受控启用 choco fallback。
+  - macOS job 必须固定 `llvm@18` 前缀，不能再出现 `Cellar/llvm/22.x`。
+  - Linux/Android job 不再出现 `ld.lld: unable to find library -lgcc`。
+  - iOS job 不再链接 host-built helper。
+  - `protect-and-evaluate` 继续生成完整 evidence tree 并上传 artifact。
+  - 三个平台 `toolchain_report` 文件都存在，且通过 workflow 严格校验。
+- Forbidden Shortcuts
+  - 禁止关闭 pass plugin 让样例直接裸编译。
+  - 禁止回退样例源码、删 anchor、改 manifest 来绕过 CI。
+  - 禁止继续让 host-built helper/runtime 被 Android/iOS 直接复用。
+  - 禁止 `android_ko` 继续调用 host `ld -r`。
+  - 禁止在 workflow 内再复制一套平台脚本中的构建逻辑。
+  - 禁止把 `LLVM_DIR` 再换成另一个未经验证的硬编码路径。
+ - Governance Exception
+  - 本轮经用户显式授权，允许修改 `/.github/workflows/sample-suite-eval.yml` 作为 CI/gate 收口的一部分；这属于治理与验证资产，不属于新增生产代码。
+  - 本轮经用户显式授权，允许真实多 agent 并行，但仓库 traceability 仍保持 3 角色：
+    - `Planner`
+    - `Engineer`
+    - `Security Reviewer`
+
+## Canonical Artifacts
+- `Task Charter`: 本文件
+- `Architecture Contract`: 本文件中的架构合同章节
+- `Decision Log`: 本文件中的决策记录
+- `State Snapshot`: 本文件末尾状态快照
+
+## Architecture Contract
+### Objective
+- 让 sample-suite CI 的 host/plugin 构建、target helper 编译、样例最终链接三者职责分离，消除当前的 toolchain 漂移和 target/host 混用。
+
+### Scope
+- 只处理 sample-suite CI build chain 的 workflow 与平台脚本。
+
+### Non-Goals
+- 不重构 sample-suite 报告体系。
+- 不改变保护效果评估逻辑。
+- 不新增跨平台 runtime 产品化能力；本轮只做 sample-suite 可验证闭环。
+
+### Source Artifacts
+- 基线提交：`2e9cb887127e6de4751c52e5b25d1ac87559d80c`
+- 失败 run：`23950090370`
+- 失败 job：
+  - Windows：`69855269730`
+  - Linux/Android：`69855269731`
+  - macOS/iOS：`69855269734`
+- 当前脚本与 workflow：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+### System Boundaries
+- workflow 边界
+  - 只安装依赖、做受控 preflight、导出最小环境、调用平台脚本、校验 `toolchain_reports/*.txt`、上传 artifact。
+- host toolchain 边界
+  - 只负责构建 pass plugin。
+- target toolchain 边界
+  - 只负责编译 target-specific helper object 和最终样例产物。
+- sample helper 边界
+  - 仅 `string_token_runtime.cpp` 的 helper 符号参与样例链接。
+  - sample-suite 不再把 host CMake 产出的 `eippf_string_token_runtime` 视为所有平台都可复用的 truth。
+
+### File And Module Ownership
+- PM
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-plan.txt`
+  - 审核协调、任务卡、集成验收、CI 跟踪
+- Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- Engineer-B
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Engineer-C
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- Engineer-D
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Reviewer
+  - 不修改实现文件，只读计划、diff、日志与测试证据
+
+### Interfaces And Data Contracts
+- workflow -> platform script
+  - Windows
+    - workflow 必须先做 bundled LLVM preflight：
+      - 若 `${VCINSTALLDIR}\\Tools\\Llvm\\x64\\lib\\cmake\\llvm\\LLVMConfig.cmake` 存在，导出：
+        - `EIPPF_VS_LLVM_DIR=<that canonical path>`
+        - `EIPPF_ALLOWED_LLVM_DIR=<that canonical path>`
+        - `EIPPF_ALLOWED_LLVM_ROOT=<canonical parent root ending in \\Tools\\Llvm\\x64>`
+      - 若不存在，才允许安装 `choco llvm` fallback，并且只在验证 `C:\\Program Files\\LLVM\\lib\\cmake\\llvm\\LLVMConfig.cmake` 存在后导出：
+        - `LLVM_DIR=C:\\Program Files\\LLVM\\lib\\cmake\\llvm`
+        - `EIPPF_ALLOWED_LLVM_DIR=<that canonical path>`
+        - `EIPPF_ALLOWED_LLVM_ROOT=<canonical parent root ending in \\LLVM>`
+  - macOS
+    - workflow 必须安装 `llvm@18` 和 `ninja`
+    - workflow 必须导出：
+      - `EIPPF_ALLOWED_LLVM_ROOT=<canonical brew --prefix llvm@18>`
+      - `LLVM_DIR=<brew --prefix llvm@18>/lib/cmake/llvm`
+      - `EIPPF_CLANG=<brew --prefix llvm@18>/bin/clang`
+      - `EIPPF_CLANGXX=<brew --prefix llvm@18>/bin/clang++`
+  - Linux/Android
+    - workflow 继续安装 host `clang-18/llvm-18`
+    - workflow 继续安装 Android SDK/NDK
+    - workflow 必须导出：
+      - `EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18`
+      - `LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm`
+      - `EIPPF_ANDROID_NDK_VERSION=26.3.11579264`
+      - `EIPPF_ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${EIPPF_ANDROID_NDK_VERSION}`
+    - platform script 禁止自行发现 host LLVM；只允许消费 workflow 导出的 `LLVM_DIR/EIPPF_HOST_LLVM_ROOT`
+    - platform script 禁止自行猜测 NDK 版本；只允许消费 workflow 导出的 `EIPPF_ANDROID_NDK_ROOT`
+- platform script -> wrapper
+  - wrapper 继续只接受现有 CLI：
+    - `--pass-plugin <path>`
+    - `--`
+    - 现有编译器参数
+  - 不新增 wrapper 参数。
+- report contract
+  - Windows 报告路径固定：
+    - `sample_suite_inputs/toolchain_reports/windows.txt`
+  - Linux/Android 报告路径固定：
+    - `sample_suite_inputs/toolchain_reports/linux_android.txt`
+  - macOS/iOS 报告路径固定：
+    - `sample_suite_inputs/toolchain_reports/macos_ios.txt`
+  - 格式固定：
+    - ASCII
+    - 每个平台报告的 key 集合固定且完全匹配本计划；未知 key、额外 key、重复 key 一律失败
+    - 每行一个 `key=value`
+    - 不允许自由文本
+    - 非路径枚举/文本键只允许：
+      - `platform`
+      - `llvm_source`
+      - `android_target_source`
+      - `ios_target_source`
+      - `android_ko_link_flags`
+      - `ios_target`
+      - `*_version_first_line`
+    - 除上述枚举/文本键外，其余 value 一律写绝对路径，且在 workflow 校验时必须存在
+  - Windows 报告固定键：
+    - `platform=windows`
+    - `llvm_source=vs_bundled|choco_fallback`
+    - `compiler_path=...`
+    - `compiler_version_first_line=...`
+    - `llvm_dir=...`
+    - `plugin_path=...`
+    - `helper_user_o=...`
+    - `helper_kernel_o=...`
+    - `plugin_build_command=...`
+    - `helper_user_compile_command=...`
+    - `helper_kernel_compile_command=...`
+    - `windows_exe_link_inputs=...`
+    - `windows_dll_link_inputs=...`
+    - `windows_sys_link_inputs=...`
+    - `windows_exe_link_command=...`
+    - `windows_dll_link_command=...`
+    - `windows_sys_link_command=...`
+  - Linux/Android 报告固定键：
+    - `platform=linux_android`
+    - `android_target_source=android_ndk`
+    - `llvm_dir=...`
+    - `android_ndk_root=...`
+    - `host_compiler_path=...`
+    - `host_compiler_version_first_line=...`
+    - `android_target_compiler_path=...`
+    - `android_target_compiler_version_first_line=...`
+    - `plugin_path=...`
+    - `linux_user_helper_o=...`
+    - `linux_kernel_helper_o=...`
+    - `android_user_helper_o=...`
+    - `android_kernel_helper_o=...`
+    - `plugin_build_command=...`
+    - `linux_user_helper_compile_command=...`
+    - `linux_kernel_helper_compile_command=...`
+    - `android_user_helper_compile_command=...`
+    - `android_kernel_helper_compile_command=...`
+    - `linux_elf_link_inputs=...`
+    - `linux_so_link_inputs=...`
+    - `linux_ko_link_inputs=...`
+    - `android_so_link_inputs=...`
+    - `android_ko_link_inputs=...`
+    - `linux_elf_link_command=...`
+    - `linux_so_link_command=...`
+    - `linux_ko_link_command=...`
+    - `android_so_link_command=...`
+    - `android_ko_link_command=...`
+    - `android_ko_link_driver_path=...`
+    - `android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r`
+  - macOS/iOS 报告固定键：
+    - `platform=macos_ios`
+    - `ios_target_source=xcrun`
+    - `host_compiler_path=...`
+    - `host_compiler_version_first_line=...`
+    - `ios_target_compiler_path=...`
+    - `ios_target_compiler_version_first_line=...`
+    - `llvm_dir=...`
+    - `plugin_path=...`
+    - `ios_user_helper_o=...`
+    - `plugin_build_command=...`
+    - `ios_user_helper_compile_command=...`
+    - `ios_link_inputs=...`
+    - `ios_link_command=...`
+    - `ios_target=arm64-apple-ios17.0-simulator`
+    - `ios_isysroot=...`
+  - artifact upload/download contract
+    - `build-linux-android` 固定上传 artifact：
+      - `name=sample-suite-linux-android`
+      - `path=sample_suite_inputs`
+    - `build-windows` 固定上传 artifact：
+      - `name=sample-suite-windows`
+      - `path=sample_suite_inputs`
+    - `build-macos-ios` 固定上传 artifact：
+      - `name=sample-suite-macos-ios`
+      - `path=sample_suite_inputs`
+    - `protect-and-evaluate` 固定下载到：
+      - `sample_suite_downloaded`
+    - 下载后必须保持：
+      - `sample_suite_downloaded/toolchain_reports/windows.txt`
+      - `sample_suite_downloaded/toolchain_reports/linux_android.txt`
+      - `sample_suite_downloaded/toolchain_reports/macos_ios.txt`
+    - `protect-and-evaluate` 固定上传 artifact：
+      - `name=sample-suite-evidence`
+      - `path=sample_suite_evidence`
+      - evidence tree 必须保持 `sample_suite_evidence/` 下的既有布局不变
+  - command sidecar contract
+    - 所有 `*_command` 键都必须指向 `sample_suite_inputs/toolchain_reports/commands/` 下的 ASCII 文本文件
+    - sidecar 内容必须是 fully expanded final argv
+    - sidecar 禁止出现未展开的 `@rsp`、`@response`、`@<file>`、`-Wl,@...`、`--script`、`--script=<file>`、`-Wl,-T,`、`-Wl,-Tfoo`、`-Wl,--script,`、`-T <script>`、`-T<script>`、`-Xlinker -T`、`-Xlinker -Tfoo`、`-Xlinker=-T`、`-Xlinker=-Tfoo`、linker script 跳转；若底层工具链需要 response file，脚本必须先展开后再写 sidecar
+    - plugin build sidecar 必须包含真实 `LLVM_DIR`、真实编译器路径、真实输出目录
+    - helper compile sidecar 必须包含真实 helper 输出路径与真实 compiler path
+    - link command sidecar 必须包含真实 helper input 路径，且显式 object/archive/helper 输入集合必须与 `*_link_inputs` 的单一 helper 完全一致
+    - link command sidecar 禁止出现任何额外绝对路径、相对路径或 bare `.obj/.o/.a/.lib` 输入
+    - link command sidecar 禁止出现 `eippf_string_token_runtime.*`
+- workflow report validation contract
+  - 主计划不再内嵌任何 validator 全文；唯一 canonical validator 来源固定为对应 task card：
+    - Windows canonical validator：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-b-task-card.txt`
+      - section：`Exact Windows Validator The Workflow Will Run`
+    - Linux/Android canonical validator：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-c-task-card.txt`
+      - section：`Exact Linux/Android Validator The Workflow Will Run`
+    - macOS/iOS canonical validator：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-d-task-card.txt`
+      - section：`Exact macOS/iOS Validator The Workflow Will Run`
+  - `Track A` 只负责把上述 3 段 canonical validator 原文逐字复制进 workflow 对应 job；`Track A` 不得再维护独立 validator 变体。
+  - validator 真相源规则固定：
+    - 若主计划、Track A、workflow 与 Track B/C/D task card 内容不一致，以 `Track B/C/D task card` 为唯一事实来源
+    - 任何 validator 变更必须先改对应平台 task card，再由 `Track A` 同步到 workflow
+  - `protect-and-evaluate` job 固定执行：
+    - `test -f sample_suite_downloaded/toolchain_reports/windows.txt`
+    - `test -f sample_suite_downloaded/toolchain_reports/linux_android.txt`
+    - `test -f sample_suite_downloaded/toolchain_reports/macos_ios.txt`
+- helper compile 命令级契约
+  - Windows user helper
+    - `\"${ClangClPath}\" /nologo /c /O2 /W4 /GR- /EHs-c- /Fo:\"${OutputRoot}\\runtime_libs\\string_token_runtime.windows.user.obj\" \"${RepoRoot}\\core\\runtime\\src\\string_token_runtime.cpp\" /I\"${RepoRoot}\\core\\include\" /I\"${RepoRoot}\\core\\runtime\\include\"`
+  - Windows kernel helper
+    - `\"${ClangClPath}\" /nologo /c /O2 /W4 /GS- /GR- /EHs-c- /Zl /Fo:\"${OutputRoot}\\runtime_libs\\string_token_runtime.windows.sys.obj\" \"${RepoRoot}\\core\\runtime\\src\\string_token_runtime.cpp\" /I\"${RepoRoot}\\core\\include\" /I\"${RepoRoot}\\core\\runtime\\include\"`
+  - Linux user helper
+    - `\"${HOST_CLANGXX}\" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c \"${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp\" -I\"${REPO_ROOT}/core/include\" -I\"${REPO_ROOT}/core/runtime/include\" -o \"${OUT_ROOT}/runtime_libs/string_token_runtime.linux.user.o\"`
+  - Linux kernel helper
+    - `\"${HOST_CLANGXX}\" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fvisibility=hidden -c \"${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp\" -I\"${REPO_ROOT}/core/include\" -I\"${REPO_ROOT}/core/runtime/include\" -o \"${OUT_ROOT}/runtime_libs/string_token_runtime.linux.ko.o\"`
+  - Android user helper
+    - `ANDROID_TARGET_CLANG=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang`
+    - `ANDROID_TARGET_CLANGXX=${ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++`
+    - `\"${ANDROID_TARGET_CLANGXX}\" --target=aarch64-linux-android24 --sysroot=\"${ANDROID_SYSROOT}\" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c \"${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp\" -I\"${REPO_ROOT}/core/include\" -I\"${REPO_ROOT}/core/runtime/include\" -o \"${OUT_ROOT}/runtime_libs/string_token_runtime.android.user.o\"`
+  - Android kernel helper
+    - `\"${ANDROID_TARGET_CLANGXX}\" --target=aarch64-linux-android24 --sysroot=\"${ANDROID_SYSROOT}\" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fvisibility=hidden -c \"${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp\" -I\"${REPO_ROOT}/core/include\" -I\"${REPO_ROOT}/core/runtime/include\" -o \"${OUT_ROOT}/runtime_libs/string_token_runtime.android.ko.o\"`
+  - iOS helper
+    - `IOS_TARGET_CLANGXX=$(xcrun --sdk iphonesimulator --find clang++)`
+    - `\"${IOS_TARGET_CLANGXX}\" -target arm64-apple-ios17.0-simulator -isysroot \"${IOS_SDK}\" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c \"${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp\" -I\"${REPO_ROOT}/core/include\" -I\"${REPO_ROOT}/core/runtime/include\" -o \"${OUT_ROOT}/runtime_libs/string_token_runtime.ios.user.o\"`
+- link-level contract
+  - Windows
+    - `windows_exe_link_inputs` 必须且只能为：`string_token_runtime.windows.user.obj`
+    - `windows_dll_link_inputs` 必须且只能为：`string_token_runtime.windows.user.obj`
+    - `windows_sys_link_inputs` 必须且只能为：`string_token_runtime.windows.sys.obj`
+  - Linux
+    - `linux_elf_link_inputs` 必须且只能为：`string_token_runtime.linux.user.o`
+    - `linux_so_link_inputs` 必须且只能为：`string_token_runtime.linux.user.o`
+    - `linux_ko_link_inputs` 必须且只能为：`string_token_runtime.linux.ko.o`
+  - Android
+    - `android_so_link_inputs` 必须且只能为：`string_token_runtime.android.user.o`
+    - `android_ko_link_inputs` 必须且只能为：`string_token_runtime.android.ko.o`
+    - `android_ko_link_driver_path` 必须为 NDK `aarch64-linux-android24-clang++`
+    - `android_ko_link_flags` 必须且只能为：`--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r`
+  - iOS
+    - `ios_link_inputs` 必须且只能为：`string_token_runtime.ios.user.o`
+    - 任何 `*_link_inputs` 都禁止出现 `eippf_string_token_runtime.*` host-built archive/lib
+  - 所有平台
+    - 任何 `*_link_command` 都不得显式传入除 `*_link_inputs` 指定 helper 之外的额外 object/archive/helper 输入
+
+### Invariants
+- pass plugin 始终由 host LLVM toolchain 构建。
+- sample helper 始终由最终 target toolchain 直接编译。
+- user-mode 与 kernel/driver 仍保持各自最终链接路径。
+- `protect-and-evaluate` 输入树与 manifest 契约不变。
+- Windows 继续 fail-closed：没有 `clang-cl` 或没有有效 LLVM CMake dir 就直接失败。
+
+### Failure Modes And Error Handling
+- Windows
+  - workflow preflight 先验证 bundled LLVM；若缺失，再受控安装并验证 choco fallback。
+  - bundled 与 fallback 都无效时，直接 fail。
+  - 若 `clang-cl` 不存在，直接 fail。
+- macOS
+  - 若 `brew --prefix llvm@18` 失败，直接 fail。
+  - 若 `LLVM_DIR` 不含 `LLVMConfig.cmake` 或 `PassPlugin.h`，直接 fail。
+- Linux/Android
+  - 若 NDK target compiler 不存在，直接 fail。
+  - 若任一 helper object 未成功生成，直接 fail。
+  - 若 `android_so` 仍落回 host clang，直接 fail。
+  - 若 `android_ko` 未使用 Android target clang driver + `-nostdlib -fuse-ld=lld -Wl,-r` 完成 relocatable link，直接 fail。
+- iOS
+  - 若 iOS helper object 未按 iOS target + SDK 生成，直接 fail。
+
+### Regression Perimeter
+- 直接改动面
+  - workflow 依赖安装与环境导出
+  - Windows/macOS/Linux-Android 三个平台样例构建脚本
+- 邻接面
+  - `eippf_cc.py` 现有参数契约
+  - `string_token_runtime.cpp` 作为 helper 源的编译兼容性
+  - sample-suite 输入目录结构
+- 必须保持不变
+  - sample ids 不变
+  - `protect-and-evaluate` job 不变
+  - evidence layout 不变
+- 第二序风险
+  - iOS helper 之前被 host-built archive 掩盖，修完 plugin 后可能暴露 ABI/SDK 链接问题
+  - Android user-mode 改用 NDK compiler 后，kernel `.ko` 若误用 host `ld` 会直接再次失败
+  - Windows workflow 去掉无条件 choco 后，若脚本没有真正采纳 VS LLVM，会立即暴露
+
+### Unchanged Guarantees
+- sample-suite 仍覆盖全部类型。
+- 保护 pass 仍然对 C/C++ 样例生效。
+- `artifact_shape/signed_policy` 评估契约不变。
+- `protect-and-evaluate` 仍在 Linux evaluator 上构建保护工具并消费 3 平台 artifact。
+
+### Probable Failure Scenarios
+- 只修 workflow 不修脚本，仍会在平台脚本内部复现旧错误。
+- Android user-mode 若继续用 host clang，仅靠 `--target` 仍可能再次落回 host runtime/linker 行为。
+- `android_ko` 若把 aarch64 object 继续交给 host `ld -r`，会直接引入第三轮 CI 失败。
+- Android user helper 若缺 `-fPIC`，会在 shared object 链接期失败。
+- Android kernel helper 若缺 `-ffreestanding/-fno-builtin/-fno-stack-protector/-fno-asynchronous-unwind-tables`，会在 `-nostdlib` 链接期暴露未解析符号。
+- iOS 若继续链接 host-built helper，plugin 修好后会在最终链接阶段因 SDK/ABI 不匹配失败。
+
+### Task-Specific Coding Rules
+- 不改 `eippf_cc.py`。
+- 不新增通用 runtime archive 协议。
+- helper 只能在各平台脚本里显式编译，并放在各自 sample output tree 的私有中间目录。
+- Windows 规则
+  - workflow 不再无条件安装 choco LLVM；必须先做 bundled LLVM preflight。
+  - `build_windows.ps1` 的 LLVM 解析顺序固定为：
+    1. `env:EIPPF_VS_LLVM_DIR` 有效则使用，并写 `llvm_source=vs_bundled`
+    2. `env:LLVM_DIR` 有效且其 canonical path 等于 `C:\\Program Files\\LLVM\\lib\\cmake\\llvm` 时才允许使用，并写 `llvm_source=choco_fallback`
+    3. 其余来源一律拒绝并失败；禁止 `llvm-config --cmakedir`、禁止 `derived-from-clang-cl`、禁止采纳任意外部 `env:LLVM_DIR`
+  - helper 直接按本计划冻结的两条命令编译为 `string_token_runtime.windows.user.obj` 与 `string_token_runtime.windows.sys.obj`，并参与 exe/dll/sys 链接；不再依赖 CMake 产出的 `eippf_string_token_runtime.lib`
+- Linux/Android 规则
+  - Linux host plugin 固定使用 workflow 导出的 `EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18` 与 `LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm`，禁止脚本自行通过 `llvm-config` 或 PATH 发现 host LLVM。
+  - Linux `linux_elf/linux_so` helper 固定使用 host clang++ + `-fPIC` 编译。
+  - Linux `.ko` helper 固定使用 host freestanding clang++ 编译，必须满足 kernel-safe flags。
+  - Android `android_so` 固定使用 workflow 导出的 `EIPPF_ANDROID_NDK_ROOT` 下的 NDK `aarch64-linux-android24-clang/clang++` 构建；wrapper 调用前必须切换 `EIPPF_CLANG/EIPPF_CLANGXX`。
+  - Android `android_so` helper 固定使用 `-fPIC`。
+  - Android `.ko` helper 与模块 object 固定使用 workflow 导出的 `EIPPF_ANDROID_NDK_ROOT` 下的 Android target clang/clang++ + Android sysroot 编译；最终链接固定使用 Android target clang driver + `-nostdlib -fuse-ld=lld -Wl,-r`。
+- macOS/iOS 规则
+  - workflow 只能安装 `llvm@18`；脚本不得自己 fallback 到 `llvm 22.x`。
+  - pass plugin 仍由 `llvm@18` host clang++ 构建。
+  - iOS helper 固定使用 `xcrun --sdk iphonesimulator --find clang++` 与最终 iOS sample 完全相同的 `-target` 与 `-isysroot` 编译。
+  - iOS helper 固定使用 `-fPIC`。
+
+### Implementation Tracks
+- Track A / Workflow 固定 host toolchain 契约
+  - Owner: `Engineer-A`
+  - Files
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 输出
+    - Windows 改成 bundled LLVM preflight，只有 bundled 缺失时才允许 choco fallback
+    - macOS 改为 `brew install llvm@18 ninja`
+    - Linux/Android 保持 host LLVM18 + Android NDK 安装，并显式导出 `EIPPF_HOST_LLVM_ROOT`、`LLVM_DIR`、`EIPPF_ANDROID_NDK_VERSION`、`EIPPF_ANDROID_NDK_ROOT`
+    - 新增每个平台 build 后对各自 `toolchain_reports/*.txt` 的机器化校验，强制：
+      - key 集合完全匹配
+      - 路径键 absolute + exists
+      - provenance 校验
+      - 关键 flags/target/source 校验
+      - link command sidecar 校验
+    - 在 `protect-and-evaluate` job 里新增三份 report 存在性校验，并固定 artifact 上传/下载名称与落点
+  - 依赖
+    - 无
+- Track B / Windows VS LLVM 收口
+  - Owner: `Engineer-B`
+  - Files
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 输出
+    - 只按冻结顺序采纳受控 LLVM_DIR，不做任何自发现
+    - 打印最终采用的 `clang-cl`、`LLVM_DIR`、`llvm_source`
+    - helper 直接编译为 object 并参与 exe/dll/sys 链接
+    - 生成 `sample_suite_inputs/toolchain_reports/windows.txt`
+    - 为 `windows_exe/windows_dll/windows_sys` 各自产出 1 份实际 link command sidecar，并写入 report
+  - 依赖
+    - Track A
+- Track C / Linux host + Android target 分治
+  - Owner: `Engineer-C`
+  - Files
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - 输出
+    - host LLVM18 只构建 pass plugin
+    - Linux `linux_elf/linux_so` helper 用 host clang++ + `-fPIC` 构建并链接
+    - Linux `.ko` helper 用 host clang++ kernel-safe flags 构建并链接
+    - Android `android_so` helper 用 NDK clang++ + `-fPIC` 构建并链接
+    - Android `.ko` helper 用 NDK clang++ kernel-safe flags 构建
+    - Android `.ko` 最终链接固定为 Android target clang driver + `-nostdlib -fuse-ld=lld -Wl,-r`
+    - Android wrapper 调用固定切到 NDK target compiler，不再继续用 host clang + `--target`
+    - 生成 `sample_suite_inputs/toolchain_reports/linux_android.txt`，其中必须写出 `llvm_dir`、`android_ndk_root`、`android_ko_link_driver_path`、`android_ko_link_flags`
+    - 为 `linux_elf/linux_so/linux_ko/android_so/android_ko` 各自产出 1 份实际 link command sidecar，并写入 report
+  - 依赖
+    - Track A
+- Track D / macOS llvm@18 + iOS target helper 收口
+  - Owner: `Engineer-D`
+  - Files
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 输出
+    - 只用 `llvm@18` 构建 pass plugin
+    - iOS helper 用 `xcrun` toolchain 与最终样例完全一致的 target/SDK flags + `-fPIC` 构建
+    - 最终 iOS sample 链接 target-specific helper，不再链接 host-built archive
+    - 脚本启动阶段验证 `LLVM_DIR` 对应前缀含 `PassPlugin.h`
+    - 生成 `sample_suite_inputs/toolchain_reports/macos_ios.txt`，其中必须写出 `ios_target`、`ios_isysroot`
+    - 为 `ios_macho` 产出 1 份实际 link command sidecar，并写入 report
+  - 依赖
+    - Track A
+
+### Concrete Task Cards
+- canonical task card files：
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-a-task-card.txt`
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-b-task-card.txt`
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-c-task-card.txt`
+  - `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-d-task-card.txt`
+- Track A / Engineer-A / `.github/workflows/sample-suite-eval.yml`
+  - 只修改该文件。
+  - 直接按本计划写 3 个 preflight：
+    - Windows：发现 canonical LLVM root 后导出 `EIPPF_ALLOWED_LLVM_ROOT`、`EIPPF_ALLOWED_LLVM_DIR`
+    - Linux/Android：导出 `EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18`、`LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm`、`EIPPF_ANDROID_NDK_VERSION=26.3.11579264`、`EIPPF_ANDROID_NDK_ROOT=...`
+    - macOS：导出 `EIPPF_ALLOWED_LLVM_ROOT=<canonical brew --prefix llvm@18>`
+  - 直接把 `Track B/C/D task card` 中的 3 段 canonical validator 原文逐字复制进 workflow 对应 job，不得删减，不得自行改写。
+  - `protect-and-evaluate` 固定下载到 `sample_suite_downloaded`，并校验 3 份 report 存在。
+  - 不得把平台脚本逻辑搬进 workflow。
+- Track B / Engineer-B / `core/tools/sample_suite/build_windows.ps1`
+  - 只修改该文件。
+  - 只接受 `EIPPF_VS_LLVM_DIR` 或 workflow 导出的 fallback `LLVM_DIR`，禁止任何自动发现。
+  - 生成 report 固定键：
+    - `platform`
+    - `llvm_source`
+    - `compiler_path`
+    - `compiler_version_first_line`
+    - `llvm_dir`
+    - `plugin_path`
+    - `helper_user_o`
+    - `helper_kernel_o`
+    - `plugin_build_command`
+    - `helper_user_compile_command`
+    - `helper_kernel_compile_command`
+    - `windows_exe_link_inputs`
+    - `windows_dll_link_inputs`
+    - `windows_sys_link_inputs`
+    - `windows_exe_link_command`
+    - `windows_dll_link_command`
+    - `windows_sys_link_command`
+  - command sidecar 全部写到 `sample_suite_inputs/toolchain_reports/commands/windows.*.txt`
+  - `windows_exe_link_inputs` 必须精确等于 `helper_user_o`
+  - `windows_dll_link_inputs` 必须精确等于 `helper_user_o`
+  - `windows_sys_link_inputs` 必须精确等于 `helper_kernel_o`
+  - link command sidecar 必须是 fully expanded argv，且不得出现 `eippf_string_token_runtime.*`
+- Track C / Engineer-C / `core/tools/sample_suite/build_linux_android.sh`
+  - 只修改该文件。
+  - host plugin 只接受 workflow 导出的 `LLVM_DIR` 与 `EIPPF_HOST_LLVM_ROOT`。
+  - Android 只接受 workflow 导出的 `EIPPF_ANDROID_NDK_ROOT` 与 `EIPPF_ANDROID_NDK_VERSION`。
+  - 生成 report 固定键：
+    - `platform`
+    - `android_target_source`
+    - `llvm_dir`
+    - `android_ndk_root`
+    - `host_compiler_path`
+    - `host_compiler_version_first_line`
+    - `android_target_compiler_path`
+    - `android_target_compiler_version_first_line`
+    - `plugin_path`
+    - `linux_user_helper_o`
+    - `linux_kernel_helper_o`
+    - `android_user_helper_o`
+    - `android_kernel_helper_o`
+    - `plugin_build_command`
+    - `linux_user_helper_compile_command`
+    - `linux_kernel_helper_compile_command`
+    - `android_user_helper_compile_command`
+    - `android_kernel_helper_compile_command`
+    - `linux_elf_link_inputs`
+    - `linux_so_link_inputs`
+    - `linux_ko_link_inputs`
+    - `android_so_link_inputs`
+    - `android_ko_link_inputs`
+    - `linux_elf_link_command`
+    - `linux_so_link_command`
+    - `linux_ko_link_command`
+    - `android_so_link_command`
+    - `android_ko_link_command`
+    - `android_ko_link_driver_path`
+    - `android_ko_link_flags`
+  - `linux_elf/linux_so` link inputs 必须精确等于 `linux_user_helper_o`
+  - `linux_ko` link inputs 必须精确等于 `linux_kernel_helper_o`
+  - `android_so` link inputs 必须精确等于 `android_user_helper_o`
+  - `android_ko` link inputs 必须精确等于 `android_kernel_helper_o`
+  - 所有 command sidecar 全部写到 `sample_suite_inputs/toolchain_reports/commands/linux_android.*.txt`
+  - `android_ko_link_command` 必须是 fully expanded argv，且必须含 `--target=aarch64-linux-android24 -nostdlib -fuse-ld=lld -Wl,-r`
+- Track D / Engineer-D / `core/tools/sample_suite/build_macos_ios.sh`
+  - 只修改该文件。
+  - host plugin 只接受 workflow 导出的 `EIPPF_ALLOWED_LLVM_ROOT` 与 `LLVM_DIR`。
+  - iOS target compiler 只接受 `xcrun --sdk iphonesimulator --find clang++`。
+  - 生成 report 固定键：
+    - `platform`
+    - `ios_target_source`
+    - `host_compiler_path`
+    - `host_compiler_version_first_line`
+    - `ios_target_compiler_path`
+    - `ios_target_compiler_version_first_line`
+    - `llvm_dir`
+    - `plugin_path`
+    - `ios_user_helper_o`
+    - `plugin_build_command`
+    - `ios_user_helper_compile_command`
+    - `ios_link_inputs`
+    - `ios_link_command`
+    - `ios_target`
+    - `ios_isysroot`
+  - `ios_link_inputs` 必须精确等于 `ios_user_helper_o`
+  - command sidecar 全部写到 `sample_suite_inputs/toolchain_reports/commands/macos_ios.*.txt`
+  - `ios_link_command` 必须是 fully expanded argv，且必须含 `-target arm64-apple-ios17.0-simulator` 与真实 `-isysroot`
+
+### Validation Strategy
+- 本地最小验证
+  - `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - Windows 脚本语法检查：
+    - `pwsh -NoProfile -Command \"$null = [System.Management.Automation.Language.Parser]::ParseFile('/workspace/core/tools/sample_suite/build_windows.ps1',[ref]$null,[ref]$null); 'pwsh-parse-ok'\"`
+- 本地契约检查
+  - `rg -n "sample-suite-evidence|toolchain_reports/windows.txt|toolchain_reports/linux_android.txt|toolchain_reports/macos_ios.txt|platform=windows|platform=linux_android|platform=macos_ios|EIPPF_ALLOWED_LLVM_ROOT|EIPPF_ALLOWED_LLVM_DIR|EIPPF_HOST_LLVM_ROOT|EIPPF_ANDROID_NDK_ROOT|llvm_source=vs_bundled\\|choco_fallback|android_target_source=android_ndk|ios_target_source=xcrun|plugin_build_command=.+|helper_user_compile_command=.+|helper_kernel_compile_command=.+|linux_user_helper_compile_command=.+|linux_kernel_helper_compile_command=.+|android_user_helper_compile_command=.+|android_kernel_helper_compile_command=.+|ios_user_helper_compile_command=.+|llvm_dir=.+|android_ndk_root=.+|windows_exe_link_inputs=.+string_token_runtime\\.windows\\.user\\.obj|windows_dll_link_inputs=.+string_token_runtime\\.windows\\.user\\.obj|windows_sys_link_inputs=.+string_token_runtime\\.windows\\.sys\\.obj|windows_exe_link_command=.+|windows_dll_link_command=.+|windows_sys_link_command=.+|linux_elf_link_inputs=.+string_token_runtime\\.linux\\.user\\.o|linux_so_link_inputs=.+string_token_runtime\\.linux\\.user\\.o|linux_ko_link_inputs=.+string_token_runtime\\.linux\\.ko\\.o|linux_elf_link_command=.+|linux_so_link_command=.+|linux_ko_link_command=.+|android_so_link_inputs=.+string_token_runtime\\.android\\.user\\.o|android_ko_link_inputs=.+string_token_runtime\\.android\\.ko\\.o|android_so_link_command=.+|android_ko_link_command=.+|android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r|ios_link_inputs=.+string_token_runtime\\.ios\\.user\\.o|ios_link_command=.+|ios_target=arm64-apple-ios17.0-simulator|PassPlugin.h|@rsp|@response|@<file>|--script|-Wl,-T,|-Wl,--script,|-Wl,@|-Xlinker -T|-Xlinker=-T|-fPIC|-ffreestanding|-fno-builtin|-fno-stack-protector|-fno-asynchronous-unwind-tables|-fuse-ld=lld|unexpected explicit object/archive input|explicit helper input set mismatch" /workspace/.github/workflows/sample-suite-eval.yml /workspace/core/tools/sample_suite/build_windows.ps1 /workspace/core/tools/sample_suite/build_linux_android.sh /workspace/core/tools/sample_suite/build_macos_ios.sh /workspace/plan/2026-04-03-sample-suite-ci-delta-2-plan.txt`
+  - `rg -n "sample-suite-evidence|toolchain_reports/windows.txt|toolchain_reports/linux_android.txt|toolchain_reports/macos_ios.txt|platform=windows|platform=linux_android|platform=macos_ios|EIPPF_ALLOWED_LLVM_ROOT|EIPPF_ALLOWED_LLVM_DIR|EIPPF_HOST_LLVM_ROOT|EIPPF_ANDROID_NDK_ROOT|llvm_source=vs_bundled\\|choco_fallback|android_target_source=android_ndk|ios_target_source=xcrun|plugin_build_command=.+|helper_user_compile_command=.+|helper_kernel_compile_command=.+|linux_user_helper_compile_command=.+|linux_kernel_helper_compile_command=.+|android_user_helper_compile_command=.+|android_kernel_helper_compile_command=.+|ios_user_helper_compile_command=.+|llvm_dir=.+|android_ndk_root=.+|windows_exe_link_inputs=.+string_token_runtime\\.windows\\.user\\.obj|windows_dll_link_inputs=.+string_token_runtime\\.windows\\.user\\.obj|windows_sys_link_inputs=.+string_token_runtime\\.windows\\.sys\\.obj|windows_exe_link_command=.+|windows_dll_link_command=.+|windows_sys_link_command=.+|linux_elf_link_inputs=.+string_token_runtime\\.linux\\.user\\.o|linux_so_link_inputs=.+string_token_runtime\\.linux\\.user\\.o|linux_ko_link_inputs=.+string_token_runtime\\.linux\\.ko\\.o|linux_elf_link_command=.+|linux_so_link_command=.+|linux_ko_link_command=.+|android_so_link_inputs=.+string_token_runtime\\.android\\.user\\.o|android_ko_link_inputs=.+string_token_runtime\\.android\\.ko\\.o|android_so_link_command=.+|android_ko_link_command=.+|android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r|ios_link_inputs=.+string_token_runtime\\.ios\\.user\\.o|ios_link_command=.+|ios_target=arm64-apple-ios17.0-simulator|PassPlugin.h|@rsp|@response|@<file>|--script|-Wl,-T,|-Wl,--script,|-Wl,@|-Xlinker -T|-Xlinker=-T|-fPIC|-ffreestanding|-fno-builtin|-fno-stack-protector|-fno-asynchronous-unwind-tables|-fuse-ld=lld|unexpected explicit object/archive input|explicit helper input set mismatch" /workspace/.github/workflows/sample-suite-eval.yml /workspace/core/tools/sample_suite/build_windows.ps1 /workspace/core/tools/sample_suite/build_linux_android.sh /workspace/core/tools/sample_suite/build_macos_ios.sh /workspace/plan/2026-04-03-sample-suite-ci-delta-2-plan.txt`
+  - `! rg -n "llvm-config|derived-from-clang-cl|eippf_string_token_runtime\\.(lib|a)|brew install llvm[^@]|host ld -r" /workspace/.github/workflows/sample-suite-eval.yml /workspace/core/tools/sample_suite/build_windows.ps1 /workspace/core/tools/sample_suite/build_linux_android.sh /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Host probe
+  - `test -x "$(command -v clang-18)" && test -x "$(command -v clang++-18)"`
+  - `cmake -S /workspace/core -B /workspace/build_ci_delta2_host -G Ninja -DLLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm -DCMAKE_C_COMPILER=$(command -v clang-18) -DCMAKE_CXX_COMPILER=$(command -v clang++-18)`
+  - `cmake --build /workspace/build_ci_delta2_host -j --target eippf_protection_suite_pass`
+- CI 验收
+  - 推送后查看 run 状态：
+    - `gh run view <run-id> --json status,conclusion,jobs`
+  - 失败时抓 job 日志：
+    - `gh run view <run-id> --job <job-id> --log-failed`
+  - 成功后下载 evidence：
+    - `gh run download <run-id> -n sample-suite-evidence -D <out-dir>`
+  - workflow 必须机器化校验三份 report 与关键键值存在
+
+### Migration Or Rollback
+- 若 Track B 失败，只允许修正 `build_windows.ps1` 或 workflow preflight；禁止回滚到接受外部 LLVM 自动发现的旧逻辑。
+- 若 Track C/Track D 引入 target helper 编译问题，只回滚对应平台脚本，不回滚 workflow 固定版本策略；任何回滚都不得恢复 host-built helper/runtime、不得恢复 legacy runtime archive/lib、不得放松受控 toolchain 来源与 report fail-closed 校验。
+- 若 Windows bundled LLVM 缺失而 fallback 路径也无效，保持 preflight 并 fail-closed；禁止为了恢复 CI 去撤销 preflight 保护。
+
+### Security Notes
+- 本轮不涉及新的 secret 或签名资产。
+- 禁止让平台脚本从不受控路径自动寻找第三方 LLVM/Clang。
+- Windows 路径解析只允许 Visual Studio 安装树与 workflow preflight 导出的受控 fallback；禁止其他外部 `LLVM_DIR`。
+
+### Open Questions
+- 无阻塞性开放问题。本轮所有关键设计已冻结，不留给 engineer 自行决定。
+
+## Decision Log
+- D1
+  - 旧假设“host-built helper/runtime 可以跨 Linux/Android/iOS 复用”被 run `23950090370` 否定。
+  - 新决策：sample helper 改为 target-specific object，由各平台脚本按最终 target toolchain 直接编译。
+- D2
+  - Windows 不再无条件安装 choco LLVM。
+  - 新决策：默认使用 Visual Studio bundled LLVM；workflow 先做 preflight，仅 bundled 缺失时才启用受控 choco fallback；脚本负责解析并验证最终 CMake dir。
+- D3
+  - macOS 不再使用 `brew install llvm`。
+  - 新决策：统一固定 `llvm@18`，并把版本固定责任放在 workflow。
+- D4
+  - Android `.ko` 不再调用 host `ld -r`。
+  - 新决策：固定使用 Android target clang driver + `-nostdlib -fuse-ld=lld -Wl,-r` 完成 relocatable link。
+- D5
+  - iOS helper 不再允许“Homebrew LLVM clang++ 或 xcrun 二选一”。
+  - 新决策：helper 必须固定用 `xcrun --sdk iphonesimulator --find clang++`。
+- D6
+  - Android helper 不再共用一份 object。
+  - 新决策：`android_so` 和 `android_ko` 分别使用 user helper object 与 kernel helper object；前者强制 `-fPIC`，后者强制 kernel-safe flags。
+- D7
+  - 平台报告不再共用同名文件。
+  - 新决策：三份 `toolchain_report` 改为固定路径、固定键名、固定 workflow 校验命令，避免下载合并时覆盖与人工验收漂移。
+- D8
+  - 用户已显式授权本轮修改 `/.github/workflows/sample-suite-eval.yml` 与使用真实多 agent 并行。
+  - 新决策：本轮把 workflow 视为治理/验证资产；仓库 traceability 仍按 `Planner / Engineer / Security Reviewer` 三角色登记，工程实现分 4 个 Engineer 子轨，审核分 3 个 reviewer checkpoint。
+
+## Agent Roster
+- Repository Traceability Roles
+  - Agent 1 `Planner / PM`
+    - 主会话
+    - 负责计划、审核协调、任务卡、集成、CI 验收
+  - Agent 2 `Engineer`
+    - 以 4 条并行子轨执行：
+      - Engineer-A：workflow
+      - Engineer-B：Windows
+      - Engineer-C：Linux/Android
+      - Engineer-D：macOS/iOS
+  - Agent 3 `Security Reviewer`
+    - 以 3 个独立审核 checkpoint 执行：
+      - Architecture review
+      - Security review
+      - Validation review
+
+## Delegation Map
+- 本轮属于 `real-multi-agent`
+- PM 不写实现代码
+- Reviewer 不写实现代码
+- 工程轨一人一文件组，禁止交叉修改
+
+## Parallel Tracks
+- Track A
+  - workflow 固定 host toolchain 契约
+- Track B
+  - Windows VS LLVM + helper object
+- Track C
+  - Linux host helper + Android target helper
+- Track D
+  - macOS llvm@18 + iOS target helper
+
+## File Ownership
+- `.github/workflows/sample-suite-eval.yml`
+  - Engineer-A
+- `core/tools/sample_suite/build_windows.ps1`
+  - Engineer-B
+- `core/tools/sample_suite/build_linux_android.sh`
+  - Engineer-C
+- `core/tools/sample_suite/build_macos_ios.sh`
+  - Engineer-D
+
+## Dependencies
+- Track A 可先做
+- Track B/C/D 依赖 Track A 中 workflow 环境契约冻结，但可以并行实现
+- Merge 顺序：
+  1. Track A
+  2. Track B
+  3. Track C
+  4. Track D
+  5. CI 全量验收
+
+## Regression Perimeter
+- workflow 依赖安装
+- 三个平台 sample 构建链
+- wrapper 现有 CLI 契约
+- sample-suite artifact 输入树
+
+## Unchanged Guarantees
+- sample-suite 类型覆盖不变
+- `protect-and-evaluate` 逻辑不变
+- evidence layout 不变
+
+## Second-Order Risks
+- iOS plugin 修好后，target helper 若 flags 不完整可能在最终链接阶段暴露新错
+- Android user-mode 改用 NDK target compiler 后，若 `.ko` 误用 host 链接器会再次失败
+- Windows 若 runner 上 LLVM bundled path 版本变化，preflight 必须通过显式日志快速暴露
+
+## Model Routing
+- PM：主会话
+- Architecture Reviewer：`gpt-5.4`
+- Security Reviewer：`gpt-5.4`
+- Validation Reviewer：`gpt-5.2`
+- Engineer tracks：`gpt-5.3-codex`
+
+## Context Packages
+- Reviewer 只接收：
+  - 本计划文件
+  - 失败 run 核心日志摘要
+  - 相关 workflow/脚本源码
+- Engineer 只接收：
+  - 由 PM 生成的完整 task card
+  - task card 内必须内联：
+    - 自己 Track 的 owned files
+    - artifact 上传/下载契约
+    - 自己必须写出的 report 固定键
+    - 自己必须满足的 validator 全文
+    - 自己必须写出的 link command sidecar 键与路径
+    - 禁止事项与完成标准
+  - 自己拥有的文件路径
+  - 不允许只给“Track 摘要”而省略精确契约
+
+## Quality Gates
+- G1 计划审查
+  - Architecture Reviewer `PASS`
+  - Security Reviewer `PASS`
+  - Validation Reviewer `PASS`
+- G2 本地语法/契约检查
+  - 三个平台脚本语法检查通过
+  - workflow 关键字符串检查通过
+  - 三段 validator 全文存在，且包含：
+    - fixed key set 检查
+    - canonical root 检查
+    - plugin/helper compile command sidecar 检查
+    - link command sidecar 检查
+    - `@rsp/@response/-Wl,@` 拒绝
+  - host plugin probe 通过
+- G3 CI Gate
+  - `sample-suite-eval` 四个 job 全绿
+- G4 Evidence Gate
+  - `sample-suite-evidence` 上传成功
+
+## Assurance Scorecard
+- Source-of-truth clarity: `5/5`
+- File ownership clarity: `5/5`
+- Regression perimeter coverage: `5/5`
+- Anti-shortcut specificity: `5/5`
+- Remaining ambiguity: `0/5`
+
+## Merge Order
+1. workflow 固定版本/环境契约
+2. Windows VS LLVM 收口
+3. Linux/Android target helper 收口
+4. macOS/iOS target helper 收口
+5. 本地检查
+6. 提交、推送、CI 复跑
+
+## Open Risks
+- 本机无法完整复现 Windows/macOS target 构建，只能做语法与契约检查；最终以 GitHub Actions 为准。
+- 若 `llvm@18` 在 `macos-latest` runner 公式名变化，workflow 必须显式失败，而不是 fallback 到 22.x。
+
+## State Snapshot
+- 当前 HEAD：`2e9cb887127e6de4751c52e5b25d1ac87559d80c`
+- 当前工作区状态：
+  - `.github/workflows/sample-suite-eval.yml` 存在未提交草改，视为待审核实现草案，不作为已批准事实
+  - `plan/2026-04-03-sample-suite-ci-delta-2-plan.txt` 为本轮待审计划
+  - `tmps/` 为本地报告副本
+- 当前 blocker：
+  - Windows：未采纳 VS bundled LLVM
+  - macOS：LLVM 版本漂移到 22.x
+  - Linux/Android：target helper/runtime 边界错误
+  - iOS：继续链接 host-built helper
+- 下一步：
+  - 计划三审
+  - 审过后按 Track A/B/C/D 下发工程任务卡

@@ -51,15 +51,13 @@ jobs:
             cmake \
             ninja-build
           echo "/usr/lib/llvm-18/bin" >> "${GITHUB_PATH}"
-          echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> "${GITHUB_ENV}"
-          echo "EIPPF_CLANG=clang-18" >> "${GITHUB_ENV}"
-          echo "EIPPF_CLANGXX=clang++-18" >> "${GITHUB_ENV}"
 
       - name: Install Android SDK Build Tools + NDK
         shell: bash
         run: |
           set -euo pipefail
           ANDROID_SDK_ROOT="${RUNNER_TEMP}/android-sdk"
+          NDK_VERSION="26.3.11579264"
           CMDLINE_TOOLS_ZIP="${RUNNER_TEMP}/android-commandline-tools.zip"
 
           mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
@@ -80,7 +78,18 @@ jobs:
             --sdk_root="${ANDROID_SDK_ROOT}" \
             "platforms;android-34" \
             "build-tools;34.0.0" \
-            "ndk;26.3.11579264"
+            "ndk;${NDK_VERSION}"
+
+      - name: Preflight Linux Android Environment Exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18" >> "${GITHUB_ENV}"
+          echo "LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm" >> "${GITHUB_ENV}"
+          echo "EIPPF_ANDROID_NDK_VERSION=26.3.11579264" >> "${GITHUB_ENV}"
+          echo "EIPPF_ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/26.3.11579264" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANG=clang-18" >> "${GITHUB_ENV}"
+          echo "EIPPF_CLANGXX=clang++-18" >> "${GITHUB_ENV}"
 
       - name: Build Linux Android Samples
         shell: bash
@@ -89,6 +98,233 @@ jobs:
           chmod +x "${GITHUB_WORKSPACE}/core/tools/sample_suite/build_linux_android.sh"
           "${GITHUB_WORKSPACE}/core/tools/sample_suite/build_linux_android.sh" \
             "${GITHUB_WORKSPACE}/sample_suite_inputs"
+
+      - name: Validate Linux Android Toolchain Report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import shlex
+
+          report = Path("sample_suite_inputs/toolchain_reports/linux_android.txt")
+          if not report.is_file():
+              raise SystemExit(f"[FAIL] missing report: {report}")
+
+          kv = {}
+          for raw in report.read_text(encoding="ascii").splitlines():
+              parts = raw.split("=", 1)
+              if len(parts) != 2:
+                  raise SystemExit(f"[FAIL] malformed report line: {raw}")
+              key, value = parts
+              if key in kv:
+                  raise SystemExit(f"[FAIL] duplicate key: {key}")
+              kv[key] = value
+
+          required = [
+              "platform", "android_target_source", "llvm_dir", "android_ndk_root",
+              "host_compiler_path", "host_compiler_version_first_line",
+              "android_target_compiler_path", "android_target_compiler_version_first_line",
+              "plugin_path", "linux_user_helper_o", "linux_kernel_helper_o",
+              "android_user_helper_o", "android_kernel_helper_o", "plugin_build_command",
+              "linux_user_helper_compile_command", "linux_kernel_helper_compile_command",
+              "android_user_helper_compile_command", "android_kernel_helper_compile_command",
+              "linux_elf_link_inputs", "linux_so_link_inputs", "linux_ko_link_inputs",
+              "android_so_link_inputs", "android_ko_link_inputs", "linux_elf_link_command",
+              "linux_so_link_command", "linux_ko_link_command", "android_so_link_command",
+              "android_ko_link_command", "android_ko_link_driver_path", "android_ko_link_flags",
+          ]
+          for key in required:
+              if key not in kv:
+                  raise SystemExit(f"[FAIL] missing key: {key}")
+          if set(kv) != set(required):
+              raise SystemExit("[FAIL] key set mismatch")
+          if kv["platform"] != "linux_android":
+              raise SystemExit("[FAIL] platform mismatch")
+          if kv["android_target_source"] != "android_ndk":
+              raise SystemExit("[FAIL] android_target_source mismatch")
+
+          for key, value in kv.items():
+              if key in {"platform", "android_target_source", "android_ko_link_flags"} or key.endswith("_version_first_line"):
+                  continue
+              if not Path(value).is_absolute():
+                  raise SystemExit(f"[FAIL] non-absolute path for {key}")
+              if not Path(value).exists():
+                  raise SystemExit(f"[FAIL] missing path for {key}")
+
+          if os.environ["EIPPF_HOST_LLVM_ROOT"] != "/usr/lib/llvm-18":
+              raise SystemExit("[FAIL] EIPPF_HOST_LLVM_ROOT mismatch")
+          if os.environ["LLVM_DIR"] != "/usr/lib/llvm-18/lib/cmake/llvm":
+              raise SystemExit("[FAIL] LLVM_DIR mismatch")
+          if os.environ["EIPPF_ANDROID_NDK_VERSION"] != "26.3.11579264":
+              raise SystemExit("[FAIL] EIPPF_ANDROID_NDK_VERSION mismatch")
+          expected_ndk_root = Path(os.environ["ANDROID_SDK_ROOT"]).resolve() / "ndk" / os.environ["EIPPF_ANDROID_NDK_VERSION"]
+          if Path(os.environ["EIPPF_ANDROID_NDK_ROOT"]).resolve() != expected_ndk_root:
+              raise SystemExit("[FAIL] EIPPF_ANDROID_NDK_ROOT mismatch")
+
+          host_root = Path(os.environ["EIPPF_HOST_LLVM_ROOT"]).resolve()
+          output_root = (Path.cwd() / "sample_suite_inputs").resolve()
+          commands_root = (output_root / "toolchain_reports" / "commands").resolve()
+          expected_llvm_dir = Path(os.environ["LLVM_DIR"]).resolve()
+          ndk_root = Path(os.environ["EIPPF_ANDROID_NDK_ROOT"]).resolve()
+          ndk_bin_root = ndk_root / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin"
+          android_sysroot = ndk_root / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "sysroot"
+          repo_root = Path.cwd().resolve()
+          helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
+          shared_include = repo_root / "core" / "include"
+          runtime_include = repo_root / "core" / "runtime" / "include"
+          if not expected_llvm_dir.joinpath("LLVMConfig.cmake").is_file():
+              raise SystemExit("[FAIL] LLVMConfig.cmake missing")
+          if not android_sysroot.is_dir():
+              raise SystemExit("[FAIL] Android sysroot missing")
+
+          def assert_under(path: Path, root: Path, label: str) -> None:
+              resolved = path.resolve()
+              root_resolved = root.resolve()
+              try:
+                  resolved.relative_to(root_resolved)
+              except ValueError as exc:
+                  raise SystemExit(f"[FAIL] {label} escaped allowed root") from exc
+
+          def has_forbidden_linker_controls(text: str) -> bool:
+              tokens = shlex.split(text, posix=True)
+              for index, token in enumerate(tokens):
+                  if token.startswith("@"):
+                      return True
+                  if token in {"-T", "--script"}:
+                      return True
+                  if token.startswith("-T") or token.startswith("--script="):
+                      return True
+                  if token.startswith("-Wl,@") or token == "-Wl,-T" or token.startswith("-Wl,-T") or token == "-Wl,--script" or token.startswith("-Wl,--script"):
+                      return True
+                  if token == "-Xlinker" and index + 1 < len(tokens):
+                      nxt = tokens[index + 1]
+                      if nxt in {"-T", "--script"} or nxt.startswith("-T") or nxt.startswith("--script="):
+                          return True
+                  if token.startswith("-Xlinker=-T") or token.startswith("-Xlinker=--script"):
+                      return True
+              return False
+
+          def explicit_object_archive_inputs(text: str) -> list[Path]:
+              inputs: list[Path] = []
+              for token in shlex.split(text, posix=True):
+                  if re.search(r"\.(?:o|obj|a|lib)$", token):
+                      path = Path(token)
+                      if not path.is_absolute():
+                          path = (Path.cwd() / path).resolve()
+                      else:
+                          path = path.resolve()
+                      inputs.append(path)
+              return inputs
+
+          host_compiler = Path(kv["host_compiler_path"]).resolve()
+          android_compiler = Path(kv["android_target_compiler_path"]).resolve()
+          android_link_driver = Path(kv["android_ko_link_driver_path"]).resolve()
+          assert_under(host_compiler, host_root / "bin", "host_compiler")
+          if Path(kv["llvm_dir"]).resolve() != expected_llvm_dir:
+              raise SystemExit("[FAIL] llvm_dir provenance mismatch")
+          if Path(kv["android_ndk_root"]).resolve() != ndk_root:
+              raise SystemExit("[FAIL] android_ndk_root mismatch")
+          if "clang version 18" not in kv["host_compiler_version_first_line"]:
+              raise SystemExit("[FAIL] host compiler version mismatch")
+          assert_under(android_compiler, ndk_bin_root, "android_target_compiler")
+          assert_under(android_link_driver, ndk_bin_root, "android_ko_link_driver")
+          if Path(kv["host_compiler_path"]).name not in {"clang++", "clang++-18"}:
+              raise SystemExit("[FAIL] host_compiler_path mismatch")
+          if Path(kv["android_target_compiler_path"]).name != "aarch64-linux-android24-clang++":
+              raise SystemExit("[FAIL] android_target_compiler_path mismatch")
+          if Path(kv["android_ko_link_driver_path"]).name != "aarch64-linux-android24-clang++":
+              raise SystemExit("[FAIL] android_ko_link_driver_path mismatch")
+          if kv["android_ko_link_flags"] != "--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r":
+              raise SystemExit("[FAIL] android_ko_link_flags mismatch")
+          assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
+          if Path(kv["plugin_path"]).name != "eippf_protection_suite_pass.so":
+              raise SystemExit("[FAIL] plugin_path mismatch")
+          assert_under(Path(kv["linux_user_helper_o"]), output_root, "linux_user_helper_o")
+          if Path(kv["linux_user_helper_o"]).name != "string_token_runtime.linux.user.o":
+              raise SystemExit("[FAIL] linux_user_helper_o mismatch")
+          assert_under(Path(kv["linux_kernel_helper_o"]), output_root, "linux_kernel_helper_o")
+          if Path(kv["linux_kernel_helper_o"]).name != "string_token_runtime.linux.ko.o":
+              raise SystemExit("[FAIL] linux_kernel_helper_o mismatch")
+          assert_under(Path(kv["android_user_helper_o"]), output_root, "android_user_helper_o")
+          if Path(kv["android_user_helper_o"]).name != "string_token_runtime.android.user.o":
+              raise SystemExit("[FAIL] android_user_helper_o mismatch")
+          assert_under(Path(kv["android_kernel_helper_o"]), output_root, "android_kernel_helper_o")
+          if Path(kv["android_kernel_helper_o"]).name != "string_token_runtime.android.ko.o":
+              raise SystemExit("[FAIL] android_kernel_helper_o mismatch")
+
+          def check_sidecar(key: str, compiler_path: Path, required_tokens: list[str]) -> None:
+              sidecar = Path(kv[key])
+              assert_under(sidecar, commands_root, key)
+              text = sidecar.read_text(encoding="ascii")
+              if has_forbidden_linker_controls(text):
+                  raise SystemExit(f"[FAIL] sidecar is not fully expanded: {key}")
+              if str(compiler_path.resolve()) not in text:
+                  raise SystemExit(f"[FAIL] sidecar missing compiler path: {key}")
+              for token in required_tokens:
+                  if token not in text:
+                      raise SystemExit(f"[FAIL] sidecar missing required token: {key}: {token}")
+
+          check_sidecar("plugin_build_command", host_compiler, [str(expected_llvm_dir)])
+          check_sidecar("linux_user_helper_compile_command", host_compiler, [str(helper_source), str(shared_include), str(runtime_include), "-std=c++20", "-fno-exceptions", "-fno-rtti", "-fPIC", str(Path(kv["linux_user_helper_o"]).resolve())])
+          check_sidecar("linux_kernel_helper_compile_command", host_compiler, [str(helper_source), str(shared_include), str(runtime_include), "-std=c++20", "-fno-exceptions", "-fno-rtti", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", str(Path(kv["linux_kernel_helper_o"]).resolve())])
+          check_sidecar("android_user_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-fPIC", str(Path(kv["android_user_helper_o"]).resolve())])
+          check_sidecar("android_kernel_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", str(Path(kv["android_kernel_helper_o"]).resolve())])
+
+          def check_single_input(key: str, expected_name: str, command_key: str, driver_path: Path) -> None:
+              entries = [item for item in kv[key].split(";") if item]
+              if len(entries) != 1:
+                  raise SystemExit(f"[FAIL] unexpected link input count for {key}")
+              entry = Path(entries[0])
+              if not entry.is_absolute():
+                  raise SystemExit(f"[FAIL] non-absolute link input for {key}")
+              if not entry.exists():
+                  raise SystemExit(f"[FAIL] missing link input for {key}")
+              assert_under(entry, output_root, key)
+              if entry.name != expected_name:
+                  raise SystemExit(f"[FAIL] link input mismatch for {key}")
+              if "eippf_string_token_runtime." in entry.name:
+                  raise SystemExit(f"[FAIL] legacy runtime archive leaked into {key}")
+              command_path = Path(kv[command_key])
+              assert_under(command_path, commands_root, command_key)
+              command_text = command_path.read_text(encoding="ascii")
+              if has_forbidden_linker_controls(command_text):
+                  raise SystemExit(f"[FAIL] link command is not fully expanded: {command_key}")
+              if str(driver_path.resolve()) not in command_text:
+                  raise SystemExit(f"[FAIL] link command missing driver path: {command_key}")
+              if str(entry.resolve()) not in command_text:
+                  raise SystemExit(f"[FAIL] link command missing helper input for {command_key}")
+              if "eippf_string_token_runtime." in command_text:
+                  raise SystemExit(f"[FAIL] legacy runtime archive leaked into {command_key}")
+              explicit_inputs = explicit_object_archive_inputs(command_text)
+              if explicit_inputs.count(entry.resolve()) != 1:
+                  raise SystemExit(f"[FAIL] explicit helper input set mismatch for {command_key}")
+              unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
+              if unexpected:
+                  raise SystemExit(f"[FAIL] unexpected explicit object/archive input for {command_key}: {';'.join(unexpected)}")
+
+          check_single_input("linux_elf_link_inputs", "string_token_runtime.linux.user.o", "linux_elf_link_command", host_compiler)
+          check_single_input("linux_so_link_inputs", "string_token_runtime.linux.user.o", "linux_so_link_command", host_compiler)
+          check_single_input("linux_ko_link_inputs", "string_token_runtime.linux.ko.o", "linux_ko_link_command", host_compiler)
+          check_single_input("android_so_link_inputs", "string_token_runtime.android.user.o", "android_so_link_command", android_compiler)
+          check_single_input("android_ko_link_inputs", "string_token_runtime.android.ko.o", "android_ko_link_command", android_link_driver)
+          if Path(kv["linux_elf_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
+              raise SystemExit("[FAIL] linux_elf link/helper binding mismatch")
+          if Path(kv["linux_so_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
+              raise SystemExit("[FAIL] linux_so link/helper binding mismatch")
+          if Path(kv["linux_ko_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_kernel_helper_o"]).resolve():
+              raise SystemExit("[FAIL] linux_ko link/helper binding mismatch")
+          if Path(kv["android_so_link_inputs"].split(";")[0]).resolve() != Path(kv["android_user_helper_o"]).resolve():
+              raise SystemExit("[FAIL] android_so link/helper binding mismatch")
+          if Path(kv["android_ko_link_inputs"].split(";")[0]).resolve() != Path(kv["android_kernel_helper_o"]).resolve():
+              raise SystemExit("[FAIL] android_ko link/helper binding mismatch")
+          android_ko_command = Path(kv["android_ko_link_command"]).read_text(encoding="ascii")
+          for token in ["--target=aarch64-linux-android24", "-nostdlib", "-fuse-ld=lld", "-Wl,-r"]:
+              if token not in android_ko_command:
+                  raise SystemExit(f"[FAIL] android_ko command missing token: {token}")
+          PY
 
       - name: Upload Linux Android Samples
         uses: actions/upload-artifact@v4
@@ -106,17 +342,30 @@ jobs:
       - name: Setup MSVC Environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Install LLVM Toolchain
+      - name: Preflight LLVM Toolchain
         shell: powershell
         run: |
-          $ErrorActionPreference = "Stop"
-          choco install llvm --yes --no-progress
-          $llvmRoot = "C:\Program Files\LLVM"
-          if (!(Test-Path $llvmRoot)) {
-            throw "[FAIL] expected LLVM install root missing: $llvmRoot"
+          $bundledPrefix = Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64"
+          $bundledRoot = Join-Path $bundledPrefix "lib\cmake\llvm"
+          $bundledConfig = Join-Path $bundledRoot "LLVMConfig.cmake"
+          if (Test-Path $bundledConfig) {
+            "EIPPF_VS_LLVM_DIR=$bundledRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_DIR=$bundledRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_ROOT=$bundledPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "[INFO] Using Visual Studio bundled LLVM: $bundledRoot"
+          } else {
+            choco install llvm --yes --no-progress
+            $fallbackPrefix = "C:\Program Files\LLVM"
+            $fallbackRoot = Join-Path $fallbackPrefix "lib\cmake\llvm"
+            $fallbackConfig = Join-Path $fallbackRoot "LLVMConfig.cmake"
+            if (!(Test-Path $fallbackConfig)) {
+              throw "[FAIL] fallback LLVMConfig.cmake missing: $fallbackConfig"
+            }
+            "LLVM_DIR=$fallbackRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_DIR=$fallbackRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_ROOT=$fallbackPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "[INFO] Using fallback LLVM: $fallbackRoot"
           }
-          "$llvmRoot\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          "LLVM_DIR=$llvmRoot\lib\cmake\llvm" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build Windows Samples
         shell: powershell
@@ -124,6 +373,134 @@ jobs:
           $ErrorActionPreference = "Stop"
           ./core/tools/sample_suite/build_windows.ps1 -OutputRoot "$PWD\sample_suite_inputs"
 
+      - name: Validate Windows Toolchain Report
+        shell: powershell
+        run: |
+          $report = "sample_suite_inputs/toolchain_reports/windows.txt"
+          if (!(Test-Path $report)) { throw "[FAIL] missing report: $report" }
+          $bytes = [System.IO.File]::ReadAllBytes($report)
+          if ($bytes | Where-Object { $_ -gt 127 }) { throw "[FAIL] report is not ASCII" }
+          $kv = @{}
+          [System.Text.Encoding]::ASCII.GetString($bytes) -split "`r?`n" | Where-Object { $_ -ne "" } | ForEach-Object {
+            $parts = $_ -split '=', 2
+            if ($parts.Count -ne 2) { throw "[FAIL] malformed report line: $_" }
+            if ($kv.ContainsKey($parts[0])) { throw "[FAIL] duplicate key: $($parts[0])" }
+            $kv[$parts[0]] = $parts[1]
+          }
+          $required = @("platform","llvm_source","compiler_path","compiler_version_first_line","llvm_dir","plugin_path","helper_user_o","helper_kernel_o","plugin_build_command","helper_user_compile_command","helper_kernel_compile_command","windows_exe_link_inputs","windows_dll_link_inputs","windows_sys_link_inputs","windows_exe_link_command","windows_dll_link_command","windows_sys_link_command")
+          foreach ($key in $required) { if (-not $kv.ContainsKey($key)) { throw "[FAIL] missing key: $key" } }
+          if (($kv.Keys | Sort-Object) -join ';' -ne ($required | Sort-Object) -join ';') { throw "[FAIL] key set mismatch" }
+          if ($kv["platform"] -ne "windows") { throw "[FAIL] platform mismatch" }
+          if ($kv["llvm_source"] -notin @("vs_bundled","choco_fallback")) { throw "[FAIL] llvm_source mismatch" }
+          foreach ($key in @("compiler_path","llvm_dir","plugin_path","helper_user_o","helper_kernel_o","plugin_build_command","helper_user_compile_command","helper_kernel_compile_command","windows_exe_link_command","windows_dll_link_command","windows_sys_link_command")) {
+            if (-not [System.IO.Path]::IsPathRooted($kv[$key])) { throw "[FAIL] non-absolute path for $key" }
+            if (!(Test-Path $kv[$key])) { throw "[FAIL] missing path for $key" }
+          }
+          $allowedRoot = Resolve-Path $env:EIPPF_ALLOWED_LLVM_ROOT
+          $outputRoot = Resolve-Path (Join-Path $PWD "sample_suite_inputs")
+          $commandsRoot = Resolve-Path (Join-Path $PWD "sample_suite_inputs\\toolchain_reports\\commands")
+          function Test-UnderRoot([string]$Child, [string]$Root) {
+            $childFull = [System.IO.Path]::GetFullPath($Child)
+            $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\\')
+            return $childFull.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or $childFull.StartsWith($rootFull + '\\', [System.StringComparison]::OrdinalIgnoreCase)
+          }
+          function Get-CommandTokens([string]$Text) {
+            $tokens = New-Object System.Collections.Generic.List[string]
+            foreach ($match in [regex]::Matches($Text, '"[^"]*"|\S+')) {
+              $token = $match.Value.Trim('"')
+              if ($token) { $tokens.Add($token) }
+            }
+            return @($tokens)
+          }
+          function Test-ForbiddenLinkerControls([string]$Text) {
+            $tokens = @(Get-CommandTokens $Text)
+            for ($i = 0; $i -lt $tokens.Count; $i++) {
+              $token = $tokens[$i]
+              if ($token.StartsWith("@")) { return $true }
+              if ($token -eq "-T" -or $token -eq "--script") { return $true }
+              if ($token -match '^\-T.+' -or $token -match '^\-\-script(?:=|,).+') { return $true }
+              if ($token -match '^\-Wl,@' -or $token -match '^\-Wl,\-T(?:,|=)?.+' -or $token -eq "-Wl,-T" -or $token -match '^\-Wl,\-\-script(?:,|=)?.+' -or $token -eq "-Wl,--script") { return $true }
+              if ($token -eq "-Xlinker" -and $i + 1 -lt $tokens.Count) {
+                $next = $tokens[$i + 1]
+                if ($next -eq "-T" -or $next -eq "--script" -or $next -match '^\-T.+' -or $next -match '^\-\-script(?:=|,)?.+') { return $true }
+              }
+              if ($token -match '^\-Xlinker=(\-T.*|\-\-script(?:=|,)?.*)$') { return $true }
+            }
+            return $false
+          }
+          function Get-ExplicitObjectArchiveInputs([string]$Text) {
+            $values = New-Object System.Collections.Generic.List[string]
+            foreach ($token in (Get-CommandTokens $Text)) {
+              if ($token -match '\.(obj|o|a|lib)$') {
+                if ([System.IO.Path]::IsPathRooted($token)) {
+                  $values.Add([System.IO.Path]::GetFullPath($token))
+                } else {
+                  $values.Add([System.IO.Path]::GetFullPath((Join-Path $PWD $token)))
+                }
+              }
+            }
+            return @($values | Sort-Object -Unique)
+          }
+          $compilerPath = (Resolve-Path $kv["compiler_path"]).Path
+          $llvmDir = (Resolve-Path $kv["llvm_dir"]).Path
+          $repoRoot = (Resolve-Path $PWD).Path
+          $helperSource = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\runtime\\src\\string_token_runtime.cpp"))
+          $sharedInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\include"))
+          $runtimeInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\runtime\\include"))
+          $expectedCompilerRoot = Join-Path $allowedRoot.Path "bin"
+          $expectedLlvmDir = (Resolve-Path $env:EIPPF_ALLOWED_LLVM_DIR).Path
+          if (-not (Test-UnderRoot $compilerPath $expectedCompilerRoot)) { throw "[FAIL] compiler provenance mismatch" }
+          if (-not ([System.IO.Path]::GetFullPath($llvmDir).Equals($expectedLlvmDir, [System.StringComparison]::OrdinalIgnoreCase))) { throw "[FAIL] llvm_dir provenance mismatch" }
+          foreach ($key in @("plugin_path","helper_user_o","helper_kernel_o")) {
+            $resolved = (Resolve-Path $kv[$key]).Path
+            if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] output path escaped sample_suite_inputs for $key" }
+          }
+          foreach ($key in @("plugin_build_command","helper_user_compile_command","helper_kernel_compile_command")) {
+            $resolved = (Resolve-Path $kv[$key]).Path
+            if (-not (Test-UnderRoot $resolved $commandsRoot.Path)) { throw "[FAIL] command sidecar escaped commands dir for $key" }
+          }
+          if (-not ($compilerPath.ToLower().EndsWith("clang-cl.exe") -or $compilerPath.ToLower().EndsWith("clang-cl"))) { throw "[FAIL] compiler_path mismatch" }
+          if (!(Test-Path (Join-Path $llvmDir "LLVMConfig.cmake"))) { throw "[FAIL] llvm_dir missing LLVMConfig.cmake" }
+          if (-not $kv["plugin_path"].EndsWith("eippf_protection_suite_pass.dll")) { throw "[FAIL] plugin_path mismatch" }
+          if (-not $kv["helper_user_o"].EndsWith("string_token_runtime.windows.user.obj")) { throw "[FAIL] helper_user_o mismatch" }
+          if (-not $kv["helper_kernel_o"].EndsWith("string_token_runtime.windows.sys.obj")) { throw "[FAIL] helper_kernel_o mismatch" }
+          foreach ($pair in @(@("plugin_build_command",$kv["plugin_path"]), @("helper_user_compile_command",$kv["helper_user_o"]), @("helper_kernel_compile_command",$kv["helper_kernel_o"]))) {
+            $text = Get-Content $kv[$pair[0]] -Raw
+            if (Test-ForbiddenLinkerControls $text) { throw "[FAIL] sidecar is not fully expanded: $($pair[0])" }
+            if ($text -notmatch [regex]::Escape($compilerPath)) { throw "[FAIL] sidecar missing compiler path: $($pair[0])" }
+            if ($text -notmatch [regex]::Escape($pair[1])) { throw "[FAIL] sidecar missing output/input path: $($pair[0])" }
+            if ($pair[0] -ne "plugin_build_command") {
+              if ($text -notmatch [regex]::Escape($helperSource)) { throw "[FAIL] helper compile missing source path: $($pair[0])" }
+              if ($text -notmatch [regex]::Escape($sharedInclude) -or $text -notmatch [regex]::Escape($runtimeInclude)) { throw "[FAIL] helper compile missing include roots: $($pair[0])" }
+              if ($text -notmatch '/GR-' -or $text -notmatch '/EHs-c-') { throw "[FAIL] helper compile missing no-rtti/no-exception flags: $($pair[0])" }
+              if ($pair[0] -eq "helper_user_compile_command" -and $text -match '/GS-') { throw "[FAIL] user helper unexpectedly disabled GS" }
+              if ($pair[0] -eq "helper_kernel_compile_command" -and ($text -notmatch '/GS-' -or $text -notmatch '/Zl')) { throw "[FAIL] kernel helper missing kernel-safe flags" }
+            }
+            if ($pair[0] -eq "plugin_build_command" -and $text -notmatch [regex]::Escape($expectedLlvmDir)) { throw "[FAIL] plugin_build_command missing LLVM_DIR" }
+          }
+          foreach ($quad in @(@("windows_exe_link_inputs","windows_exe_link_command","string_token_runtime.windows.user.obj",$kv["helper_user_o"]), @("windows_dll_link_inputs","windows_dll_link_command","string_token_runtime.windows.user.obj",$kv["helper_user_o"]), @("windows_sys_link_inputs","windows_sys_link_command","string_token_runtime.windows.sys.obj",$kv["helper_kernel_o"]))) {
+            $entries = @($kv[$quad[0]].Split(';') | Where-Object { $_ -ne "" })
+            if ($entries.Count -ne 1) { throw "[FAIL] unexpected link input count for $($quad[0])" }
+            if (-not [System.IO.Path]::IsPathRooted($entries[0])) { throw "[FAIL] non-absolute link input for $($quad[0])" }
+            if (!(Test-Path $entries[0])) { throw "[FAIL] missing link input for $($quad[0])" }
+            $resolved = (Resolve-Path $entries[0]).Path
+            if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] link input escaped sample_suite_inputs for $($quad[0])" }
+            if (-not $entries[0].EndsWith($quad[2])) { throw "[FAIL] link input mismatch for $($quad[0])" }
+            if (-not ([System.IO.Path]::GetFullPath($resolved).Equals([System.IO.Path]::GetFullPath((Resolve-Path $quad[3]).Path), [System.StringComparison]::OrdinalIgnoreCase))) { throw "[FAIL] link/helper binding mismatch for $($quad[0])" }
+            if ($entries[0] -match 'eippf_string_token_runtime\.(lib|a)$') { throw "[FAIL] legacy runtime archive leaked into $($quad[0])" }
+            $commandPath = (Resolve-Path $kv[$quad[1]]).Path
+            if (-not (Test-UnderRoot $commandPath $commandsRoot.Path)) { throw "[FAIL] link command escaped commands dir for $($quad[1])" }
+            $commandText = Get-Content $commandPath -Raw
+            if (Test-ForbiddenLinkerControls $commandText) { throw "[FAIL] sidecar is not fully expanded: $($quad[1])" }
+            if ($commandText -notmatch [regex]::Escape($resolved)) { throw "[FAIL] link command missing helper input for $($quad[1])" }
+            if ($commandText -match 'eippf_string_token_runtime\.(lib|a)') { throw "[FAIL] legacy runtime archive leaked into $($quad[1])" }
+            $explicitInputs = @(Get-ExplicitObjectArchiveInputs $commandText)
+            $expectedInput = [System.IO.Path]::GetFullPath($resolved)
+            $unexpected = @($explicitInputs | Where-Object { -not ([System.IO.Path]::GetFullPath($_).Equals($expectedInput, [System.StringComparison]::OrdinalIgnoreCase)) })
+            if ($unexpected.Count -ne 0) { throw "[FAIL] unexpected explicit object/archive input for $($quad[1])" }
+            $expectedMentions = @($explicitInputs | Where-Object { [System.IO.Path]::GetFullPath($_).Equals($expectedInput, [System.StringComparison]::OrdinalIgnoreCase) }).Count
+            if ($expectedMentions -ne 1) { throw "[FAIL] explicit helper input set mismatch for $($quad[1])" }
+          }
       - name: Upload Windows Samples
         uses: actions/upload-artifact@v4
         with:
@@ -142,9 +519,15 @@ jobs:
         run: |
           set -euo pipefail
           brew update
-          brew install llvm ninja
-          LLVM_PREFIX="$(brew --prefix llvm)"
+          brew install llvm@18 ninja
+
+      - name: Preflight macOS LLVM Environment Exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          LLVM_PREFIX="$(brew --prefix llvm@18)"
           echo "${LLVM_PREFIX}/bin" >> "${GITHUB_PATH}"
+          echo "EIPPF_ALLOWED_LLVM_ROOT=${LLVM_PREFIX}" >> "${GITHUB_ENV}"
           echo "LLVM_DIR=${LLVM_PREFIX}/lib/cmake/llvm" >> "${GITHUB_ENV}"
           echo "EIPPF_CLANG=${LLVM_PREFIX}/bin/clang" >> "${GITHUB_ENV}"
           echo "EIPPF_CLANGXX=${LLVM_PREFIX}/bin/clang++" >> "${GITHUB_ENV}"
@@ -156,6 +539,191 @@ jobs:
           chmod +x core/tools/sample_suite/build_macos_ios.sh
           core/tools/sample_suite/build_macos_ios.sh \
             "${GITHUB_WORKSPACE}/sample_suite_inputs"
+
+      - name: Validate macOS iOS Toolchain Report
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import shlex
+          import subprocess
+
+          report = Path("sample_suite_inputs/toolchain_reports/macos_ios.txt")
+          if not report.is_file():
+              raise SystemExit(f"[FAIL] missing report: {report}")
+
+          kv = {}
+          for raw in report.read_text(encoding="ascii").splitlines():
+              parts = raw.split("=", 1)
+              if len(parts) != 2:
+                  raise SystemExit(f"[FAIL] malformed report line: {raw}")
+              key, value = parts
+              if key in kv:
+                  raise SystemExit(f"[FAIL] duplicate key: {key}")
+              kv[key] = value
+
+          required = [
+              "platform", "ios_target_source", "host_compiler_path", "host_compiler_version_first_line",
+              "ios_target_compiler_path", "ios_target_compiler_version_first_line", "llvm_dir",
+              "plugin_path", "ios_user_helper_o", "plugin_build_command",
+              "ios_user_helper_compile_command", "ios_link_inputs", "ios_link_command",
+              "ios_target", "ios_isysroot",
+          ]
+          for key in required:
+              if key not in kv:
+                  raise SystemExit(f"[FAIL] missing key: {key}")
+          if set(kv) != set(required):
+              raise SystemExit("[FAIL] key set mismatch")
+          if kv["platform"] != "macos_ios":
+              raise SystemExit("[FAIL] platform mismatch")
+          if kv["ios_target_source"] != "xcrun":
+              raise SystemExit("[FAIL] ios_target_source mismatch")
+
+          for key, value in kv.items():
+              if key in {"platform", "ios_target_source", "ios_target"} or key.endswith("_version_first_line"):
+                  continue
+              if not Path(value).is_absolute():
+                  raise SystemExit(f"[FAIL] non-absolute path for {key}")
+              if not Path(value).exists():
+                  raise SystemExit(f"[FAIL] missing path for {key}")
+
+          llvm_prefix = Path(os.environ["EIPPF_ALLOWED_LLVM_ROOT"]).resolve()
+          output_root = (Path.cwd() / "sample_suite_inputs").resolve()
+          commands_root = (output_root / "toolchain_reports" / "commands").resolve()
+          pass_plugin_header = (llvm_prefix / "include" / "llvm" / "Passes" / "PassPlugin.h").resolve()
+          llvm_config = (llvm_prefix / "lib" / "cmake" / "llvm" / "LLVMConfig.cmake").resolve()
+          repo_root = Path.cwd().resolve()
+          helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
+          shared_include = repo_root / "core" / "include"
+          runtime_include = repo_root / "core" / "runtime" / "include"
+
+          def assert_under(path: Path, root: Path, label: str) -> None:
+              resolved = path.resolve()
+              root_resolved = root.resolve()
+              try:
+                  resolved.relative_to(root_resolved)
+              except ValueError as exc:
+                  raise SystemExit(f"[FAIL] {label} escaped allowed root") from exc
+
+          def has_forbidden_linker_controls(text: str) -> bool:
+              tokens = shlex.split(text, posix=True)
+              for index, token in enumerate(tokens):
+                  if token.startswith("@"):
+                      return True
+                  if token in {"-T", "--script"}:
+                      return True
+                  if token.startswith("-T") or token.startswith("--script="):
+                      return True
+                  if token.startswith("-Wl,@") or token == "-Wl,-T" or token.startswith("-Wl,-T") or token == "-Wl,--script" or token.startswith("-Wl,--script"):
+                      return True
+                  if token == "-Xlinker" and index + 1 < len(tokens):
+                      nxt = tokens[index + 1]
+                      if nxt in {"-T", "--script"} or nxt.startswith("-T") or nxt.startswith("--script="):
+                          return True
+                  if token.startswith("-Xlinker=-T") or token.startswith("-Xlinker=--script"):
+                      return True
+              return False
+
+          def explicit_object_archive_inputs(text: str) -> list[Path]:
+              inputs: list[Path] = []
+              for token in shlex.split(text, posix=True):
+                  if re.search(r"\.(?:o|obj|a|lib)$", token):
+                      path = Path(token)
+                      if not path.is_absolute():
+                          path = (Path.cwd() / path).resolve()
+                      else:
+                          path = path.resolve()
+                      inputs.append(path)
+              return inputs
+
+          xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
+          ios_sdk = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"], text=True).strip()).resolve()
+          if not pass_plugin_header.is_file():
+              raise SystemExit("[FAIL] PassPlugin.h missing under allowed LLVM root")
+          if not llvm_config.is_file():
+              raise SystemExit("[FAIL] LLVMConfig.cmake missing under allowed LLVM root")
+          assert_under(Path(kv["host_compiler_path"]), llvm_prefix / "bin", "host_compiler")
+          if "clang version 18" not in kv["host_compiler_version_first_line"]:
+              raise SystemExit("[FAIL] host compiler version mismatch")
+          if Path(kv["host_compiler_path"]).name != "clang++":
+              raise SystemExit("[FAIL] host_compiler_path mismatch")
+          if Path(kv["ios_target_compiler_path"]).resolve() != xcrun_clang:
+              raise SystemExit("[FAIL] ios_target_compiler provenance mismatch")
+          if Path(kv["ios_target_compiler_path"]).name != "clang++":
+              raise SystemExit("[FAIL] ios_target_compiler_path mismatch")
+          if Path(kv["llvm_dir"]).resolve() != (llvm_prefix / "lib" / "cmake" / "llvm").resolve():
+              raise SystemExit("[FAIL] llvm_dir provenance mismatch")
+          assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
+          if Path(kv["plugin_path"]).name != "eippf_protection_suite_pass.dylib":
+              raise SystemExit("[FAIL] plugin_path mismatch")
+          assert_under(Path(kv["ios_user_helper_o"]), output_root, "ios_user_helper_o")
+          if Path(kv["ios_user_helper_o"]).name != "string_token_runtime.ios.user.o":
+              raise SystemExit("[FAIL] ios_user_helper_o mismatch")
+          for pair in [("plugin_build_command", str((llvm_prefix / "lib" / "cmake" / "llvm").resolve())), ("ios_user_helper_compile_command", str(Path(kv["ios_user_helper_o"]).resolve()))]:
+              sidecar = Path(kv[pair[0]])
+              assert_under(sidecar, commands_root, pair[0])
+              text = sidecar.read_text(encoding="ascii")
+              if has_forbidden_linker_controls(text):
+                  raise SystemExit(f"[FAIL] sidecar is not fully expanded: {pair[0]}")
+              if str(Path(kv["host_compiler_path"]).resolve()) not in text and pair[0] == "plugin_build_command":
+                  raise SystemExit("[FAIL] plugin_build_command missing host compiler path")
+              if pair[1] not in text:
+                  raise SystemExit(f"[FAIL] sidecar missing required token: {pair[0]}")
+          ios_helper_text = Path(kv["ios_user_helper_compile_command"]).read_text(encoding="ascii")
+          if str(Path(kv["ios_target_compiler_path"]).resolve()) not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing target compiler path")
+          if str(helper_source) not in ios_helper_text or str(shared_include) not in ios_helper_text or str(runtime_include) not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing source/include roots")
+          if "-target arm64-apple-ios17.0-simulator" not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing target")
+          if "-std=c++20" not in ios_helper_text or "-fno-exceptions" not in ios_helper_text or "-fno-rtti" not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing language/runtime flags")
+          if "-fPIC" not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing -fPIC")
+          if "-isysroot" not in ios_helper_text or str(Path(kv["ios_isysroot"]).resolve()) not in ios_helper_text:
+              raise SystemExit("[FAIL] ios_user_helper_compile_command missing isysroot")
+          if kv["ios_target"] != "arm64-apple-ios17.0-simulator":
+              raise SystemExit("[FAIL] ios_target mismatch")
+          if Path(kv["ios_isysroot"]).resolve() != ios_sdk:
+              raise SystemExit("[FAIL] ios_isysroot mismatch")
+          entries = [item for item in kv["ios_link_inputs"].split(";") if item]
+          if len(entries) != 1:
+              raise SystemExit("[FAIL] unexpected link input count for ios_link_inputs")
+          entry = Path(entries[0])
+          if not entry.is_absolute() or not entry.exists():
+              raise SystemExit("[FAIL] ios_link_inputs path invalid")
+          assert_under(entry, output_root, "ios_link_inputs")
+          if entry.name != "string_token_runtime.ios.user.o":
+              raise SystemExit("[FAIL] ios_link_inputs mismatch")
+          if "eippf_string_token_runtime." in entry.name:
+              raise SystemExit("[FAIL] legacy runtime archive leaked into ios_link_inputs")
+          if entry.resolve() != Path(kv["ios_user_helper_o"]).resolve():
+              raise SystemExit("[FAIL] ios link/helper binding mismatch")
+          command_path = Path(kv["ios_link_command"])
+          assert_under(command_path, commands_root, "ios_link_command")
+          command_text = command_path.read_text(encoding="ascii")
+          if has_forbidden_linker_controls(command_text):
+              raise SystemExit("[FAIL] ios_link_command is not fully expanded")
+          if str(Path(kv["ios_target_compiler_path"]).resolve()) not in command_text:
+              raise SystemExit("[FAIL] ios_link_command missing target compiler path")
+          if str(entry.resolve()) not in command_text:
+              raise SystemExit("[FAIL] ios_link_command missing helper input")
+          if "-target arm64-apple-ios17.0-simulator" not in command_text:
+              raise SystemExit("[FAIL] ios_link_command missing target")
+          if "-isysroot" not in command_text or str(ios_sdk) not in command_text:
+              raise SystemExit("[FAIL] ios_link_command missing isysroot")
+          if "eippf_string_token_runtime." in command_text:
+              raise SystemExit("[FAIL] legacy runtime archive leaked into ios_link_command")
+          explicit_inputs = explicit_object_archive_inputs(command_text)
+          if explicit_inputs.count(entry.resolve()) != 1:
+              raise SystemExit("[FAIL] explicit helper input set mismatch for ios_link_command")
+          unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
+          if unexpected:
+              raise SystemExit(f"[FAIL] unexpected explicit object/archive input for ios_link_command: {';'.join(unexpected)}")
+          PY
 
       - name: Upload macOS iOS Samples
         uses: actions/upload-artifact@v4
@@ -191,6 +759,14 @@ jobs:
         with:
           name: sample-suite-macos-ios
           path: sample_suite_downloaded
+
+      - name: Validate Downloaded Toolchain Reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f sample_suite_downloaded/toolchain_reports/windows.txt
+          test -f sample_suite_downloaded/toolchain_reports/linux_android.txt
+          test -f sample_suite_downloaded/toolchain_reports/macos_ios.txt
 
       - name: Install Build Dependencies
         shell: bash

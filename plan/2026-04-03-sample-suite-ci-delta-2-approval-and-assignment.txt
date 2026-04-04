@@ -1,0 +1,32 @@
+# 2026-04-03 sample-suite CI Delta-2 审核通过与任务分发
+
+## Review Verdicts
+- Architecture Reviewer: `PASS`
+  - agent: `019d55ce-7bc6-7491-a777-739467f01e27`
+- Security Reviewer: `PASS`
+  - agent: `019d55ce-7beb-7003-8640-fa9fc4e22326`
+- Validation Reviewer: `PASS`
+  - agent: `019d55ce-7c10-71a1-a417-a4dc91f91808`
+
+## Canonical Plan Package
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-plan.txt`
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-a-task-card.txt`
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-b-task-card.txt`
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-c-task-card.txt`
+- `/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-d-task-card.txt`
+
+## File Ownership
+- Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- Engineer-B
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Engineer-C
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- Engineer-D
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## PM Rules
+- PM 不写上述 4 个实现文件。
+- PM 只做任务分发、回收、集成验证、证据收口。
+- 任一 Engineer 不得越权修改他人 write set。
+- 若任务卡与实现冲突，以对应 track task card 为唯一事实来源。

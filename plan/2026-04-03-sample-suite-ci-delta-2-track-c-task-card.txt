@@ -1,0 +1,399 @@
+# 2026-04-03 Track C Task Card
+
+## Owner
+- Engineer-C
+
+## Write Set
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+
+## Do Not Edit
+- workflow
+- Windows script
+- macOS/iOS script
+
+## Objective
+- 只把 Linux/Android 样例链改成 host LLVM18 plugin + target-specific helpers + report/sidecar contract。
+- 你不需要设计方案。直接按本卡执行。
+
+## Exact Steps
+1. Host LLVM:
+- 只接受 workflow 导出的：
+  - `EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18`
+  - `LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm`
+- 禁止脚本自行发现 host LLVM
+
+2. Android NDK:
+- 只接受 workflow 导出的：
+  - `EIPPF_ANDROID_NDK_VERSION=26.3.11579264`
+  - `EIPPF_ANDROID_NDK_ROOT`
+- 禁止脚本自行猜版本
+
+3. 脚本启动前置校验，必须 fail-closed：
+- `EIPPF_HOST_LLVM_ROOT` 必须存在
+- `LLVM_DIR` 必须存在
+- `${LLVM_DIR}/LLVMConfig.cmake` 必须存在
+- `EIPPF_ANDROID_NDK_ROOT` 必须存在
+- Android sysroot 必须存在
+- `${EIPPF_ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++` 必须存在
+
+4. helper 精确编译命令必须冻结：
+- Linux user helper 只能等价于：
+  - `"${HOST_CLANGXX}" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp" -I"${REPO_ROOT}/core/include" -I"${REPO_ROOT}/core/runtime/include" -o "${OUT_ROOT}/runtime_libs/string_token_runtime.linux.user.o"`
+- Linux kernel helper 只能等价于：
+  - `"${HOST_CLANGXX}" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fvisibility=hidden -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp" -I"${REPO_ROOT}/core/include" -I"${REPO_ROOT}/core/runtime/include" -o "${OUT_ROOT}/runtime_libs/string_token_runtime.linux.ko.o"`
+- Android user helper 只能等价于：
+  - `"${ANDROID_TARGET_CLANGXX}" --target=aarch64-linux-android24 --sysroot="${ANDROID_SYSROOT}" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp" -I"${REPO_ROOT}/core/include" -I"${REPO_ROOT}/core/runtime/include" -o "${OUT_ROOT}/runtime_libs/string_token_runtime.android.user.o"`
+- Android kernel helper 只能等价于：
+  - `"${ANDROID_TARGET_CLANGXX}" --target=aarch64-linux-android24 --sysroot="${ANDROID_SYSROOT}" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fvisibility=hidden -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp" -I"${REPO_ROOT}/core/include" -I"${REPO_ROOT}/core/runtime/include" -o "${OUT_ROOT}/runtime_libs/string_token_runtime.android.ko.o"`
+
+5. helper 编译旗标必须冻结：
+- `linux_user_helper_compile_command` 必须包含 `-fPIC`
+- `linux_kernel_helper_compile_command` 必须包含：
+  - `-ffreestanding`
+  - `-fno-builtin`
+  - `-fno-stack-protector`
+  - `-fno-asynchronous-unwind-tables`
+- `android_user_helper_compile_command` 必须包含 `-fPIC`
+- `android_kernel_helper_compile_command` 必须包含：
+  - `-ffreestanding`
+  - `-fno-builtin`
+  - `-fno-stack-protector`
+  - `-fno-asynchronous-unwind-tables`
+
+6. 固定 report 键，必须全部产出且不得多写：
+- 报告固定落点：`sample_suite_inputs/toolchain_reports/linux_android.txt`
+- `platform`
+- `android_target_source`
+- `llvm_dir`
+- `android_ndk_root`
+- `host_compiler_path`
+- `host_compiler_version_first_line`
+- `android_target_compiler_path`
+- `android_target_compiler_version_first_line`
+- `plugin_path`
+- `linux_user_helper_o`
+- `linux_kernel_helper_o`
+- `android_user_helper_o`
+- `android_kernel_helper_o`
+- `plugin_build_command`
+- `linux_user_helper_compile_command`
+- `linux_kernel_helper_compile_command`
+- `android_user_helper_compile_command`
+- `android_kernel_helper_compile_command`
+- `linux_elf_link_inputs`
+- `linux_so_link_inputs`
+- `linux_ko_link_inputs`
+- `android_so_link_inputs`
+- `android_ko_link_inputs`
+- `linux_elf_link_command`
+- `linux_so_link_command`
+- `linux_ko_link_command`
+- `android_so_link_command`
+- `android_ko_link_command`
+- `android_ko_link_driver_path`
+- `android_ko_link_flags`
+
+7. 固定 sidecar 路径：
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.plugin_build.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.linux_user_helper_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.linux_kernel_helper_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.android_user_helper_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.android_kernel_helper_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.linux_elf_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.linux_so_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.linux_ko_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.android_so_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/linux_android.android_ko_link.txt`
+
+8. 精确绑定：
+- `linux_elf_link_inputs == linux_user_helper_o`
+- `linux_so_link_inputs == linux_user_helper_o`
+- `linux_ko_link_inputs == linux_kernel_helper_o`
+- `android_so_link_inputs == android_user_helper_o`
+- `android_ko_link_inputs == android_kernel_helper_o`
+
+9. Sidecar 内容要求：
+- ASCII
+- fully expanded argv
+- 禁止 `@rsp`
+- 禁止 `@response`
+- 禁止 `@<file>`
+- 禁止 `-Wl,@`
+- 禁止 `--script`
+- 禁止 `-Wl,-T,`
+- 禁止 `-Wl,-Tfoo`
+- 禁止 `-Wl,--script,`
+- 禁止 `-T <script>`
+- 禁止 `-T<script>`
+- 禁止 `-Xlinker -T`
+- 禁止 `-Xlinker -Tfoo`
+- 禁止 `-Xlinker=-T`
+- 禁止 `-Xlinker=-Tfoo`
+- `plugin_build_command` 必须包含真实 `LLVM_DIR`
+- `linux_*_helper_compile_command` 必须包含真实 host compiler path 与真实 helper 输出路径
+- `android_*_helper_compile_command` 必须包含真实 Android target compiler path 与真实 helper 输出路径
+- `linux_*_link_command` 必须包含真实 host compiler path 与真实 helper input
+- `android_so_link_command` 必须包含真实 `android_target_compiler_path`
+- `android_ko_link_command` 必须包含真实 `android_ko_link_driver_path`
+- 所有 `*_link_command` 的显式 object/archive/helper 输入集合必须只包含对应 `*_link_inputs`
+- 所有 `*_link_command` 禁止出现任何额外绝对路径、相对路径或 bare `.obj/.o/.a/.lib` 输入
+- `android_ko_link_command` 必须包含：
+  - `--target=aarch64-linux-android24`
+  - `-nostdlib`
+  - `-fuse-ld=lld`
+  - `-Wl,-r`
+- 所有 link command sidecar 禁止出现 `eippf_string_token_runtime.*`
+
+## Downstream Artifact Contract
+- 你产出的全部内容必须继续落在 `sample_suite_inputs` 根下。
+- report 固定是：
+  - `sample_suite_inputs/toolchain_reports/linux_android.txt`
+- sidecar 固定在：
+  - `sample_suite_inputs/toolchain_reports/commands/`
+- workflow 会把整个 `sample_suite_inputs` 作为 `sample-suite-linux-android` 上传。
+- evaluator 下载后固定期望：
+  - `sample_suite_downloaded/toolchain_reports/linux_android.txt`
+
+## Exact Linux/Android Validator The Workflow Will Run
+```python
+from pathlib import Path
+import os
+import re
+import shlex
+
+report = Path("sample_suite_inputs/toolchain_reports/linux_android.txt")
+if not report.is_file():
+    raise SystemExit(f"[FAIL] missing report: {report}")
+
+kv = {}
+for raw in report.read_text(encoding="ascii").splitlines():
+    parts = raw.split("=", 1)
+    if len(parts) != 2:
+        raise SystemExit(f"[FAIL] malformed report line: {raw}")
+    key, value = parts
+    if key in kv:
+        raise SystemExit(f"[FAIL] duplicate key: {key}")
+    kv[key] = value
+
+required = [
+    "platform", "android_target_source", "llvm_dir", "android_ndk_root",
+    "host_compiler_path", "host_compiler_version_first_line",
+    "android_target_compiler_path", "android_target_compiler_version_first_line",
+    "plugin_path", "linux_user_helper_o", "linux_kernel_helper_o",
+    "android_user_helper_o", "android_kernel_helper_o", "plugin_build_command",
+    "linux_user_helper_compile_command", "linux_kernel_helper_compile_command",
+    "android_user_helper_compile_command", "android_kernel_helper_compile_command",
+    "linux_elf_link_inputs", "linux_so_link_inputs", "linux_ko_link_inputs",
+    "android_so_link_inputs", "android_ko_link_inputs", "linux_elf_link_command",
+    "linux_so_link_command", "linux_ko_link_command", "android_so_link_command",
+    "android_ko_link_command", "android_ko_link_driver_path", "android_ko_link_flags",
+]
+for key in required:
+    if key not in kv:
+        raise SystemExit(f"[FAIL] missing key: {key}")
+if set(kv) != set(required):
+    raise SystemExit("[FAIL] key set mismatch")
+if kv["platform"] != "linux_android":
+    raise SystemExit("[FAIL] platform mismatch")
+if kv["android_target_source"] != "android_ndk":
+    raise SystemExit("[FAIL] android_target_source mismatch")
+
+for key, value in kv.items():
+    if key in {"platform", "android_target_source", "android_ko_link_flags"} or key.endswith("_version_first_line"):
+        continue
+    if not Path(value).is_absolute():
+        raise SystemExit(f"[FAIL] non-absolute path for {key}")
+    if not Path(value).exists():
+        raise SystemExit(f"[FAIL] missing path for {key}")
+
+if os.environ["EIPPF_HOST_LLVM_ROOT"] != "/usr/lib/llvm-18":
+    raise SystemExit("[FAIL] EIPPF_HOST_LLVM_ROOT mismatch")
+if os.environ["LLVM_DIR"] != "/usr/lib/llvm-18/lib/cmake/llvm":
+    raise SystemExit("[FAIL] LLVM_DIR mismatch")
+if os.environ["EIPPF_ANDROID_NDK_VERSION"] != "26.3.11579264":
+    raise SystemExit("[FAIL] EIPPF_ANDROID_NDK_VERSION mismatch")
+expected_ndk_root = Path(os.environ["ANDROID_SDK_ROOT"]).resolve() / "ndk" / os.environ["EIPPF_ANDROID_NDK_VERSION"]
+if Path(os.environ["EIPPF_ANDROID_NDK_ROOT"]).resolve() != expected_ndk_root:
+    raise SystemExit("[FAIL] EIPPF_ANDROID_NDK_ROOT mismatch")
+
+host_root = Path(os.environ["EIPPF_HOST_LLVM_ROOT"]).resolve()
+output_root = (Path.cwd() / "sample_suite_inputs").resolve()
+commands_root = (output_root / "toolchain_reports" / "commands").resolve()
+expected_llvm_dir = Path(os.environ["LLVM_DIR"]).resolve()
+ndk_root = Path(os.environ["EIPPF_ANDROID_NDK_ROOT"]).resolve()
+ndk_bin_root = ndk_root / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin"
+android_sysroot = ndk_root / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "sysroot"
+repo_root = Path.cwd().resolve()
+helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
+shared_include = repo_root / "core" / "include"
+runtime_include = repo_root / "core" / "runtime" / "include"
+if not expected_llvm_dir.joinpath("LLVMConfig.cmake").is_file():
+    raise SystemExit("[FAIL] LLVMConfig.cmake missing")
+if not android_sysroot.is_dir():
+    raise SystemExit("[FAIL] Android sysroot missing")
+
+def assert_under(path: Path, root: Path, label: str) -> None:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise SystemExit(f"[FAIL] {label} escaped allowed root") from exc
+
+def has_forbidden_linker_controls(text: str) -> bool:
+    tokens = shlex.split(text, posix=True)
+    for index, token in enumerate(tokens):
+        if token.startswith("@"):
+            return True
+        if token in {"-T", "--script"}:
+            return True
+        if token.startswith("-T") or token.startswith("--script="):
+            return True
+        if token.startswith("-Wl,@") or token == "-Wl,-T" or token.startswith("-Wl,-T") or token == "-Wl,--script" or token.startswith("-Wl,--script"):
+            return True
+        if token == "-Xlinker" and index + 1 < len(tokens):
+            nxt = tokens[index + 1]
+            if nxt in {"-T", "--script"} or nxt.startswith("-T") or nxt.startswith("--script="):
+                return True
+        if token.startswith("-Xlinker=-T") or token.startswith("-Xlinker=--script"):
+            return True
+    return False
+
+def explicit_object_archive_inputs(text: str) -> list[Path]:
+    inputs: list[Path] = []
+    for token in shlex.split(text, posix=True):
+        if re.search(r"\.(?:o|obj|a|lib)$", token):
+            path = Path(token)
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            else:
+                path = path.resolve()
+            inputs.append(path)
+    return inputs
+
+host_compiler = Path(kv["host_compiler_path"]).resolve()
+android_compiler = Path(kv["android_target_compiler_path"]).resolve()
+android_link_driver = Path(kv["android_ko_link_driver_path"]).resolve()
+assert_under(host_compiler, host_root / "bin", "host_compiler")
+if Path(kv["llvm_dir"]).resolve() != expected_llvm_dir:
+    raise SystemExit("[FAIL] llvm_dir provenance mismatch")
+if Path(kv["android_ndk_root"]).resolve() != ndk_root:
+    raise SystemExit("[FAIL] android_ndk_root mismatch")
+if "clang version 18" not in kv["host_compiler_version_first_line"]:
+    raise SystemExit("[FAIL] host compiler version mismatch")
+assert_under(android_compiler, ndk_bin_root, "android_target_compiler")
+assert_under(android_link_driver, ndk_bin_root, "android_ko_link_driver")
+if Path(kv["host_compiler_path"]).name not in {"clang++", "clang++-18"}:
+    raise SystemExit("[FAIL] host_compiler_path mismatch")
+if Path(kv["android_target_compiler_path"]).name != "aarch64-linux-android24-clang++":
+    raise SystemExit("[FAIL] android_target_compiler_path mismatch")
+if Path(kv["android_ko_link_driver_path"]).name != "aarch64-linux-android24-clang++":
+    raise SystemExit("[FAIL] android_ko_link_driver_path mismatch")
+if kv["android_ko_link_flags"] != "--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r":
+    raise SystemExit("[FAIL] android_ko_link_flags mismatch")
+assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
+if Path(kv["plugin_path"]).name != "eippf_protection_suite_pass.so":
+    raise SystemExit("[FAIL] plugin_path mismatch")
+assert_under(Path(kv["linux_user_helper_o"]), output_root, "linux_user_helper_o")
+if Path(kv["linux_user_helper_o"]).name != "string_token_runtime.linux.user.o":
+    raise SystemExit("[FAIL] linux_user_helper_o mismatch")
+assert_under(Path(kv["linux_kernel_helper_o"]), output_root, "linux_kernel_helper_o")
+if Path(kv["linux_kernel_helper_o"]).name != "string_token_runtime.linux.ko.o":
+    raise SystemExit("[FAIL] linux_kernel_helper_o mismatch")
+assert_under(Path(kv["android_user_helper_o"]), output_root, "android_user_helper_o")
+if Path(kv["android_user_helper_o"]).name != "string_token_runtime.android.user.o":
+    raise SystemExit("[FAIL] android_user_helper_o mismatch")
+assert_under(Path(kv["android_kernel_helper_o"]), output_root, "android_kernel_helper_o")
+if Path(kv["android_kernel_helper_o"]).name != "string_token_runtime.android.ko.o":
+    raise SystemExit("[FAIL] android_kernel_helper_o mismatch")
+
+def check_sidecar(key: str, compiler_path: Path, required_tokens: list[str]) -> None:
+    sidecar = Path(kv[key])
+    assert_under(sidecar, commands_root, key)
+    text = sidecar.read_text(encoding="ascii")
+    if has_forbidden_linker_controls(text):
+        raise SystemExit(f"[FAIL] sidecar is not fully expanded: {key}")
+    if str(compiler_path.resolve()) not in text:
+        raise SystemExit(f"[FAIL] sidecar missing compiler path: {key}")
+    for token in required_tokens:
+        if token not in text:
+            raise SystemExit(f"[FAIL] sidecar missing required token: {key}: {token}")
+
+check_sidecar("plugin_build_command", host_compiler, [str(expected_llvm_dir)])
+check_sidecar("linux_user_helper_compile_command", host_compiler, [str(helper_source), str(shared_include), str(runtime_include), "-std=c++20", "-fno-exceptions", "-fno-rtti", "-fPIC", str(Path(kv["linux_user_helper_o"]).resolve())])
+check_sidecar("linux_kernel_helper_compile_command", host_compiler, [str(helper_source), str(shared_include), str(runtime_include), "-std=c++20", "-fno-exceptions", "-fno-rtti", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", str(Path(kv["linux_kernel_helper_o"]).resolve())])
+check_sidecar("android_user_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-fPIC", str(Path(kv["android_user_helper_o"]).resolve())])
+check_sidecar("android_kernel_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", str(Path(kv["android_kernel_helper_o"]).resolve())])
+
+def check_single_input(key: str, expected_name: str, command_key: str, driver_path: Path) -> None:
+    entries = [item for item in kv[key].split(";") if item]
+    if len(entries) != 1:
+        raise SystemExit(f"[FAIL] unexpected link input count for {key}")
+    entry = Path(entries[0])
+    if not entry.is_absolute():
+        raise SystemExit(f"[FAIL] non-absolute link input for {key}")
+    if not entry.exists():
+        raise SystemExit(f"[FAIL] missing link input for {key}")
+    assert_under(entry, output_root, key)
+    if entry.name != expected_name:
+        raise SystemExit(f"[FAIL] link input mismatch for {key}")
+    if "eippf_string_token_runtime." in entry.name:
+        raise SystemExit(f"[FAIL] legacy runtime archive leaked into {key}")
+    command_path = Path(kv[command_key])
+    assert_under(command_path, commands_root, command_key)
+    command_text = command_path.read_text(encoding="ascii")
+    if has_forbidden_linker_controls(command_text):
+        raise SystemExit(f"[FAIL] link command is not fully expanded: {command_key}")
+    if str(driver_path.resolve()) not in command_text:
+        raise SystemExit(f"[FAIL] link command missing driver path: {command_key}")
+    if str(entry.resolve()) not in command_text:
+        raise SystemExit(f"[FAIL] link command missing helper input for {command_key}")
+    if "eippf_string_token_runtime." in command_text:
+        raise SystemExit(f"[FAIL] legacy runtime archive leaked into {command_key}")
+    explicit_inputs = explicit_object_archive_inputs(command_text)
+    if explicit_inputs.count(entry.resolve()) != 1:
+        raise SystemExit(f"[FAIL] explicit helper input set mismatch for {command_key}")
+    unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
+    if unexpected:
+        raise SystemExit(f"[FAIL] unexpected explicit object/archive input for {command_key}: {';'.join(unexpected)}")
+
+check_single_input("linux_elf_link_inputs", "string_token_runtime.linux.user.o", "linux_elf_link_command", host_compiler)
+check_single_input("linux_so_link_inputs", "string_token_runtime.linux.user.o", "linux_so_link_command", host_compiler)
+check_single_input("linux_ko_link_inputs", "string_token_runtime.linux.ko.o", "linux_ko_link_command", host_compiler)
+check_single_input("android_so_link_inputs", "string_token_runtime.android.user.o", "android_so_link_command", android_compiler)
+check_single_input("android_ko_link_inputs", "string_token_runtime.android.ko.o", "android_ko_link_command", android_link_driver)
+if Path(kv["linux_elf_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
+    raise SystemExit("[FAIL] linux_elf link/helper binding mismatch")
+if Path(kv["linux_so_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
+    raise SystemExit("[FAIL] linux_so link/helper binding mismatch")
+if Path(kv["linux_ko_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_kernel_helper_o"]).resolve():
+    raise SystemExit("[FAIL] linux_ko link/helper binding mismatch")
+if Path(kv["android_so_link_inputs"].split(";")[0]).resolve() != Path(kv["android_user_helper_o"]).resolve():
+    raise SystemExit("[FAIL] android_so link/helper binding mismatch")
+if Path(kv["android_ko_link_inputs"].split(";")[0]).resolve() != Path(kv["android_kernel_helper_o"]).resolve():
+    raise SystemExit("[FAIL] android_ko link/helper binding mismatch")
+android_ko_command = Path(kv["android_ko_link_command"]).read_text(encoding="ascii")
+for token in ["--target=aarch64-linux-android24", "-nostdlib", "-fuse-ld=lld", "-Wl,-r"]:
+    if token not in android_ko_command:
+        raise SystemExit(f"[FAIL] android_ko command missing token: {token}")
+```
+
+## Forbidden
+- 不允许 host clang 参与 Android 最终链接
+- 不允许 host `ld` 参与 `android_ko`
+- 不允许弱化 report key set 检查
+- 不允许让 sidecar 回到 response file 或 linker script 形式
+- 不允许恢复 host-built runtime archive/lib
+
+## Forbidden Rollbacks
+- 不允许恢复脚本内 LLVM 自动发现
+- 不允许恢复脚本内 NDK 版本猜测
+- 不允许恢复 host clang + `--target` 构建 `android_so`
+- 不允许恢复 host `ld -r` 构建 `android_ko`
+- 不允许把 `sample_suite_inputs` 改成别的根目录
+- 不允许让任一 `*_link_command` 再接受额外 object/archive/helper 输入
+
+## Done When
+- Linux/Android validator 所需全部键与 sidecar 都存在
+- 所有 `*_link_inputs` 与对应 helper 路径精确相等
+- artifact 契约保持：输出仍位于 `sample_suite_inputs`，供 workflow 上传为 `sample-suite-linux-android`

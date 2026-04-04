@@ -1,0 +1,262 @@
+# 2026-04-03 Track B Task Card
+
+## Owner
+- Engineer-B
+
+## Write Set
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## Do Not Edit
+- workflow
+- Linux/Android script
+- macOS/iOS script
+
+## Objective
+- 只把 Windows 样例链改成受控 LLVM root + helper objects + report/sidecar contract。
+- 你不需要设计方案。直接按本卡执行。
+
+## Exact Steps
+1. LLVM root:
+- 只接受：
+  - `EIPPF_VS_LLVM_DIR`
+  - 或 workflow fallback `LLVM_DIR`
+- 禁止：
+  - `llvm-config`
+  - `derived-from-clang-cl`
+  - 任意外部 `env:LLVM_DIR`
+
+2. 脚本启动前置校验，必须 fail-closed：
+- 最终采用的 `clang-cl` 必须存在
+- 最终采用的 `LLVM_DIR` 必须存在
+- `${LLVM_DIR}\\LLVMConfig.cmake` 必须存在
+- `core/include` 与 `core/runtime/include` 必须作为唯一 include roots 传入 helper 编译
+
+3. helper 精确编译命令必须冻结：
+- user helper 只能等价于：
+  - `"${ClangClPath}" /nologo /c /O2 /W4 /GR- /EHs-c- /Fo:"${OutputRoot}\runtime_libs\string_token_runtime.windows.user.obj" "${RepoRoot}\core\runtime\src\string_token_runtime.cpp" /I"${RepoRoot}\core\include" /I"${RepoRoot}\core\runtime\include"`
+- kernel helper 只能等价于：
+  - `"${ClangClPath}" /nologo /c /O2 /W4 /GS- /GR- /EHs-c- /Zl /Fo:"${OutputRoot}\runtime_libs\string_token_runtime.windows.sys.obj" "${RepoRoot}\core\runtime\src\string_token_runtime.cpp" /I"${RepoRoot}\core\include" /I"${RepoRoot}\core\runtime\include"`
+
+4. 产物：
+- 生成：
+  - `helper_user_o`
+  - `helper_kernel_o`
+  - `sample_windows.exe`
+  - `sample_windows.dll`
+  - `sample_windows.sys`
+
+5. 固定 report 键，必须全部产出且不得多写：
+- 报告固定落点：`sample_suite_inputs/toolchain_reports/windows.txt`
+- `platform`
+- `llvm_source`
+- `compiler_path`
+- `compiler_version_first_line`
+- `llvm_dir`
+- `plugin_path`
+- `helper_user_o`
+- `helper_kernel_o`
+- `plugin_build_command`
+- `helper_user_compile_command`
+- `helper_kernel_compile_command`
+- `windows_exe_link_inputs`
+- `windows_dll_link_inputs`
+- `windows_sys_link_inputs`
+- `windows_exe_link_command`
+- `windows_dll_link_command`
+- `windows_sys_link_command`
+
+6. 固定 sidecar 路径：
+- `sample_suite_inputs/toolchain_reports/commands/windows.plugin_build.txt`
+- `sample_suite_inputs/toolchain_reports/commands/windows.helper_user_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/windows.helper_kernel_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/windows.exe_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/windows.dll_link.txt`
+- `sample_suite_inputs/toolchain_reports/commands/windows.sys_link.txt`
+
+7. 精确绑定：
+- `windows_exe_link_inputs == helper_user_o`
+- `windows_dll_link_inputs == helper_user_o`
+- `windows_sys_link_inputs == helper_kernel_o`
+
+8. Sidecar 内容要求：
+- ASCII
+- fully expanded argv
+- 禁止 `@rsp`
+- 禁止 `@response`
+- 禁止 `@<file>`
+- 禁止 `-Wl,@`
+- 禁止 `--script`
+- 禁止 `-Wl,-T,`
+- 禁止 `-Wl,-Tfoo`
+- 禁止 `-Wl,--script,`
+- 禁止 `-T <script>`
+- 禁止 `-T<script>`
+- 禁止 `-Xlinker -T`
+- 禁止 `-Xlinker -Tfoo`
+- 禁止 `-Xlinker=-T`
+- 禁止 `-Xlinker=-Tfoo`
+- `plugin_build_command` 必须包含真实 `LLVM_DIR` 和真实 compiler path
+- `helper_*_compile_command` 必须包含真实 compiler path 和真实 helper 输出路径
+- `windows_*_link_command` 必须包含真实 helper input 路径
+- `windows_*_link_command` 的显式 object/archive/helper 输入集合必须只包含该条 `windows_*_link_inputs`
+- `windows_*_link_command` 禁止出现任何额外绝对路径、相对路径或 bare `.obj/.o/.a/.lib` 输入
+- `windows_*_link_command` 禁止出现 `eippf_string_token_runtime.*`
+
+## Downstream Artifact Contract
+- 你产出的全部内容必须继续落在 `sample_suite_inputs` 根下。
+- report 固定是：
+  - `sample_suite_inputs/toolchain_reports/windows.txt`
+- sidecar 固定在：
+  - `sample_suite_inputs/toolchain_reports/commands/`
+- workflow 会把整个 `sample_suite_inputs` 作为 `sample-suite-windows` 上传。
+- evaluator 下载后固定期望：
+  - `sample_suite_downloaded/toolchain_reports/windows.txt`
+
+## Exact Windows Validator The Workflow Will Run
+```powershell
+$report = "sample_suite_inputs/toolchain_reports/windows.txt"
+if (!(Test-Path $report)) { throw "[FAIL] missing report: $report" }
+$bytes = [System.IO.File]::ReadAllBytes($report)
+if ($bytes | Where-Object { $_ -gt 127 }) { throw "[FAIL] report is not ASCII" }
+$kv = @{}
+[System.Text.Encoding]::ASCII.GetString($bytes) -split "`r?`n" | Where-Object { $_ -ne "" } | ForEach-Object {
+  $parts = $_ -split '=', 2
+  if ($parts.Count -ne 2) { throw "[FAIL] malformed report line: $_" }
+  if ($kv.ContainsKey($parts[0])) { throw "[FAIL] duplicate key: $($parts[0])" }
+  $kv[$parts[0]] = $parts[1]
+}
+$required = @("platform","llvm_source","compiler_path","compiler_version_first_line","llvm_dir","plugin_path","helper_user_o","helper_kernel_o","plugin_build_command","helper_user_compile_command","helper_kernel_compile_command","windows_exe_link_inputs","windows_dll_link_inputs","windows_sys_link_inputs","windows_exe_link_command","windows_dll_link_command","windows_sys_link_command")
+foreach ($key in $required) { if (-not $kv.ContainsKey($key)) { throw "[FAIL] missing key: $key" } }
+if (($kv.Keys | Sort-Object) -join ';' -ne ($required | Sort-Object) -join ';') { throw "[FAIL] key set mismatch" }
+if ($kv["platform"] -ne "windows") { throw "[FAIL] platform mismatch" }
+if ($kv["llvm_source"] -notin @("vs_bundled","choco_fallback")) { throw "[FAIL] llvm_source mismatch" }
+foreach ($key in @("compiler_path","llvm_dir","plugin_path","helper_user_o","helper_kernel_o","plugin_build_command","helper_user_compile_command","helper_kernel_compile_command","windows_exe_link_command","windows_dll_link_command","windows_sys_link_command")) {
+  if (-not [System.IO.Path]::IsPathRooted($kv[$key])) { throw "[FAIL] non-absolute path for $key" }
+  if (!(Test-Path $kv[$key])) { throw "[FAIL] missing path for $key" }
+}
+$allowedRoot = Resolve-Path $env:EIPPF_ALLOWED_LLVM_ROOT
+$outputRoot = Resolve-Path (Join-Path $PWD "sample_suite_inputs")
+$commandsRoot = Resolve-Path (Join-Path $PWD "sample_suite_inputs\\toolchain_reports\\commands")
+function Test-UnderRoot([string]$Child, [string]$Root) {
+  $childFull = [System.IO.Path]::GetFullPath($Child)
+  $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\\')
+  return $childFull.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or $childFull.StartsWith($rootFull + '\\', [System.StringComparison]::OrdinalIgnoreCase)
+}
+function Get-CommandTokens([string]$Text) {
+  $tokens = New-Object System.Collections.Generic.List[string]
+  foreach ($match in [regex]::Matches($Text, '"[^"]*"|\S+')) {
+    $token = $match.Value.Trim('"')
+    if ($token) { $tokens.Add($token) }
+  }
+  return @($tokens)
+}
+function Test-ForbiddenLinkerControls([string]$Text) {
+  $tokens = @(Get-CommandTokens $Text)
+  for ($i = 0; $i -lt $tokens.Count; $i++) {
+    $token = $tokens[$i]
+    if ($token.StartsWith("@")) { return $true }
+    if ($token -eq "-T" -or $token -eq "--script") { return $true }
+    if ($token -match '^\-T.+' -or $token -match '^\-\-script(?:=|,).+') { return $true }
+    if ($token -match '^\-Wl,@' -or $token -match '^\-Wl,\-T(?:,|=)?.+' -or $token -eq "-Wl,-T" -or $token -match '^\-Wl,\-\-script(?:,|=)?.+' -or $token -eq "-Wl,--script") { return $true }
+    if ($token -eq "-Xlinker" -and $i + 1 -lt $tokens.Count) {
+      $next = $tokens[$i + 1]
+      if ($next -eq "-T" -or $next -eq "--script" -or $next -match '^\-T.+' -or $next -match '^\-\-script(?:=|,)?.+') { return $true }
+    }
+    if ($token -match '^\-Xlinker=(\-T.*|\-\-script(?:=|,)?.*)$') { return $true }
+  }
+  return $false
+}
+function Get-ExplicitObjectArchiveInputs([string]$Text) {
+  $values = New-Object System.Collections.Generic.List[string]
+  foreach ($token in (Get-CommandTokens $Text)) {
+    if ($token -match '\.(obj|o|a|lib)$') {
+      if ([System.IO.Path]::IsPathRooted($token)) {
+        $values.Add([System.IO.Path]::GetFullPath($token))
+      } else {
+        $values.Add([System.IO.Path]::GetFullPath((Join-Path $PWD $token)))
+      }
+    }
+  }
+  return @($values | Sort-Object -Unique)
+}
+$compilerPath = (Resolve-Path $kv["compiler_path"]).Path
+$llvmDir = (Resolve-Path $kv["llvm_dir"]).Path
+$repoRoot = (Resolve-Path $PWD).Path
+$helperSource = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\runtime\\src\\string_token_runtime.cpp"))
+$sharedInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\include"))
+$runtimeInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\runtime\\include"))
+$expectedCompilerRoot = Join-Path $allowedRoot.Path "bin"
+$expectedLlvmDir = (Resolve-Path $env:EIPPF_ALLOWED_LLVM_DIR).Path
+if (-not (Test-UnderRoot $compilerPath $expectedCompilerRoot)) { throw "[FAIL] compiler provenance mismatch" }
+if (-not ([System.IO.Path]::GetFullPath($llvmDir).Equals($expectedLlvmDir, [System.StringComparison]::OrdinalIgnoreCase))) { throw "[FAIL] llvm_dir provenance mismatch" }
+foreach ($key in @("plugin_path","helper_user_o","helper_kernel_o")) {
+  $resolved = (Resolve-Path $kv[$key]).Path
+  if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] output path escaped sample_suite_inputs for $key" }
+}
+foreach ($key in @("plugin_build_command","helper_user_compile_command","helper_kernel_compile_command")) {
+  $resolved = (Resolve-Path $kv[$key]).Path
+  if (-not (Test-UnderRoot $resolved $commandsRoot.Path)) { throw "[FAIL] command sidecar escaped commands dir for $key" }
+}
+if (-not ($compilerPath.ToLower().EndsWith("clang-cl.exe") -or $compilerPath.ToLower().EndsWith("clang-cl"))) { throw "[FAIL] compiler_path mismatch" }
+if (!(Test-Path (Join-Path $llvmDir "LLVMConfig.cmake"))) { throw "[FAIL] llvm_dir missing LLVMConfig.cmake" }
+if (-not $kv["plugin_path"].EndsWith("eippf_protection_suite_pass.dll")) { throw "[FAIL] plugin_path mismatch" }
+if (-not $kv["helper_user_o"].EndsWith("string_token_runtime.windows.user.obj")) { throw "[FAIL] helper_user_o mismatch" }
+if (-not $kv["helper_kernel_o"].EndsWith("string_token_runtime.windows.sys.obj")) { throw "[FAIL] helper_kernel_o mismatch" }
+foreach ($pair in @(@("plugin_build_command",$kv["plugin_path"]), @("helper_user_compile_command",$kv["helper_user_o"]), @("helper_kernel_compile_command",$kv["helper_kernel_o"]))) {
+  $text = Get-Content $kv[$pair[0]] -Raw
+  if (Test-ForbiddenLinkerControls $text) { throw "[FAIL] sidecar is not fully expanded: $($pair[0])" }
+  if ($text -notmatch [regex]::Escape($compilerPath)) { throw "[FAIL] sidecar missing compiler path: $($pair[0])" }
+  if ($text -notmatch [regex]::Escape($pair[1])) { throw "[FAIL] sidecar missing output/input path: $($pair[0])" }
+  if ($pair[0] -ne "plugin_build_command") {
+    if ($text -notmatch [regex]::Escape($helperSource)) { throw "[FAIL] helper compile missing source path: $($pair[0])" }
+    if ($text -notmatch [regex]::Escape($sharedInclude) -or $text -notmatch [regex]::Escape($runtimeInclude)) { throw "[FAIL] helper compile missing include roots: $($pair[0])" }
+    if ($text -notmatch '/GR-' -or $text -notmatch '/EHs-c-') { throw "[FAIL] helper compile missing no-rtti/no-exception flags: $($pair[0])" }
+    if ($pair[0] -eq "helper_user_compile_command" -and $text -match '/GS-') { throw "[FAIL] user helper unexpectedly disabled GS" }
+    if ($pair[0] -eq "helper_kernel_compile_command" -and ($text -notmatch '/GS-' -or $text -notmatch '/Zl')) { throw "[FAIL] kernel helper missing kernel-safe flags" }
+  }
+  if ($pair[0] -eq "plugin_build_command" -and $text -notmatch [regex]::Escape($expectedLlvmDir)) { throw "[FAIL] plugin_build_command missing LLVM_DIR" }
+}
+foreach ($quad in @(@("windows_exe_link_inputs","windows_exe_link_command","string_token_runtime.windows.user.obj",$kv["helper_user_o"]), @("windows_dll_link_inputs","windows_dll_link_command","string_token_runtime.windows.user.obj",$kv["helper_user_o"]), @("windows_sys_link_inputs","windows_sys_link_command","string_token_runtime.windows.sys.obj",$kv["helper_kernel_o"]))) {
+  $entries = @($kv[$quad[0]].Split(';') | Where-Object { $_ -ne "" })
+  if ($entries.Count -ne 1) { throw "[FAIL] unexpected link input count for $($quad[0])" }
+  if (-not [System.IO.Path]::IsPathRooted($entries[0])) { throw "[FAIL] non-absolute link input for $($quad[0])" }
+  if (!(Test-Path $entries[0])) { throw "[FAIL] missing link input for $($quad[0])" }
+  $resolved = (Resolve-Path $entries[0]).Path
+  if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] link input escaped sample_suite_inputs for $($quad[0])" }
+  if (-not $entries[0].EndsWith($quad[2])) { throw "[FAIL] link input mismatch for $($quad[0])" }
+  if (-not ([System.IO.Path]::GetFullPath($resolved).Equals([System.IO.Path]::GetFullPath((Resolve-Path $quad[3]).Path), [System.StringComparison]::OrdinalIgnoreCase))) { throw "[FAIL] link/helper binding mismatch for $($quad[0])" }
+  if ($entries[0] -match 'eippf_string_token_runtime\.(lib|a)$') { throw "[FAIL] legacy runtime archive leaked into $($quad[0])" }
+  $commandPath = (Resolve-Path $kv[$quad[1]]).Path
+  if (-not (Test-UnderRoot $commandPath $commandsRoot.Path)) { throw "[FAIL] link command escaped commands dir for $($quad[1])" }
+  $commandText = Get-Content $commandPath -Raw
+  if (Test-ForbiddenLinkerControls $commandText) { throw "[FAIL] sidecar is not fully expanded: $($quad[1])" }
+  if ($commandText -notmatch [regex]::Escape($resolved)) { throw "[FAIL] link command missing helper input for $($quad[1])" }
+  if ($commandText -match 'eippf_string_token_runtime\.(lib|a)') { throw "[FAIL] legacy runtime archive leaked into $($quad[1])" }
+  $explicitInputs = @(Get-ExplicitObjectArchiveInputs $commandText)
+  $expectedInput = [System.IO.Path]::GetFullPath($resolved)
+  $unexpected = @($explicitInputs | Where-Object { -not ([System.IO.Path]::GetFullPath($_).Equals($expectedInput, [System.StringComparison]::OrdinalIgnoreCase)) })
+  if ($unexpected.Count -ne 0) { throw "[FAIL] unexpected explicit object/archive input for $($quad[1])" }
+  $expectedMentions = @($explicitInputs | Where-Object { [System.IO.Path]::GetFullPath($_).Equals($expectedInput, [System.StringComparison]::OrdinalIgnoreCase) }).Count
+  if ($expectedMentions -ne 1) { throw "[FAIL] explicit helper input set mismatch for $($quad[1])" }
+}
+```
+
+## Forbidden
+- 不允许复用 `eippf_string_token_runtime.lib` 作为最终样例额外输入
+- 不允许保留任何 LLVM 自动发现逻辑
+- 不允许弱化 report key set 检查
+- 不允许让 sidecar 回到 response file 或 linker script 形式
+- 不允许恢复 host-built runtime archive/lib
+
+## Forbidden Rollbacks
+- 不允许恢复 `llvm-config`
+- 不允许恢复 `derived-from-clang-cl`
+- 不允许接受任意外部 `env:LLVM_DIR`
+- 不允许让 `windows_*_link_inputs` 回到 archive/lib
+- 不允许把 `sample_suite_inputs` 改成别的根目录
+- 不允许让 `windows_*_link_command` 再接受额外 object/archive/helper 输入
+
+## Done When
+- Windows validator 所需全部键与 sidecar 都存在
+- `windows_*_link_inputs` 与 helper 路径精确相等
+- artifact 契约保持：输出仍位于 `sample_suite_inputs`，供 workflow 上传为 `sample-suite-windows`

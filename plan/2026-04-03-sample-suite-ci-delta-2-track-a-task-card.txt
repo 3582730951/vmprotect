@@ -1,0 +1,100 @@
+# 2026-04-03 Track A Task Card
+
+## Owner
+- Engineer-A
+
+## Write Set
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## Do Not Edit
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## Objective
+- 只把 workflow 改成 canonical env preflight + artifact contract + validator contract 的唯一执行位置。
+- 你不需要设计方案。直接按本卡执行。
+
+## Artifact Upload/Download Contract
+- `build-windows` 固定上传：
+  - `name=sample-suite-windows`
+  - `path=sample_suite_inputs`
+- `build-linux-android` 固定上传：
+  - `name=sample-suite-linux-android`
+  - `path=sample_suite_inputs`
+- `build-macos-ios` 固定上传：
+  - `name=sample-suite-macos-ios`
+  - `path=sample_suite_inputs`
+- `protect-and-evaluate` 固定下载到：
+  - `sample_suite_downloaded`
+- 下载后必须显式校验存在：
+  - `sample_suite_downloaded/toolchain_reports/windows.txt`
+  - `sample_suite_downloaded/toolchain_reports/linux_android.txt`
+  - `sample_suite_downloaded/toolchain_reports/macos_ios.txt`
+- `protect-and-evaluate` 固定继续上传：
+  - `name=sample-suite-evidence`
+  - `path=sample_suite_evidence`
+  - evidence tree 必须保持 `sample_suite_evidence/` 下的既有布局不变
+
+## Exact Steps
+1. Windows preflight
+- 若 `${VCINSTALLDIR}\Tools\Llvm\x64\lib\cmake\llvm\LLVMConfig.cmake` 存在，导出：
+  - `EIPPF_VS_LLVM_DIR`
+  - `EIPPF_ALLOWED_LLVM_DIR`
+  - `EIPPF_ALLOWED_LLVM_ROOT`
+- 只有 bundled LLVM 缺失时，才允许 fallback 到 `C:\Program Files\LLVM\lib\cmake\llvm`，并导出：
+  - `LLVM_DIR`
+  - `EIPPF_ALLOWED_LLVM_DIR`
+  - `EIPPF_ALLOWED_LLVM_ROOT`
+
+2. Linux/Android preflight
+- 导出：
+  - `EIPPF_HOST_LLVM_ROOT=/usr/lib/llvm-18`
+  - `LLVM_DIR=/usr/lib/llvm-18/lib/cmake/llvm`
+  - `EIPPF_ANDROID_NDK_VERSION=26.3.11579264`
+  - `EIPPF_ANDROID_NDK_ROOT=${ANDROID_SDK_ROOT}/ndk/${EIPPF_ANDROID_NDK_VERSION}`
+
+3. macOS preflight
+- 导出：
+  - `EIPPF_ALLOWED_LLVM_ROOT=<canonical brew --prefix llvm@18>`
+  - `LLVM_DIR=<canonical brew --prefix llvm@18>/lib/cmake/llvm`
+  - `EIPPF_CLANG=<canonical brew --prefix llvm@18>/bin/clang`
+  - `EIPPF_CLANGXX=<canonical brew --prefix llvm@18>/bin/clang++`
+
+4. Build jobs
+- Windows 只调用 `build_windows.ps1`
+- Linux/Android 只调用 `build_linux_android.sh`
+- macOS/iOS 只调用 `build_macos_ios.sh`
+- 不允许把平台脚本逻辑复制进 workflow
+
+5. Validator steps
+- workflow 内必须保留 3 段完整 validator。
+- 唯一 canonical validator 来源固定为：
+  - Windows：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-b-task-card.txt`
+    - section：`Exact Windows Validator The Workflow Will Run`
+  - Linux/Android：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-c-task-card.txt`
+    - section：`Exact Linux/Android Validator The Workflow Will Run`
+  - macOS/iOS：`/workspace/plan/2026-04-03-sample-suite-ci-delta-2-track-d-task-card.txt`
+    - section：`Exact macOS/iOS Validator The Workflow Will Run`
+- 你要做的是：
+  - 把上面 3 段 canonical validator 原文逐字复制进 workflow 对应 job
+  - 不得删字
+  - 不得改变量名
+  - 不得把校验改成 `echo`
+  - 不得自己再维护另一套 validator 变体
+- `protect-and-evaluate` job 还必须保留 3 条存在性校验：
+  - `test -f sample_suite_downloaded/toolchain_reports/windows.txt`
+  - `test -f sample_suite_downloaded/toolchain_reports/linux_android.txt`
+  - `test -f sample_suite_downloaded/toolchain_reports/macos_ios.txt`
+
+## Forbidden Rollbacks
+- 不允许把 validator 真相源改回“主计划全文内嵌”
+- 不允许让 Track A 自己维护独立 validator 变体
+- 不允许把 `sample_suite_inputs` 改成别的根目录
+- 不允许删掉 `sample-suite-evidence` 上传
+- 不允许删掉 `protect-and-evaluate` 的三份 report 存在性校验
+
+## Done When
+- workflow preflight 只负责受控环境导出，不复制平台脚本构建逻辑
+- workflow 使用的 3 段 validator 与 Track B/C/D task card 中的 canonical 文本逐字一致
+- artifact 契约保持：三个 build job 继续上传 `sample_suite_inputs`，evaluator 继续下载到 `sample_suite_downloaded` 并上传 `sample-suite-evidence`

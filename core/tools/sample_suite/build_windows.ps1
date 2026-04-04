@@ -9,28 +9,132 @@ $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $ScriptRoot "..\..\..")).Path
 $SourceRoot = Join-Path $RepoRoot "core\tests\sample_suite\sources\windows"
 $WrapperPath = Join-Path $RepoRoot "core\wrapper\eippf_cc.py"
+$CoreRoot = Join-Path $RepoRoot "core"
+$SharedIncludeRoot = Join-Path $CoreRoot "include"
+$RuntimeIncludeRoot = Join-Path $CoreRoot "runtime\include"
+$HelperSource = Join-Path $CoreRoot "runtime\src\string_token_runtime.cpp"
 
-if (-not (Test-Path $WrapperPath)) {
+function Resolve-RequiredPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$InputPath,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($InputPath)) {
+        throw "[FAIL] missing required path for $Label"
+    }
+    $Trimmed = $InputPath.Trim().Trim('"')
+    if (-not (Test-Path -LiteralPath $Trimmed)) {
+        throw "[FAIL] missing required path for $Label: $Trimmed"
+    }
+    return (Resolve-Path -LiteralPath $Trimmed).Path
+}
+
+function Format-CommandToken {
+    param([Parameter(Mandatory = $true)][string]$Token)
+
+    if ($Token -match '[\s"]') {
+        return '"' + ($Token.Replace('"', '\"')) + '"'
+    }
+    return $Token
+}
+
+function Format-CommandLine {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    $tokens = @($Executable) + $Arguments
+    return (($tokens | ForEach-Object { Format-CommandToken -Token $_ }) -join " ")
+}
+
+function Write-AsciiTextFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
+}
+
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Executable,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$FailureLabel
+    )
+
+    & $Executable @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "[FAIL] $FailureLabel failed with code $LASTEXITCODE"
+    }
+}
+
+function Invoke-WrappedCompileAndLink {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$CompileArgs,
+        [Parameter(Mandatory = $true)][string]$SidecarPath,
+        [Parameter(Mandatory = $true)][string]$FailureLabel
+    )
+
+    $wrapperArgs = @()
+    if ($script:PythonPrefix.Count -gt 0) {
+        $wrapperArgs += $script:PythonPrefix
+    }
+    $wrapperArgs += @($script:WrapperPath, "--pass-plugin", $script:PassPluginPath, "--compiler", $script:ClangClPath, "--")
+    $wrapperArgs += $CompileArgs
+
+    Write-AsciiTextFile -Path $SidecarPath -Content (Format-CommandLine -Executable $script:PythonExe -Arguments $wrapperArgs)
+    $env:EIPPF_CLANG_CL = $script:ClangClPath
+    Invoke-NativeCommand -Executable $script:PythonExe -Arguments $wrapperArgs -FailureLabel $FailureLabel
+}
+
+if (-not (Test-Path -LiteralPath $WrapperPath)) {
     throw "[FAIL] wrapper script is missing: $WrapperPath"
 }
 
-$ClangCl = Get-Command "clang-cl" -ErrorAction SilentlyContinue
-if ($null -eq $ClangCl) {
-    throw "[FAIL] clang-cl is required; refusing fallback to cl.exe"
+$RawVsLlvmDir = $env:EIPPF_VS_LLVM_DIR
+$RawFallbackLlvmDir = $env:LLVM_DIR
+$LLVMSource = ""
+$SelectedLlvmCandidate = ""
+if (-not [string]::IsNullOrWhiteSpace($RawVsLlvmDir)) {
+    $LLVMSource = "vs_bundled"
+    $SelectedLlvmCandidate = $RawVsLlvmDir
+} elseif (-not [string]::IsNullOrWhiteSpace($RawFallbackLlvmDir)) {
+    $LLVMSource = "choco_fallback"
+    $SelectedLlvmCandidate = $RawFallbackLlvmDir
+} else {
+    throw "[FAIL] LLVM_DIR source missing: expected EIPPF_VS_LLVM_DIR or LLVM_DIR"
 }
-$ClangClPath = $ClangCl.Source
+$LLVMDir = Resolve-RequiredPath -InputPath $SelectedLlvmCandidate -Label "LLVM_DIR"
+$LLVMConfigPath = Join-Path $LLVMDir "LLVMConfig.cmake"
+if (-not (Test-Path -LiteralPath $LLVMConfigPath)) {
+    throw "[FAIL] LLVM_DIR does not contain LLVMConfig.cmake: $LLVMDir"
+}
+$AllowedLlvmRoot = Resolve-RequiredPath -InputPath $env:EIPPF_ALLOWED_LLVM_ROOT -Label "EIPPF_ALLOWED_LLVM_ROOT"
+$ClangClPath = Resolve-RequiredPath -InputPath (Join-Path $AllowedLlvmRoot "bin\clang-cl.exe") -Label "clang-cl"
+
+$SharedIncludeRoot = Resolve-RequiredPath -InputPath $SharedIncludeRoot -Label "core/include"
+$RuntimeIncludeRoot = Resolve-RequiredPath -InputPath $RuntimeIncludeRoot -Label "core/runtime/include"
+$HelperSource = Resolve-RequiredPath -InputPath $HelperSource -Label "string_token_runtime.cpp"
+
+$HelperIncludeArgs = @("/I$SharedIncludeRoot", "/I$RuntimeIncludeRoot")
+if ($HelperIncludeArgs.Count -ne 2 -or ($HelperIncludeArgs | Select-Object -Unique).Count -ne 2) {
+    throw "[FAIL] helper include roots must be exactly core/include and core/runtime/include"
+}
 
 $Python = Get-Command "python" -ErrorAction SilentlyContinue
 $PythonExe = ""
 $PythonPrefix = @()
 if ($null -ne $Python) {
-    $PythonExe = $Python.Source
+    $PythonExe = Resolve-RequiredPath -InputPath $Python.Source -Label "python"
 } else {
     $PyLauncher = Get-Command "py" -ErrorAction SilentlyContinue
     if ($null -eq $PyLauncher) {
         throw "[FAIL] python interpreter is required"
     }
-    $PythonExe = $PyLauncher.Source
+    $PythonExe = Resolve-RequiredPath -InputPath $PyLauncher.Source -Label "py launcher"
     $PythonPrefix = @("-3")
 }
 
@@ -38,44 +142,18 @@ $CMake = Get-Command "cmake" -ErrorAction SilentlyContinue
 if ($null -eq $CMake) {
     throw "[FAIL] cmake is required"
 }
+$CMakePath = Resolve-RequiredPath -InputPath $CMake.Source -Label "cmake"
 
-function Resolve-LLVMDirCandidate {
-    param(
-        [Parameter(Mandatory = $false)][string]$Candidate,
-        [Parameter(Mandatory = $true)][string]$SourceLabel
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Candidate)) {
-        $script:LLVMResolutionAttempts += "${SourceLabel}: empty"
-        return $null
-    }
-
-    $Normalized = $Candidate.Trim().Trim('"')
-    try {
-        $Resolved = (Resolve-Path -LiteralPath $Normalized -ErrorAction Stop).Path
-    } catch {
-        $script:LLVMResolutionAttempts += "${SourceLabel}: '$Normalized' not found"
-        return $null
-    }
-
-    $LLVMConfigPath = Join-Path $Resolved "LLVMConfig.cmake"
-    if (-not (Test-Path -LiteralPath $LLVMConfigPath)) {
-        $script:LLVMResolutionAttempts += "${SourceLabel}: '$Resolved' missing LLVMConfig.cmake"
-        return $null
-    }
-
-    $script:LLVMResolutionAttempts += "${SourceLabel}: '$Resolved' accepted"
-    return $Resolved
-}
-
+New-Item -ItemType Directory -Force -Path $OutputRoot | Out-Null
+$OutputRoot = (Resolve-Path -LiteralPath $OutputRoot).Path
 $WindowsExeDir = Join-Path $OutputRoot "windows_exe"
 $WindowsDllDir = Join-Path $OutputRoot "windows_dll"
 $WindowsSysDir = Join-Path $OutputRoot "windows_sys"
 $PassPluginDir = Join-Path $OutputRoot "pass_plugins"
 $RuntimeLibDir = Join-Path $OutputRoot "runtime_libs"
 $PassBuildDir = Join-Path $OutputRoot "_pass_plugin_build_windows"
-$PassPluginPath = Join-Path $PassPluginDir "eippf_protection_suite_pass.dll"
-$RuntimeLibPath = Join-Path $RuntimeLibDir "eippf_string_token_runtime.lib"
+$ReportDir = Join-Path $OutputRoot "toolchain_reports"
+$CommandsDir = Join-Path $ReportDir "commands"
 
 New-Item -ItemType Directory -Force -Path $WindowsExeDir | Out-Null
 New-Item -ItemType Directory -Force -Path $WindowsDllDir | Out-Null
@@ -83,67 +161,38 @@ New-Item -ItemType Directory -Force -Path $WindowsSysDir | Out-Null
 New-Item -ItemType Directory -Force -Path $PassPluginDir | Out-Null
 New-Item -ItemType Directory -Force -Path $RuntimeLibDir | Out-Null
 New-Item -ItemType Directory -Force -Path $PassBuildDir | Out-Null
+New-Item -ItemType Directory -Force -Path $CommandsDir | Out-Null
 
-$ExeSource = Join-Path $SourceRoot "windows_exe_main.c"
-$DllSource = Join-Path $SourceRoot "windows_dll.c"
-$SysSource = Join-Path $SourceRoot "windows_sys_driver.c"
+$PassPluginPath = Join-Path $PassPluginDir "eippf_protection_suite_pass.dll"
+$HelperUserObj = Join-Path $RuntimeLibDir "string_token_runtime.windows.user.obj"
+$HelperKernelObj = Join-Path $RuntimeLibDir "string_token_runtime.windows.sys.obj"
+
+$ExeSource = Resolve-RequiredPath -InputPath (Join-Path $SourceRoot "windows_exe_main.c") -Label "windows_exe_main.c"
+$DllSource = Resolve-RequiredPath -InputPath (Join-Path $SourceRoot "windows_dll.c") -Label "windows_dll.c"
+$SysSource = Resolve-RequiredPath -InputPath (Join-Path $SourceRoot "windows_sys_driver.c") -Label "windows_sys_driver.c"
 
 $ExeOut = Join-Path $WindowsExeDir "sample_windows.exe"
 $DllOut = Join-Path $WindowsDllDir "sample_windows.dll"
-$SysObj = Join-Path $WindowsSysDir "sample_windows_sys.obj"
 $SysOut = Join-Path $WindowsSysDir "sample_windows.sys"
 
-$script:LLVMResolutionAttempts = @()
-$LLVMDir = Resolve-LLVMDirCandidate -Candidate $env:LLVM_DIR -SourceLabel "env:LLVM_DIR"
-
-if ([string]::IsNullOrWhiteSpace($LLVMDir)) {
-    $LLVMConfig = Get-Command "llvm-config.exe" -ErrorAction SilentlyContinue
-    if ($null -eq $LLVMConfig) {
-        $LLVMConfig = Get-Command "llvm-config" -ErrorAction SilentlyContinue
-    }
-    if ($null -ne $LLVMConfig) {
-        $LLVMDirCandidate = (& $LLVMConfig.Source --cmakedir 2>$null | Select-Object -First 1)
-        if ($LASTEXITCODE -eq 0) {
-            $LLVMDir = Resolve-LLVMDirCandidate -Candidate "$LLVMDirCandidate" -SourceLabel "llvm-config --cmakedir"
-        } else {
-            $script:LLVMResolutionAttempts += "llvm-config --cmakedir: failed with code $LASTEXITCODE"
-        }
-    } else {
-        $script:LLVMResolutionAttempts += "llvm-config --cmakedir: llvm-config not found"
-    }
-}
-
-if ([string]::IsNullOrWhiteSpace($LLVMDir)) {
-    $ClangBinDir = Split-Path -Parent $ClangClPath
-    $DerivedLLVMDir = Join-Path (Split-Path -Parent $ClangBinDir) "lib\cmake\llvm"
-    $LLVMDir = Resolve-LLVMDirCandidate -Candidate $DerivedLLVMDir -SourceLabel "derived-from-clang-cl"
-}
-
-if ([string]::IsNullOrWhiteSpace($LLVMDir)) {
-    Write-Host "[FAIL] Unable to resolve a valid LLVM CMake directory."
-    Write-Host "[INFO] LLVM resolution attempts:"
-    foreach ($Attempt in $script:LLVMResolutionAttempts) {
-        Write-Host "[INFO]   $Attempt"
-    }
-    throw "[FAIL] LLVM_DIR resolution failed"
-}
-
-$LLVMConfigPath = Join-Path $LLVMDir "LLVMConfig.cmake"
-if (-not (Test-Path -LiteralPath $LLVMConfigPath)) {
-    throw "[FAIL] LLVM_DIR does not contain LLVMConfig.cmake: $LLVMDir"
-}
+$ReportPath = Join-Path $ReportDir "windows.txt"
+$PluginBuildSidecar = Join-Path $CommandsDir "windows.plugin_build.txt"
+$HelperUserSidecar = Join-Path $CommandsDir "windows.helper_user_compile.txt"
+$HelperKernelSidecar = Join-Path $CommandsDir "windows.helper_kernel_compile.txt"
+$ExeLinkSidecar = Join-Path $CommandsDir "windows.exe_link.txt"
+$DllLinkSidecar = Join-Path $CommandsDir "windows.dll_link.txt"
+$SysLinkSidecar = Join-Path $CommandsDir "windows.sys_link.txt"
 
 $Ninja = Get-Command "ninja" -ErrorAction SilentlyContinue
 $ConfigureArgs = @(
-    "-S", (Join-Path $RepoRoot "core"),
+    "-S", $CoreRoot,
     "-B", $PassBuildDir,
     "-DLLVM_DIR=$LLVMDir",
     "-DCMAKE_C_COMPILER=$ClangClPath",
     "-DCMAKE_CXX_COMPILER=$ClangClPath",
     "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$PassPluginDir",
     "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$PassPluginDir",
-    "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY=$RuntimeLibDir",
-    "-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE=$RuntimeLibDir",
+    "-DEIPPF_EXPECTED_PLUGIN_PATH=$PassPluginPath",
     "-DEIPPF_BUILD_TESTS=OFF",
     "-DEIPPF_BUILD_POST_LINK_MUTATOR=OFF",
     "-DEIPPF_BUILD_DEX_TOOLCHAIN=OFF",
@@ -155,51 +204,123 @@ $ConfigureArgs = @(
 if ($null -ne $Ninja) {
     $ConfigureArgs += @("-G", "Ninja")
 }
-& $CMake.Source @ConfigureArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "[FAIL] cmake configure for pass plugin failed with code $LASTEXITCODE"
-}
-& $CMake.Source "--build" $PassBuildDir "--target" "eippf_protection_suite_pass" "eippf_string_token_runtime" "--config" "Release"
-if ($LASTEXITCODE -ne 0) {
-    throw "[FAIL] cmake build for pass plugin failed with code $LASTEXITCODE"
-}
-if (-not (Test-Path $PassPluginPath)) {
+$PluginBuildArgs = @("--build", $PassBuildDir, "--target", "eippf_protection_suite_pass", "--config", "Release")
+$PluginSidecarContent = (Format-CommandLine -Executable $CMakePath -Arguments $ConfigureArgs) + "`n" + (Format-CommandLine -Executable $CMakePath -Arguments $PluginBuildArgs)
+Write-AsciiTextFile -Path $PluginBuildSidecar -Content $PluginSidecarContent
+Invoke-NativeCommand -Executable $CMakePath -Arguments $ConfigureArgs -FailureLabel "cmake configure for pass plugin"
+Invoke-NativeCommand -Executable $CMakePath -Arguments $PluginBuildArgs -FailureLabel "cmake build for pass plugin"
+if (-not (Test-Path -LiteralPath $PassPluginPath)) {
     throw "[FAIL] pass plugin build output missing: $PassPluginPath"
 }
-if (-not (Test-Path $RuntimeLibPath)) {
-    throw "[FAIL] runtime library output missing: $RuntimeLibPath"
+
+$HelperUserArgs = @(
+    "/nologo",
+    "/c",
+    "/O2",
+    "/W4",
+    "/GR-",
+    "/EHs-c-",
+    "/Fo:$HelperUserObj",
+    $HelperSource
+) + $HelperIncludeArgs
+$HelperKernelArgs = @(
+    "/nologo",
+    "/c",
+    "/O2",
+    "/W4",
+    "/GS-",
+    "/GR-",
+    "/EHs-c-",
+    "/Zl",
+    "/Fo:$HelperKernelObj",
+    $HelperSource
+) + $HelperIncludeArgs
+
+Write-AsciiTextFile -Path $HelperUserSidecar -Content (Format-CommandLine -Executable $ClangClPath -Arguments $HelperUserArgs)
+Write-AsciiTextFile -Path $HelperKernelSidecar -Content (Format-CommandLine -Executable $ClangClPath -Arguments $HelperKernelArgs)
+Invoke-NativeCommand -Executable $ClangClPath -Arguments $HelperUserArgs -FailureLabel "helper user compile"
+Invoke-NativeCommand -Executable $ClangClPath -Arguments $HelperKernelArgs -FailureLabel "helper kernel compile"
+
+if (-not (Test-Path -LiteralPath $HelperUserObj)) {
+    throw "[FAIL] helper user object missing: $HelperUserObj"
+}
+if (-not (Test-Path -LiteralPath $HelperKernelObj)) {
+    throw "[FAIL] helper kernel object missing: $HelperKernelObj"
 }
 
-Write-Host "[INFO] clang-cl path: $ClangClPath"
-Write-Host "[INFO] LLVM_DIR: $LLVMDir"
-Write-Host "[INFO] runtime lib path: $RuntimeLibPath"
+Invoke-WrappedCompileAndLink -CompileArgs @(
+    "/nologo",
+    "/O2",
+    "/W4",
+    "/GS-",
+    $ExeSource,
+    "/link",
+    "/OUT:$ExeOut",
+    $HelperUserObj
+) -SidecarPath $ExeLinkSidecar -FailureLabel "windows exe link"
+Invoke-WrappedCompileAndLink -CompileArgs @(
+    "/nologo",
+    "/LD",
+    "/O2",
+    "/W4",
+    "/GS-",
+    $DllSource,
+    "/link",
+    "/OUT:$DllOut",
+    $HelperUserObj
+) -SidecarPath $DllLinkSidecar -FailureLabel "windows dll link"
+Invoke-WrappedCompileAndLink -CompileArgs @(
+    "/nologo",
+    "/O2",
+    "/W4",
+    "/GS-",
+    "/GR-",
+    "/EHs-c-",
+    "/Zl",
+    $SysSource,
+    "/link",
+    "/OUT:$SysOut",
+    "/NOLOGO",
+    "/MACHINE:X64",
+    "/DRIVER",
+    "/SUBSYSTEM:NATIVE",
+    "/NODEFAULTLIB",
+    "/ENTRY:DriverEntry",
+    $HelperKernelObj
+) -SidecarPath $SysLinkSidecar -FailureLabel "windows sys link"
 
-function Invoke-WrappedCompile {
-    param(
-        [Parameter(Mandatory = $true)][string[]]$CompileArgs
-    )
-
-    $env:EIPPF_CLANG_CL = $script:ClangClPath
-    & $script:PythonExe @script:PythonPrefix $script:WrapperPath "--pass-plugin" $script:PassPluginPath "--" @CompileArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "[FAIL] wrapper compile failed with code $LASTEXITCODE"
-    }
+if (-not (Test-Path -LiteralPath $ExeOut)) {
+    throw "[FAIL] windows exe output missing: $ExeOut"
+}
+if (-not (Test-Path -LiteralPath $DllOut)) {
+    throw "[FAIL] windows dll output missing: $DllOut"
+}
+if (-not (Test-Path -LiteralPath $SysOut)) {
+    throw "[FAIL] windows sys output missing: $SysOut"
 }
 
-$HasLldLink = $null -ne (Get-Command "lld-link" -ErrorAction SilentlyContinue)
-
-Invoke-WrappedCompile @("/nologo", "/O2", "/W4", "/GS-", $ExeSource, "/link", "/OUT:$ExeOut", $RuntimeLibPath)
-Invoke-WrappedCompile @("/nologo", "/LD", "/O2", "/W4", "/GS-", $DllSource, "/link", "/OUT:$DllOut", $RuntimeLibPath)
-Invoke-WrappedCompile @("/nologo", "/c", "/O2", "/W4", "/GS-", "/GR-", "/EHs-c-", "/Zl", $SysSource, "/Fo:$SysObj")
-
-if ($HasLldLink) {
-    & lld-link /NOLOGO /MACHINE:X64 /DRIVER /SUBSYSTEM:NATIVE /NODEFAULTLIB /ENTRY:DriverEntry /OUT:$SysOut $SysObj $RuntimeLibPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "[FAIL] lld-link failed with code $LASTEXITCODE"
-    }
-} else {
-    & link /NOLOGO /MACHINE:X64 /DRIVER /SUBSYSTEM:NATIVE /NODEFAULTLIB /ENTRY:DriverEntry /OUT:$SysOut $SysObj $RuntimeLibPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "[FAIL] link.exe failed with code $LASTEXITCODE"
-    }
+$CompilerVersionFirstLine = (& $ClangClPath "--version" | Select-Object -First 1)
+if ([string]::IsNullOrWhiteSpace($CompilerVersionFirstLine)) {
+    throw "[FAIL] unable to resolve compiler version first line"
 }
+
+$ReportLines = @(
+    "platform=windows",
+    "llvm_source=$LLVMSource",
+    "compiler_path=$ClangClPath",
+    "compiler_version_first_line=$CompilerVersionFirstLine",
+    "llvm_dir=$LLVMDir",
+    "plugin_path=$PassPluginPath",
+    "helper_user_o=$HelperUserObj",
+    "helper_kernel_o=$HelperKernelObj",
+    "plugin_build_command=$PluginBuildSidecar",
+    "helper_user_compile_command=$HelperUserSidecar",
+    "helper_kernel_compile_command=$HelperKernelSidecar",
+    "windows_exe_link_inputs=$HelperUserObj",
+    "windows_dll_link_inputs=$HelperUserObj",
+    "windows_sys_link_inputs=$HelperKernelObj",
+    "windows_exe_link_command=$ExeLinkSidecar",
+    "windows_dll_link_command=$DllLinkSidecar",
+    "windows_sys_link_command=$SysLinkSidecar"
+)
+Write-AsciiTextFile -Path $ReportPath -Content ($ReportLines -join "`n")

@@ -1,0 +1,305 @@
+# 2026-04-03 Track D Task Card
+
+## Owner
+- Engineer-D
+
+## Write Set
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## Do Not Edit
+- workflow
+- Windows script
+- Linux/Android script
+
+## Objective
+- 只把 macOS/iOS 样例链改成 `llvm@18` host plugin + `xcrun` iOS helper + report/sidecar contract。
+- 你不需要设计方案。直接按本卡执行。
+
+## Exact Steps
+1. Host LLVM:
+- 只接受 workflow 导出的：
+  - `EIPPF_ALLOWED_LLVM_ROOT`
+  - `LLVM_DIR`
+
+2. iOS target compiler:
+- 只接受 `xcrun --sdk iphonesimulator --find clang++`
+
+3. 脚本启动前置校验：
+- 必须验证 `LLVM_DIR` 对应前缀下存在 `lib/cmake/llvm/LLVMConfig.cmake`
+- 必须验证 `LLVM_DIR` 对应前缀下存在 `include/llvm/Passes/PassPlugin.h`
+- 必须验证 `xcrun --sdk iphonesimulator --find clang++` 成功
+- 必须验证 `xcrun --sdk iphonesimulator --show-sdk-path` 成功
+
+4. iOS helper 编译旗标必须冻结：
+- `ios_user_helper_compile_command` 必须包含 `-fPIC`
+- `ios_user_helper_compile_command` 只能等价于：
+  - `"${IOS_TARGET_CLANGXX}" -target arm64-apple-ios17.0-simulator -isysroot "${IOS_SDK}" -std=c++20 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wnull-dereference -fno-exceptions -fno-rtti -fPIC -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp" -I"${REPO_ROOT}/core/include" -I"${REPO_ROOT}/core/runtime/include" -o "${OUT_ROOT}/runtime_libs/string_token_runtime.ios.user.o"`
+
+5. 固定 report 键，必须全部产出且不得多写：
+- 报告固定落点：`sample_suite_inputs/toolchain_reports/macos_ios.txt`
+- `platform`
+- `ios_target_source`
+- `host_compiler_path`
+- `host_compiler_version_first_line`
+- `ios_target_compiler_path`
+- `ios_target_compiler_version_first_line`
+- `llvm_dir`
+- `plugin_path`
+- `ios_user_helper_o`
+- `plugin_build_command`
+- `ios_user_helper_compile_command`
+- `ios_link_inputs`
+- `ios_link_command`
+- `ios_target`
+- `ios_isysroot`
+
+6. 固定 sidecar 路径：
+- `sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_build.txt`
+- `sample_suite_inputs/toolchain_reports/commands/macos_ios.ios_user_helper_compile.txt`
+- `sample_suite_inputs/toolchain_reports/commands/macos_ios.ios_link.txt`
+
+7. 精确绑定：
+- `ios_link_inputs == ios_user_helper_o`
+
+8. Sidecar 内容要求：
+- ASCII
+- fully expanded argv
+- 禁止 `@rsp`
+- 禁止 `@response`
+- 禁止 `@<file>`
+- 禁止 `-Wl,@`
+- 禁止 `--script`
+- 禁止 `-Wl,-T,`
+- 禁止 `-Wl,-Tfoo`
+- 禁止 `-Wl,--script,`
+- 禁止 `-T <script>`
+- 禁止 `-T<script>`
+- 禁止 `-Xlinker -T`
+- 禁止 `-Xlinker -Tfoo`
+- 禁止 `-Xlinker=-T`
+- 禁止 `-Xlinker=-Tfoo`
+- `plugin_build_command` 必须包含真实 `LLVM_DIR` 与真实 host compiler path
+- `ios_user_helper_compile_command` 必须包含：
+  - 真实 `ios_target_compiler_path`
+  - `-target arm64-apple-ios17.0-simulator`
+  - 真实 `ios_isysroot`
+  - `-fPIC`
+  - 真实 helper 输出路径
+- `ios_link_command` 必须包含：
+  - 真实 `ios_target_compiler_path`
+  - 真实 helper input
+  - `-target arm64-apple-ios17.0-simulator`
+  - 真实 `ios_isysroot`
+- `ios_link_command` 的显式 object/archive/helper 输入集合必须只包含 `ios_link_inputs`
+- `ios_link_command` 禁止出现任何额外绝对路径、相对路径或 bare `.obj/.o/.a/.lib` 输入
+- `ios_link_command` 禁止出现 `eippf_string_token_runtime.*`
+
+## Downstream Artifact Contract
+- 你产出的全部内容必须继续落在 `sample_suite_inputs` 根下。
+- report 固定是：
+  - `sample_suite_inputs/toolchain_reports/macos_ios.txt`
+- sidecar 固定在：
+  - `sample_suite_inputs/toolchain_reports/commands/`
+- workflow 会把整个 `sample_suite_inputs` 作为 `sample-suite-macos-ios` 上传。
+- evaluator 下载后固定期望：
+  - `sample_suite_downloaded/toolchain_reports/macos_ios.txt`
+
+## Exact macOS/iOS Validator The Workflow Will Run
+```python
+from pathlib import Path
+import os
+import re
+import shlex
+import subprocess
+
+report = Path("sample_suite_inputs/toolchain_reports/macos_ios.txt")
+if not report.is_file():
+    raise SystemExit(f"[FAIL] missing report: {report}")
+
+kv = {}
+for raw in report.read_text(encoding="ascii").splitlines():
+    parts = raw.split("=", 1)
+    if len(parts) != 2:
+        raise SystemExit(f"[FAIL] malformed report line: {raw}")
+    key, value = parts
+    if key in kv:
+        raise SystemExit(f"[FAIL] duplicate key: {key}")
+    kv[key] = value
+
+required = [
+    "platform", "ios_target_source", "host_compiler_path", "host_compiler_version_first_line",
+    "ios_target_compiler_path", "ios_target_compiler_version_first_line", "llvm_dir",
+    "plugin_path", "ios_user_helper_o", "plugin_build_command",
+    "ios_user_helper_compile_command", "ios_link_inputs", "ios_link_command",
+    "ios_target", "ios_isysroot",
+]
+for key in required:
+    if key not in kv:
+        raise SystemExit(f"[FAIL] missing key: {key}")
+if set(kv) != set(required):
+    raise SystemExit("[FAIL] key set mismatch")
+if kv["platform"] != "macos_ios":
+    raise SystemExit("[FAIL] platform mismatch")
+if kv["ios_target_source"] != "xcrun":
+    raise SystemExit("[FAIL] ios_target_source mismatch")
+
+for key, value in kv.items():
+    if key in {"platform", "ios_target_source", "ios_target"} or key.endswith("_version_first_line"):
+        continue
+    if not Path(value).is_absolute():
+        raise SystemExit(f"[FAIL] non-absolute path for {key}")
+    if not Path(value).exists():
+        raise SystemExit(f"[FAIL] missing path for {key}")
+
+llvm_prefix = Path(os.environ["EIPPF_ALLOWED_LLVM_ROOT"]).resolve()
+output_root = (Path.cwd() / "sample_suite_inputs").resolve()
+commands_root = (output_root / "toolchain_reports" / "commands").resolve()
+pass_plugin_header = (llvm_prefix / "include" / "llvm" / "Passes" / "PassPlugin.h").resolve()
+llvm_config = (llvm_prefix / "lib" / "cmake" / "llvm" / "LLVMConfig.cmake").resolve()
+repo_root = Path.cwd().resolve()
+helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
+shared_include = repo_root / "core" / "include"
+runtime_include = repo_root / "core" / "runtime" / "include"
+
+def assert_under(path: Path, root: Path, label: str) -> None:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise SystemExit(f"[FAIL] {label} escaped allowed root") from exc
+
+def has_forbidden_linker_controls(text: str) -> bool:
+    tokens = shlex.split(text, posix=True)
+    for index, token in enumerate(tokens):
+        if token.startswith("@"):
+            return True
+        if token in {"-T", "--script"}:
+            return True
+        if token.startswith("-T") or token.startswith("--script="):
+            return True
+        if token.startswith("-Wl,@") or token == "-Wl,-T" or token.startswith("-Wl,-T") or token == "-Wl,--script" or token.startswith("-Wl,--script"):
+            return True
+        if token == "-Xlinker" and index + 1 < len(tokens):
+            nxt = tokens[index + 1]
+            if nxt in {"-T", "--script"} or nxt.startswith("-T") or nxt.startswith("--script="):
+                return True
+        if token.startswith("-Xlinker=-T") or token.startswith("-Xlinker=--script"):
+            return True
+    return False
+
+def explicit_object_archive_inputs(text: str) -> list[Path]:
+    inputs: list[Path] = []
+    for token in shlex.split(text, posix=True):
+        if re.search(r"\.(?:o|obj|a|lib)$", token):
+            path = Path(token)
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            else:
+                path = path.resolve()
+            inputs.append(path)
+    return inputs
+
+xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
+ios_sdk = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"], text=True).strip()).resolve()
+if not pass_plugin_header.is_file():
+    raise SystemExit("[FAIL] PassPlugin.h missing under allowed LLVM root")
+if not llvm_config.is_file():
+    raise SystemExit("[FAIL] LLVMConfig.cmake missing under allowed LLVM root")
+assert_under(Path(kv["host_compiler_path"]), llvm_prefix / "bin", "host_compiler")
+if "clang version 18" not in kv["host_compiler_version_first_line"]:
+    raise SystemExit("[FAIL] host compiler version mismatch")
+if Path(kv["host_compiler_path"]).name != "clang++":
+    raise SystemExit("[FAIL] host_compiler_path mismatch")
+if Path(kv["ios_target_compiler_path"]).resolve() != xcrun_clang:
+    raise SystemExit("[FAIL] ios_target_compiler provenance mismatch")
+if Path(kv["ios_target_compiler_path"]).name != "clang++":
+    raise SystemExit("[FAIL] ios_target_compiler_path mismatch")
+if Path(kv["llvm_dir"]).resolve() != (llvm_prefix / "lib" / "cmake" / "llvm").resolve():
+    raise SystemExit("[FAIL] llvm_dir provenance mismatch")
+assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
+if Path(kv["plugin_path"]).name != "eippf_protection_suite_pass.dylib":
+    raise SystemExit("[FAIL] plugin_path mismatch")
+assert_under(Path(kv["ios_user_helper_o"]), output_root, "ios_user_helper_o")
+if Path(kv["ios_user_helper_o"]).name != "string_token_runtime.ios.user.o":
+    raise SystemExit("[FAIL] ios_user_helper_o mismatch")
+for pair in [("plugin_build_command", str((llvm_prefix / "lib" / "cmake" / "llvm").resolve())), ("ios_user_helper_compile_command", str(Path(kv["ios_user_helper_o"]).resolve()))]:
+    sidecar = Path(kv[pair[0]])
+    assert_under(sidecar, commands_root, pair[0])
+    text = sidecar.read_text(encoding="ascii")
+    if has_forbidden_linker_controls(text):
+        raise SystemExit(f"[FAIL] sidecar is not fully expanded: {pair[0]}")
+    if str(Path(kv["host_compiler_path"]).resolve()) not in text and pair[0] == "plugin_build_command":
+        raise SystemExit("[FAIL] plugin_build_command missing host compiler path")
+    if pair[1] not in text:
+        raise SystemExit(f"[FAIL] sidecar missing required token: {pair[0]}")
+ios_helper_text = Path(kv["ios_user_helper_compile_command"]).read_text(encoding="ascii")
+if str(Path(kv["ios_target_compiler_path"]).resolve()) not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing target compiler path")
+if str(helper_source) not in ios_helper_text or str(shared_include) not in ios_helper_text or str(runtime_include) not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing source/include roots")
+if "-target arm64-apple-ios17.0-simulator" not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing target")
+if "-std=c++20" not in ios_helper_text or "-fno-exceptions" not in ios_helper_text or "-fno-rtti" not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing language/runtime flags")
+if "-fPIC" not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing -fPIC")
+if "-isysroot" not in ios_helper_text or str(Path(kv["ios_isysroot"]).resolve()) not in ios_helper_text:
+    raise SystemExit("[FAIL] ios_user_helper_compile_command missing isysroot")
+if kv["ios_target"] != "arm64-apple-ios17.0-simulator":
+    raise SystemExit("[FAIL] ios_target mismatch")
+if Path(kv["ios_isysroot"]).resolve() != ios_sdk:
+    raise SystemExit("[FAIL] ios_isysroot mismatch")
+entries = [item for item in kv["ios_link_inputs"].split(";") if item]
+if len(entries) != 1:
+    raise SystemExit("[FAIL] unexpected link input count for ios_link_inputs")
+entry = Path(entries[0])
+if not entry.is_absolute() or not entry.exists():
+    raise SystemExit("[FAIL] ios_link_inputs path invalid")
+assert_under(entry, output_root, "ios_link_inputs")
+if entry.name != "string_token_runtime.ios.user.o":
+    raise SystemExit("[FAIL] ios_link_inputs mismatch")
+if "eippf_string_token_runtime." in entry.name:
+    raise SystemExit("[FAIL] legacy runtime archive leaked into ios_link_inputs")
+if entry.resolve() != Path(kv["ios_user_helper_o"]).resolve():
+    raise SystemExit("[FAIL] ios link/helper binding mismatch")
+command_path = Path(kv["ios_link_command"])
+assert_under(command_path, commands_root, "ios_link_command")
+command_text = command_path.read_text(encoding="ascii")
+if has_forbidden_linker_controls(command_text):
+    raise SystemExit("[FAIL] ios_link_command is not fully expanded")
+if str(Path(kv["ios_target_compiler_path"]).resolve()) not in command_text:
+    raise SystemExit("[FAIL] ios_link_command missing target compiler path")
+if str(entry.resolve()) not in command_text:
+    raise SystemExit("[FAIL] ios_link_command missing helper input")
+if "-target arm64-apple-ios17.0-simulator" not in command_text:
+    raise SystemExit("[FAIL] ios_link_command missing target")
+if "-isysroot" not in command_text or str(ios_sdk) not in command_text:
+    raise SystemExit("[FAIL] ios_link_command missing isysroot")
+if "eippf_string_token_runtime." in command_text:
+    raise SystemExit("[FAIL] legacy runtime archive leaked into ios_link_command")
+explicit_inputs = explicit_object_archive_inputs(command_text)
+if explicit_inputs.count(entry.resolve()) != 1:
+    raise SystemExit("[FAIL] explicit helper input set mismatch for ios_link_command")
+unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
+if unexpected:
+    raise SystemExit(f"[FAIL] unexpected explicit object/archive input for ios_link_command: {';'.join(unexpected)}")
+```
+
+## Forbidden
+- 不允许用 host/Homebrew LLVM 编译 iOS helper
+- 不允许弱化 report key set 检查
+- 不允许让 sidecar 回到 response file 或 linker script 形式
+- 不允许恢复 host-built runtime archive/lib
+
+## Forbidden Rollbacks
+- 不允许恢复 `brew install llvm` 到非 `llvm@18`
+- 不允许恢复 host/Homebrew LLVM 直接编译 iOS helper
+- 不允许把 `sample_suite_inputs` 改成别的根目录
+- 不允许删除 `ios_target` / `ios_isysroot` / `ios_link_inputs` / `ios_link_command` 任一键
+- 不允许让 `ios_link_command` 再接受额外 object/archive/helper 输入
+
+## Done When
+- macOS/iOS validator 所需全部键与 sidecar 都存在
+- `ios_link_inputs` 与 `ios_user_helper_o` 精确相等
+- artifact 契约保持：输出仍位于 `sample_suite_inputs`，供 workflow 上传为 `sample-suite-macos-ios`
