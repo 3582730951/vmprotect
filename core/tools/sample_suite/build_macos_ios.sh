@@ -97,13 +97,20 @@ fi
 if ! IOS_TARGET_CLANGXX="$(xcrun --sdk iphonesimulator --find clang++ 2>/dev/null)"; then
   fail "xcrun cannot find iphonesimulator clang++"
 fi
+if ! IOS_TARGET_CLANG="$(xcrun --sdk iphonesimulator --find clang 2>/dev/null)"; then
+  fail "xcrun cannot find iphonesimulator clang"
+fi
 if ! IOS_SDK="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null)"; then
   fail "xcrun cannot resolve iphonesimulator SDK path"
 fi
 IOS_TARGET_CLANGXX="$(cd "$(dirname "${IOS_TARGET_CLANGXX}")" && pwd)/$(basename "${IOS_TARGET_CLANGXX}")"
+IOS_TARGET_CLANG="$(cd "$(dirname "${IOS_TARGET_CLANG}")" && pwd)/$(basename "${IOS_TARGET_CLANG}")"
 IOS_SDK="$(cd "${IOS_SDK}" && pwd)"
 if [[ ! -x "${IOS_TARGET_CLANGXX}" ]]; then
   fail "resolved iOS target clang++ is not executable: ${IOS_TARGET_CLANGXX}"
+fi
+if [[ ! -x "${IOS_TARGET_CLANG}" ]]; then
+  fail "resolved iOS target clang is not executable: ${IOS_TARGET_CLANG}"
 fi
 if [[ ! -d "${IOS_SDK}" ]]; then
   fail "resolved iOS SDK path is not a directory: ${IOS_SDK}"
@@ -114,6 +121,7 @@ if [[ "${HOST_COMPILER_VERSION_FIRST_LINE}" != *"clang version 18"* ]]; then
   fail "host compiler is not clang version 18: ${HOST_COMPILER_VERSION_FIRST_LINE}"
 fi
 IOS_TARGET_COMPILER_VERSION_FIRST_LINE="$("${IOS_TARGET_CLANGXX}" --version | head -n 1)"
+IOS_LINK_DRIVER_VERSION_FIRST_LINE="$("${IOS_TARGET_CLANG}" --version | head -n 1)"
 
 mkdir -p "${IOS_DIR}" "${PASS_PLUGIN_DIR}" "${RUNTIME_LIB_DIR}" "${RUNTIME_BUILD_DIR}" "${REPORT_DIR}" "${COMMANDS_DIR}"
 
@@ -187,7 +195,7 @@ ios_link_cmd=(
   python3
   "${WRAPPER}"
   --pass-plugin "${PASS_PLUGIN_PATH}"
-  --compiler "${IOS_TARGET_CLANGXX}"
+  --compiler "${IOS_TARGET_CLANG}"
   --
   -target arm64-apple-ios17.0-simulator
   -isysroot "${IOS_SDK}"
@@ -213,6 +221,8 @@ IOS_LINK_INPUTS="${IOS_USER_HELPER_O}"
   printf 'host_compiler_version_first_line=%s\n' "${HOST_COMPILER_VERSION_FIRST_LINE}"
   printf 'ios_target_compiler_path=%s\n' "${IOS_TARGET_CLANGXX}"
   printf 'ios_target_compiler_version_first_line=%s\n' "${IOS_TARGET_COMPILER_VERSION_FIRST_LINE}"
+  printf 'ios_link_driver_path=%s\n' "${IOS_TARGET_CLANG}"
+  printf 'ios_link_driver_version_first_line=%s\n' "${IOS_LINK_DRIVER_VERSION_FIRST_LINE}"
   printf 'llvm_dir=%s\n' "${LLVM_CMAKE_DIR}"
   printf 'plugin_path=%s\n' "${PASS_PLUGIN_PATH}"
   printf 'ios_user_helper_o=%s\n' "${IOS_USER_HELPER_O}"

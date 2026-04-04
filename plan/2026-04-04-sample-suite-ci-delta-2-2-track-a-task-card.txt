@@ -1,0 +1,43 @@
+# 2026-04-04 Delta-2.2 Track A 任务卡
+
+## Track
+- Windows workflow 实现修补
+
+## Owner
+- `Engineer-A`
+
+## Owned Files
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 `build-windows` job
+
+## No-Touch
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/wrapper/eippf_cc.py`
+
+## Exact Change
+1. 在 `Preflight LLVM Toolchain` 中，把以下变量全部改成 PowerShell 原生数组：
+   - `$roots`
+   - `$uniqueRoots`
+   - `$checks`
+   - `$missing`
+   - `$allChecks`
+   - `$errorLines`
+2. 这些变量统一用 `@()` 初始化，统一用 `+=` 追加；不允许再出现：
+   - `System.Collections.Generic.List[...]`
+   - `.Add(...)`
+3. `Invoke-LlvmDiscovery` 继续返回：
+   - `[pscustomobject]@{ SelectedRoot = $selectedRoot; Checks = @($checks) }`
+   - 但 `Checks` 必须来自原生数组。
+4. `Validate Windows Toolchain Report` 里，把：
+   - `Get-CommandTokens` 的 `$tokens`
+   - `Get-ExplicitObjectArchiveInputs` 的 `$values`
+   也改成原生数组。
+5. 不能改：
+   - Windows report key 集
+   - `EIPPF_VS_LLVM_DIR` / `LLVM_DIR` / `EIPPF_ALLOWED_LLVM_DIR` / `EIPPF_ALLOWED_LLVM_ROOT` 的语义
+   - `Build Windows Samples` 的调用方式
+
+## Completion Standard
+- workflow 中不再出现 `System.Collections.Generic.List` / `.Add(`
+- 新 run 的 `Preflight LLVM Toolchain` 不再报 `Argument types do not match`
+- 不触碰 `build_windows.ps1`

@@ -1,0 +1,140 @@
+# 2026-04-04 sample-suite CI Delta-2.2 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `high`
+
+## Task Summary
+- 本轮只修 run `23968822768` 暴露的 3 个新 blocker：
+  1. Windows preflight 的 PowerShell Generic List 实现错误，导致 `Argument types do not match`。
+  2. Linux/Android `.ko` 链路仍带默认 PIE，触发 `-r and -pie may not be used together`。
+  3. macOS/iOS 即使已有 `-x c/-x none`，final wrapper driver 仍用 `clang++`，Apple clang frontend 继续 crash。
+
+## Task Charter
+- Objective
+  - 仅把 `sample-suite-eval` 这 3 个新 blocker 关掉，不扩展到其它模块。
+- Scope
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- No-Touch
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/wrapper/eippf_cc.py`
+- Non-Goals
+  - 不回退上一轮已通过的 `-x c/-x none` 语言状态机 gate。
+  - 不修改 Windows/Linux/macOS 之外的样例链路。
+  - 不修改 `protect-and-evaluate` job。
+- Constraints
+  - workflow 仍然只做 `preflight + 调脚本 + 机器校验`。
+  - 平台脚本仍然是构建参数的唯一事实来源。
+  - Windows 只修 workflow PowerShell 实现，不碰 `build_windows.ps1`。
+  - Linux/Android 只给 `.ko` 两条链路补 `-no-pie` 契约，不影响 user-mode 样例。
+  - macOS/iOS helper 继续用 `xcrun clang++`，只把 final wrapper `--compiler` 切到 `xcrun clang`。
+- Acceptance Criteria
+  - `sample-suite-eval` 的 `build-windows`、`build-linux-android`、`build-macos-ios`、`protect-and-evaluate` 全部 `success`。
+  - Windows workflow 中不再出现 `System.Collections.Generic.List` / `.Add(`。
+  - Linux/Android 的 `.ko` sidecar 显式含 `-no-pie`，且无显式 `-pie`。
+  - macOS report 和 validator 能同时证明 helper=`clang++`，final driver=`clang`。
+- Forbidden Shortcuts
+  - 禁止把 no-pie 校验写成简单 substring 误伤 `-no-pie`。
+  - 禁止把 final iOS driver 继续保留为 `clang++` 并只靠 validator 解释过去。
+  - 禁止修改 report key 之外的历史契约，除非本计划显式新增。
+
+## Canonical Artifacts
+- `Task Charter`: 本文件
+- `Architecture Contract`: 本文件中的架构合同章节
+- `State Snapshot`: 本文件末尾状态快照
+- `Track A Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-a-task-card.txt`
+- `Track B Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-b-task-card.txt`
+- `Track C Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-c-task-card.txt`
+
+## Agent Roster
+- `Agent 1 (Planner / PM)`: 主会话，负责计划、分发、回收、集成验证。
+- `Architect`: `gpt-5.4 high`
+- `Architecture Reviewer`: `gpt-5.4 high`
+- `Security Reviewer`: `gpt-5.4 high`
+- `Validation Reviewer`: `gpt-5.2 high`
+- `Engineer-A`: `gpt-5.3-codex high`
+  - Windows workflow 实现修补
+- `Engineer-B`: `gpt-5.3-codex high`
+  - Linux/Android `.ko` no-pie 契约
+- `Engineer-C`: `gpt-5.3-codex high`
+  - macOS/iOS final driver 切换
+
+## Architecture Contract
+- workflow 不持有平台构建真相，只验证平台脚本产出的 sidecar/report。
+- Windows preflight 与 Windows validator 必须都用纯 PowerShell 数组 `@()` + `PSCustomObject`，不再允许 Generic List。
+- Linux/Android 的 `-no-pie` 只追加到 `LINUX_KO_LINK_ARGS` 与 `ANDROID_KO_LINK_ARGS`，不扩散到 user-mode 或 helper compile。
+- macOS/iOS 必须区分两个 provenance：
+  - helper compiler = `xcrun clang++`
+  - final wrapper driver = `xcrun clang`
+- 上一轮 `-x` 状态机 gate 完整保留，并作为本轮新增 no-pie / final-driver gate 的前提。
+
+## Parallel Tracks
+- Track A / Windows workflow-only repair
+  - Owner: `Engineer-A`
+  - Files:
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+- Track B / Linux Android `.ko` no-pie contract
+  - Owner: `Engineer-B`
+  - Files:
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+- Track C / macOS iOS final driver switch
+  - Owner: `Engineer-C`
+  - Files:
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## File Ownership
+- Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 `build-windows` job
+- Engineer-B
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Linux/Android validator 段
+- Engineer-C
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 macOS/iOS validator 段
+
+## Dependencies
+- A 无代码前置，可先落。
+- B/C 都依赖脚本与 validator 同时提交。
+- 三条轨都共享 workflow 文件，合并顺序必须串行。
+
+## Quality Gates
+- G1
+  - `sample-suite-eval.yml` 中不再出现 `System.Collections.Generic.List` 与 `.Add(`。
+- G2
+  - `.ko` 两条链路显式包含 `-no-pie`，并且 validator token 级拒绝 `-pie/--pie/-Wl,-pie/-Xlinker -pie/-Xlinker=-pie`。
+- G2.1
+  - Linux validator 的非路径 key 白名单必须同步纳入 `linux_ko_link_flags`，不能把它继续当路径做 absolute/exist 校验。
+- G2.2
+  - validator 必须反向证明 `-no-pie` 只出现在 `.ko` 两条 sidecar，不得扩散到 `linux_elf/linux_so/android_so`、helper compile 或 plugin build sidecar。
+- G3
+  - iOS report 新增 `ios_link_driver_path` 与 `ios_link_driver_version_first_line`，validator 同时验证 helper compiler 和 final link driver。
+- G4
+  - `-x c/-x none` 状态机 gate 仍在，且未被弱化。
+- G5
+  - 新 push 后 `sample-suite-eval` 全绿。
+
+## Merge Order
+1. Track A
+2. Track B
+3. Track C
+4. PM 集成验证
+5. push + 观察新 run
+
+## State Snapshot
+- Current Truth
+  - run `23968822768` 失败。
+  - Windows job `69914071599` 卡在 PowerShell Generic List 实现错误。
+  - Linux/Android job `69914071603` 卡在 `.ko` link 的默认 PIE。
+  - macOS job `69914071574` 证明 `clang++` 作为 final driver 仍会 crash。
+- Next Actions
+  - 三审。
+  - 三审通过后按 A/B/C 任务卡并发实施。

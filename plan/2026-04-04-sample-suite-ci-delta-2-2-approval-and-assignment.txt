@@ -1,0 +1,34 @@
+# 2026-04-04 sample-suite CI Delta-2.2 审核通过与任务分发
+
+## Review Verdicts
+- Architecture Reviewer: `PASS`
+  - agent: `019d5641-f955-7312-851f-2fc8f8767e5c`
+- Security Reviewer: `PASS`
+  - agent: `019d5641-f981-7413-8c94-3d0f2b5e6810`
+- Validation Reviewer: `PASS`
+  - agent: `019d5641-f967-7391-bed4-65e7e672c423`
+
+## Canonical Plan Package
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-plan.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-a-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-b-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-track-c-task-card.txt`
+
+## File Ownership
+- Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 `build-windows` job
+- Engineer-B
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Linux/Android validator 段
+- Engineer-C
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 macOS/iOS validator 段
+
+## PM Rules
+- PM 不写上述 3 条工程轨的实现文件。
+- PM 只做任务分发、回收、集成验证、push、CI 跟踪。
+- 任一 Engineer 不得越权修改他人 write set。
+- 合并顺序固定：`A -> B -> C`。

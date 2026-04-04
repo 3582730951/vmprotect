@@ -1,0 +1,57 @@
+# 2026-04-04 Delta-2.2 Track B 任务卡
+
+## Track
+- Linux/Android `.ko` no-pie 契约 + validator
+
+## Owner
+- `Engineer-B`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 Linux/Android validator 段
+
+## Exact Change
+1. 在 `LINUX_KO_LINK_ARGS` 中，新增一个且仅一个 `-no-pie`：
+   - 插入位置固定为 `-nostdlib` 后、`-fuse-ld=lld` 前。
+2. 在 `ANDROID_KO_LINK_ARGS` 中，新增一个且仅一个 `-no-pie`：
+   - 插入位置固定为 `-nostdlib` 后、`-fuse-ld=lld` 前。
+3. 不允许给以下链路新增 `-no-pie`：
+   - `LINUX_ELF_LINK_ARGS`
+   - `LINUX_SO_LINK_ARGS`
+   - `ANDROID_SO_LINK_ARGS`
+   - helper compile 命令
+   - plugin build 命令
+4. 在 report 尾部新增：
+   - `linux_ko_link_flags=-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r`
+5. 把现有 `android_ko_link_flags` 改成：
+   - `--target=aarch64-linux-android24;-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r`
+6. 在 Linux validator 的 `required` 列表中新增 `linux_ko_link_flags`。
+7. 在 Linux validator 的“非路径 key 白名单”中，把 `linux_ko_link_flags` 与现有 `android_ko_link_flags` 一起列为文本键；不能把 `linux_ko_link_flags` 当路径做 absolute/exist 校验。
+8. 新增 token 级 no-pie 校验，只检查：
+   - `linux_ko_link_command`
+   - `android_ko_link_command`
+9. 规则固定：
+   - 必须显式包含 `-no-pie`
+   - 显式禁止 `-pie`
+   - 显式禁止 `--pie`
+   - 显式禁止 `-Wl,-pie`
+   - 显式禁止 `-Xlinker -pie`
+   - 显式禁止 `-Xlinker=-pie`
+   - 不允许用简单 substring 误伤 `-no-pie`
+10. 新增一个反向 no-pie 边界检查，显式要求以下 sidecar 不得出现 `-no-pie`：
+   - `linux_elf_link_command`
+   - `linux_so_link_command`
+   - `android_so_link_command`
+   - `plugin_build_command`
+   - `linux_user_helper_compile_command`
+   - `linux_kernel_helper_compile_command`
+   - `android_user_helper_compile_command`
+   - `android_kernel_helper_compile_command`
+11. 保留现有 `enforce_link_language_token_state_machine` 原样，不删不弱化。
+
+## Completion Standard
+- 新 run 中 `.ko` 链路不再报 `-r and -pie may not be used together`
+- validator 能证明 `.ko` 两条 sidecar 有 no-pie 且无显式 PIE 回归
+- validator 能证明 `-no-pie` 没扩散到 user-mode/helper/plugin sidecar
+- user-mode 链路保持不变

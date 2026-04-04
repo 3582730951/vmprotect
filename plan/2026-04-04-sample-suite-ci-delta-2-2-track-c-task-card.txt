@@ -1,0 +1,51 @@
+# 2026-04-04 Delta-2.2 Track C 任务卡
+
+## Track
+- macOS/iOS final driver 切换到 `xcrun clang` + validator
+
+## Owner
+- `Engineer-C`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 macOS/iOS validator 段
+
+## Exact Change
+1. 保留：
+   - `IOS_TARGET_CLANGXX="$(xcrun --sdk iphonesimulator --find clang++)"`
+   - 它继续作为 helper 编译器
+2. 新增：
+   - `IOS_TARGET_CLANG="$(xcrun --sdk iphonesimulator --find clang)"`
+   - 对它做与 `IOS_TARGET_CLANGXX` 同级别的 executable/path 校验
+3. 新增：
+   - `IOS_LINK_DRIVER_VERSION_FIRST_LINE="$("${IOS_TARGET_CLANG}" --version | head -n 1)"`
+4. 只修改最终 `ios_link_cmd` 的 wrapper `--compiler`：
+   - 从 `IOS_TARGET_CLANGXX` 改成 `IOS_TARGET_CLANG`
+5. 其它 link 参数保持原语义，尤其保留：
+   - `-x c`
+   - `-x none`
+   - `-target arm64-apple-ios17.0-simulator`
+   - `-isysroot "${IOS_SDK}"`
+6. report 中：
+   - 保留现有 `ios_target_compiler_path` / `ios_target_compiler_version_first_line`
+     - 它们继续表示 helper compiler `clang++`
+   - 新增：
+     - `ios_link_driver_path`
+     - `ios_link_driver_version_first_line`
+7. macOS validator 中：
+   - `required` 列表加入 `ios_link_driver_path` 与 `ios_link_driver_version_first_line`
+   - 同时解析 `xcrun clang++` 和 `xcrun clang`
+   - `ios_user_helper_compile_command` 必须绑定 `ios_target_compiler_path`
+   - `ios_link_command` 必须绑定 `ios_link_driver_path`
+   - helper basename 必须是 `clang++`
+   - final driver basename 必须是 `clang`
+8. 不能改：
+   - helper 编译命令
+   - plugin build host compiler
+   - 现有 `-x` 状态机 gate
+
+## Completion Standard
+- 新 run 中 `Build iOS Mach-O Sample` 通过
+- report/validator 能同时证明 helper=`clang++`、final driver=`clang`
+- `-x c/-x none` gate 继续保留

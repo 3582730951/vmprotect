@@ -1,0 +1,72 @@
+# 2026-04-04 sample-suite CI Delta-2.2 执行记录
+
+## Execution Mode
+- `real-multi-agent`
+
+## PM Verdict
+- `READY_TO_PUSH`
+
+## Worker Assignment
+- Track A / Windows workflow-only repair
+  - Engineer-A
+  - write set:
+    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 `build-windows` job
+- Track B / Linux Android `.ko` no-pie contract
+  - Engineer-B
+  - write set:
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 Linux/Android validator 段
+- Track C / macOS iOS final driver switch
+  - Engineer-C
+  - write set:
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 macOS/iOS validator 段
+
+## Delivered Changes
+- Track A
+  - `build-windows` job 不再使用 `System.Collections.Generic.List[...]` 与 `.Add(...)`
+  - `Invoke-LlvmDiscovery` 和 Windows validator 改为 PowerShell 原生数组 `@()` + `+=`
+- Track B
+  - `LINUX_KO_LINK_ARGS` 与 `ANDROID_KO_LINK_ARGS` 新增且仅新增一个 `-no-pie`
+  - report 新增 `linux_ko_link_flags`
+  - `android_ko_link_flags` 同步加入 `-no-pie`
+  - Linux validator 新增：
+    - `linux_ko_link_flags` required key
+    - 非路径 key 白名单
+    - `.ko` token 级 no-pie / explicit PIE gate
+    - no-pie 反向泄漏边界检查
+- Track C
+  - iOS helper 继续走 `xcrun clang++`
+  - iOS final wrapper driver 切到 `xcrun clang`
+  - report 新增：
+    - `ios_link_driver_path`
+    - `ios_link_driver_version_first_line`
+  - macOS validator 新增双 provenance 绑定
+
+## PM Integration Validation
+- `python3` + `yaml.safe_load(.github/workflows/sample-suite-eval.yml)`：`PASS`
+- `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`：`PASS`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`：`PASS`
+- `git diff --check`：`PASS`
+- 静态断言：
+  - workflow 中已无 `System.Collections.Generic.List`：`PASS`
+  - workflow 中已无 `.Add(`：`PASS`
+  - `.ko` flags 已显式含 `-no-pie`：`PASS`
+  - iOS final driver 已切换到 `IOS_TARGET_CLANG`：`PASS`
+  - iOS report/validator 已含 `ios_link_driver_*`：`PASS`
+
+## Scope Compliance
+- 未修改：
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/wrapper/eippf_cc.py`
+  - `protect-and-evaluate` job
+- 共享 workflow 文件未出现跨轨覆盖到非计划段的证据
+
+## Open Risk
+- 本轮只做静态集成验证；最终裁决仍以 GitHub Actions `sample-suite-eval` 新 run 为准。
+
+## Next Action
+- 提交本轮实现与计划包
+- push 到远端 `main`
+- 观察新的 `sample-suite-eval` run
+- 若仍有 blocker，进入下一轮 `replan -> 三审 -> 任务卡 -> 并行实施`

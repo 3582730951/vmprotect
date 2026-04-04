@@ -134,7 +134,8 @@ jobs:
               "linux_elf_link_inputs", "linux_so_link_inputs", "linux_ko_link_inputs",
               "android_so_link_inputs", "android_ko_link_inputs", "linux_elf_link_command",
               "linux_so_link_command", "linux_ko_link_command", "android_so_link_command",
-              "android_ko_link_command", "android_ko_link_driver_path", "android_ko_link_flags",
+              "android_ko_link_command", "android_ko_link_driver_path", "linux_ko_link_flags",
+              "android_ko_link_flags",
           ]
           for key in required:
               if key not in kv:
@@ -147,7 +148,7 @@ jobs:
               raise SystemExit("[FAIL] android_target_source mismatch")
 
           for key, value in kv.items():
-              if key in {"platform", "android_target_source", "android_ko_link_flags"} or key.endswith("_version_first_line"):
+              if key in {"platform", "android_target_source", "linux_ko_link_flags", "android_ko_link_flags"} or key.endswith("_version_first_line"):
                   continue
               if not Path(value).is_absolute():
                   raise SystemExit(f"[FAIL] non-absolute path for {key}")
@@ -230,6 +231,18 @@ jobs:
                   return tokens[tokens.index("--") + 1 :]
               return tokens
 
+          def contains_token(text: str, target: str) -> bool:
+              return any(token == target for token in command_payload_tokens(text))
+
+          def has_explicit_pie_controls(text: str) -> bool:
+              tokens = command_payload_tokens(text)
+              for index, token in enumerate(tokens):
+                  if token in {"-pie", "--pie", "-Wl,-pie", "-Xlinker=-pie"}:
+                      return True
+                  if token == "-Xlinker" and index + 1 < len(tokens) and tokens[index + 1] == "-pie":
+                      return True
+              return False
+
           def enforce_link_language_token_state_machine(
               command_text: str,
               command_key: str,
@@ -302,7 +315,9 @@ jobs:
               raise SystemExit("[FAIL] android_target_compiler_path mismatch")
           if Path(kv["android_ko_link_driver_path"]).name != "aarch64-linux-android24-clang++":
               raise SystemExit("[FAIL] android_ko_link_driver_path mismatch")
-          if kv["android_ko_link_flags"] != "--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r":
+          if kv["linux_ko_link_flags"] != "-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r":
+              raise SystemExit("[FAIL] linux_ko_link_flags mismatch")
+          if kv["android_ko_link_flags"] != "--target=aarch64-linux-android24;-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r":
               raise SystemExit("[FAIL] android_ko_link_flags mismatch")
           assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
           if Path(kv["plugin_path"]).name != "eippf_protection_suite_pass.so":
@@ -386,10 +401,37 @@ jobs:
               raise SystemExit("[FAIL] android_so link/helper binding mismatch")
           if Path(kv["android_ko_link_inputs"].split(";")[0]).resolve() != Path(kv["android_kernel_helper_o"]).resolve():
               raise SystemExit("[FAIL] android_ko link/helper binding mismatch")
+          linux_ko_command = Path(kv["linux_ko_link_command"]).read_text(encoding="ascii")
           android_ko_command = Path(kv["android_ko_link_command"]).read_text(encoding="ascii")
-          for token in ["--target=aarch64-linux-android24", "-nostdlib", "-fuse-ld=lld", "-Wl,-r"]:
+          for token in ["-nostdlib", "-no-pie", "-fuse-ld=lld", "-Wl,-r"]:
+              if token not in linux_ko_command:
+                  raise SystemExit(f"[FAIL] linux_ko command missing token: {token}")
+          for token in ["--target=aarch64-linux-android24", "-nostdlib", "-no-pie", "-fuse-ld=lld", "-Wl,-r"]:
               if token not in android_ko_command:
                   raise SystemExit(f"[FAIL] android_ko command missing token: {token}")
+          if not contains_token(linux_ko_command, "-no-pie"):
+              raise SystemExit("[FAIL] linux_ko command missing explicit -no-pie token")
+          if not contains_token(android_ko_command, "-no-pie"):
+              raise SystemExit("[FAIL] android_ko command missing explicit -no-pie token")
+          if has_explicit_pie_controls(linux_ko_command):
+              raise SystemExit("[FAIL] linux_ko command contains explicit PIE controls")
+          if has_explicit_pie_controls(android_ko_command):
+              raise SystemExit("[FAIL] android_ko command contains explicit PIE controls")
+
+          no_no_pie_keys = [
+              "linux_elf_link_command",
+              "linux_so_link_command",
+              "android_so_link_command",
+              "plugin_build_command",
+              "linux_user_helper_compile_command",
+              "linux_kernel_helper_compile_command",
+              "android_user_helper_compile_command",
+              "android_kernel_helper_compile_command",
+          ]
+          for key in no_no_pie_keys:
+              text = Path(kv[key]).read_text(encoding="ascii")
+              if contains_token(text, "-no-pie"):
+                  raise SystemExit(f"[FAIL] unexpected -no-pie leakage in {key}")
           PY
 
       - name: Upload Linux Android Samples
@@ -416,9 +458,9 @@ jobs:
             return [System.IO.Path]::GetFullPath($PathValue).TrimEnd('\')
           }
           function Get-CandidateRoots {
-            $roots = New-Object System.Collections.Generic.List[string]
-            $roots.Add((Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64"))
-            $roots.Add((Join-Path $env:VCINSTALLDIR "Tools\Llvm"))
+            $roots = @()
+            $roots += (Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64")
+            $roots += (Join-Path $env:VCINSTALLDIR "Tools\Llvm")
             $clangCommands = @(Get-Command clang-cl.exe -All -ErrorAction SilentlyContinue)
             foreach ($command in $clangCommands) {
               if ([string]::IsNullOrWhiteSpace($command.Path)) { continue }
@@ -426,16 +468,16 @@ jobs:
               if ([string]::IsNullOrWhiteSpace($binDir)) { continue }
               $root = Split-Path -Parent $binDir
               if ([string]::IsNullOrWhiteSpace($root)) { continue }
-              $roots.Add($root)
+              $roots += $root
             }
             if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
-              $roots.Add((Join-Path $env:ProgramFiles "LLVM"))
+              $roots += (Join-Path $env:ProgramFiles "LLVM")
             }
             $programFilesX86 = ${env:ProgramFiles(x86)}
             if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
-              $roots.Add((Join-Path $programFilesX86 "LLVM"))
+              $roots += (Join-Path $programFilesX86 "LLVM")
             }
-            $uniqueRoots = New-Object System.Collections.Generic.List[string]
+            $uniqueRoots = @()
             $seen = @{}
             foreach ($root in $roots) {
               if ([string]::IsNullOrWhiteSpace($root)) { continue }
@@ -443,25 +485,25 @@ jobs:
               $key = $normalized.ToLowerInvariant()
               if ($seen.ContainsKey($key)) { continue }
               $seen[$key] = $true
-              $uniqueRoots.Add($normalized)
+              $uniqueRoots += $normalized
             }
             return @($uniqueRoots)
           }
           function Invoke-LlvmDiscovery([string]$Attempt) {
             $candidates = @(Get-CandidateRoots)
-            $checks = New-Object System.Collections.Generic.List[object]
+            $checks = @()
             $selectedRoot = $null
             foreach ($root in $candidates) {
               $clangPath = Join-Path $root "bin\clang-cl.exe"
               $configPath = Join-Path $root "lib\cmake\llvm\LLVMConfig.cmake"
-              $missing = New-Object System.Collections.Generic.List[string]
-              if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { $missing.Add("clang-cl.exe") }
-              if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { $missing.Add("LLVMConfig.cmake") }
-              $checks.Add([pscustomobject]@{
+              $missing = @()
+              if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { $missing += "clang-cl.exe" }
+              if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { $missing += "LLVMConfig.cmake" }
+              $checks += [pscustomobject]@{
                 Attempt = $Attempt
                 Root = $root
                 Missing = @($missing)
-              })
+              }
               if ($missing.Count -eq 0 -and $null -eq $selectedRoot) { $selectedRoot = $root }
             }
             return [pscustomobject]@{
@@ -469,20 +511,20 @@ jobs:
               Checks = @($checks)
             }
           }
-          $allChecks = New-Object System.Collections.Generic.List[object]
+          $allChecks = @()
           $discovery = Invoke-LlvmDiscovery "initial"
-          foreach ($check in $discovery.Checks) { $allChecks.Add($check) }
+          foreach ($check in $discovery.Checks) { $allChecks += $check }
           if ($null -eq $discovery.SelectedRoot) {
             choco install llvm --yes --no-progress
             $discovery = Invoke-LlvmDiscovery "post_choco"
-            foreach ($check in $discovery.Checks) { $allChecks.Add($check) }
+            foreach ($check in $discovery.Checks) { $allChecks += $check }
           }
           if ($null -eq $discovery.SelectedRoot) {
-            $errorLines = New-Object System.Collections.Generic.List[string]
-            $errorLines.Add("[FAIL] no usable LLVM root found")
+            $errorLines = @()
+            $errorLines += "[FAIL] no usable LLVM root found"
             foreach ($check in $allChecks) {
               $missingText = if ($check.Missing.Count -eq 0) { "none" } else { ($check.Missing -join ", ") }
-              $errorLines.Add("candidate_root=$($check.Root); attempt=$($check.Attempt); missing=$missingText")
+              $errorLines += "candidate_root=$($check.Root); attempt=$($check.Attempt); missing=$missingText"
             }
             throw ($errorLines -join "`n")
           }
@@ -546,10 +588,10 @@ jobs:
             return [System.IO.Path]::GetFullPath($Left).TrimEnd('\').Equals([System.IO.Path]::GetFullPath($Right).TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
           }
           function Get-CommandTokens([string]$Text) {
-            $tokens = New-Object System.Collections.Generic.List[string]
+            $tokens = @()
             foreach ($match in [regex]::Matches($Text, '"[^"]*"|\S+')) {
               $token = $match.Value.Trim('"')
-              if ($token) { $tokens.Add($token) }
+              if ($token) { $tokens += $token }
             }
             return @($tokens)
           }
@@ -570,13 +612,13 @@ jobs:
             return $false
           }
           function Get-ExplicitObjectArchiveInputs([string]$Text) {
-            $values = New-Object System.Collections.Generic.List[string]
+            $values = @()
             foreach ($token in (Get-CommandTokens $Text)) {
               if ($token -match '\.(obj|o|a|lib)$') {
                 if ([System.IO.Path]::IsPathRooted($token)) {
-                  $values.Add([System.IO.Path]::GetFullPath($token))
+                  $values += [System.IO.Path]::GetFullPath($token)
                 } else {
-                  $values.Add([System.IO.Path]::GetFullPath((Join-Path $PWD $token)))
+                  $values += [System.IO.Path]::GetFullPath((Join-Path $PWD $token))
                 }
               }
             }
@@ -714,7 +756,8 @@ jobs:
 
           required = [
               "platform", "ios_target_source", "host_compiler_path", "host_compiler_version_first_line",
-              "ios_target_compiler_path", "ios_target_compiler_version_first_line", "llvm_dir",
+              "ios_target_compiler_path", "ios_target_compiler_version_first_line",
+              "ios_link_driver_path", "ios_link_driver_version_first_line", "llvm_dir",
               "plugin_path", "ios_user_helper_o", "plugin_build_command",
               "ios_user_helper_compile_command", "ios_link_inputs", "ios_link_command",
               "ios_target", "ios_isysroot",
@@ -849,7 +892,8 @@ jobs:
               if not seen_source_after_x_c:
                   raise SystemExit(f"[FAIL] missing source token after -x c in {command_key}")
 
-          xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
+          xcrun_clangxx = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
+          xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang"], text=True).strip()).resolve()
           ios_sdk = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"], text=True).strip()).resolve()
           if not pass_plugin_header.is_file():
               raise SystemExit("[FAIL] PassPlugin.h missing under allowed LLVM root")
@@ -860,10 +904,14 @@ jobs:
               raise SystemExit("[FAIL] host compiler version mismatch")
           if Path(kv["host_compiler_path"]).name != "clang++":
               raise SystemExit("[FAIL] host_compiler_path mismatch")
-          if Path(kv["ios_target_compiler_path"]).resolve() != xcrun_clang:
+          if Path(kv["ios_target_compiler_path"]).resolve() != xcrun_clangxx:
               raise SystemExit("[FAIL] ios_target_compiler provenance mismatch")
           if Path(kv["ios_target_compiler_path"]).name != "clang++":
               raise SystemExit("[FAIL] ios_target_compiler_path mismatch")
+          if Path(kv["ios_link_driver_path"]).resolve() != xcrun_clang:
+              raise SystemExit("[FAIL] ios_link_driver provenance mismatch")
+          if Path(kv["ios_link_driver_path"]).name != "clang":
+              raise SystemExit("[FAIL] ios_link_driver_path mismatch")
           if Path(kv["llvm_dir"]).resolve() != (llvm_prefix / "lib" / "cmake" / "llvm").resolve():
               raise SystemExit("[FAIL] llvm_dir provenance mismatch")
           assert_under(Path(kv["plugin_path"]), output_root, "plugin_path")
@@ -917,8 +965,8 @@ jobs:
           command_text = command_path.read_text(encoding="ascii")
           if has_forbidden_linker_controls(command_text):
               raise SystemExit("[FAIL] ios_link_command is not fully expanded")
-          if str(Path(kv["ios_target_compiler_path"]).resolve()) not in command_text:
-              raise SystemExit("[FAIL] ios_link_command missing target compiler path")
+          if str(Path(kv["ios_link_driver_path"]).resolve()) not in command_text:
+              raise SystemExit("[FAIL] ios_link_command missing link driver path")
           if str(entry.resolve()) not in command_text:
               raise SystemExit("[FAIL] ios_link_command missing helper input")
           if "-target arm64-apple-ios17.0-simulator" not in command_text:

@@ -357,6 +357,7 @@ LINUX_KO_LINK_ARGS=(
   -fno-stack-protector
   -fno-asynchronous-unwind-tables
   -nostdlib
+  -no-pie
   -fuse-ld=lld
   -Wl,-r
   -o "${LINUX_KO_OUTPUT}"
@@ -400,6 +401,7 @@ ANDROID_KO_LINK_ARGS=(
   -fno-stack-protector
   -fno-asynchronous-unwind-tables
   -nostdlib
+  -no-pie
   -fuse-ld=lld
   -Wl,-r
   -o "${ANDROID_KO_OUTPUT}"
@@ -464,5 +466,6 @@ linux_ko_link_command=${LINUX_KO_LINK_SIDECAR_ABS}
 android_so_link_command=${ANDROID_SO_LINK_SIDECAR_ABS}
 android_ko_link_command=${ANDROID_KO_LINK_SIDECAR_ABS}
 android_ko_link_driver_path=${ANDROID_COMPILER_PATH}
-android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-fuse-ld=lld;-Wl,-r
+linux_ko_link_flags=-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r
+android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r
 EOF
