@@ -1,0 +1,59 @@
+# 2026-04-04 Track M 任务卡
+
+## Track
+- macOS/iOS Script + Validator
+
+## Owner
+- `Engineer-M`
+
+## Reviewer
+- `Security Reviewer` / `Validation Reviewer`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 只允许修改 `Validate macOS iOS Toolchain Report`
+
+## No-Touch Files
+- `/workspace/core/wrapper/eippf_cc.py`
+- `/workspace/core/tests/sample_suite/**`
+
+## Root Cause
+- 当前 `ios_link_cmd` 使用 `--compiler <xcrun clang++>`，输入是 `.c` 样例和 helper `.o`，但没有显式 `-x c` 和 `-x none`。
+- job `69911013527` 日志显示：
+  - `clang++: warning: treating 'c' input as 'c++'`
+  - 随后 Apple clang frontend segmentation fault
+
+## Exact Change
+1. 只改 `ios_link_cmd` 的参数边界，不改 helper 编译命令，不改 `xcrun` 发现逻辑，不改 target 与 SDK 路径来源。
+2. `ios_link_cmd` 固定写成：
+   - `python3 <wrapper> --pass-plugin <plugin> --compiler <xcrun clang++> --`
+   - `-target arm64-apple-ios17.0-simulator`
+   - `-isysroot <sdk>`
+   - `-O2`
+   - `-fvisibility=hidden`
+   - `-x c`
+   - `<ios_macho_main.c>`
+   - `-x none`
+   - `-o <sample_ios_macho>`
+   - `<string_token_runtime.ios.user.o>`
+3. `--compiler` 必须继续使用 `xcrun --sdk iphonesimulator --find clang++` 的结果；本轮不允许改成 `clang` 或 Homebrew clang。
+4. 在 macOS/iOS validator 中新增 token 状态机校验，规则与 Linux 相同，但额外增加一条：
+   - `ios_link_command` 不得出现 `-x c++` 或 `-xc++`
+   - 对象/归档输入只允许出现在当前语言状态是 `none` 或未显式设置时
+   - 任意显式 `-x <lang>` 只要 `<lang> != none`，命中 `.o/.obj/.a/.lib` 就直接失败
+5. 现有这些检查必须保留：
+   - target 必须是 `arm64-apple-ios17.0-simulator`
+   - `ios_isysroot` 必须等于 `xcrun --show-sdk-path`
+   - helper 输入只能有一个，且仍是 `string_token_runtime.ios.user.o`
+
+## Forbidden
+- 禁止改用 host clang++
+- 禁止把 `.c` 样例改扩展名
+- 禁止修改 `ios_user_helper_compile_command` flags
+- 禁止弱化现有 provenance 与 explicit helper input 检查
+
+## Completion Standard
+- `build-macos-ios` 成功
+- 去掉 `-x none` 或改成 `-x c++` 时 validator 能稳定失败
+- `macos_ios.txt` key 集合不变

@@ -175,6 +175,11 @@ jobs:
           helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
           shared_include = repo_root / "core" / "include"
           runtime_include = repo_root / "core" / "runtime" / "include"
+          linux_elf_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "linux" / "linux_elf_main.c"
+          linux_so_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "linux" / "linux_so.c"
+          linux_ko_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "kernel" / "linux_module.c"
+          android_so_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "android" / "android_so.c"
+          android_ko_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "kernel" / "android_module.c"
           if not expected_llvm_dir.joinpath("LLVMConfig.cmake").is_file():
               raise SystemExit("[FAIL] LLVMConfig.cmake missing")
           if not android_sysroot.is_dir():
@@ -218,6 +223,66 @@ jobs:
                           path = path.resolve()
                       inputs.append(path)
               return inputs
+
+          def command_payload_tokens(text: str) -> list[str]:
+              tokens = shlex.split(text, posix=True)
+              if "--" in tokens:
+                  return tokens[tokens.index("--") + 1 :]
+              return tokens
+
+          def enforce_link_language_token_state_machine(
+              command_text: str,
+              command_key: str,
+              source_path: Path,
+              helper_path: Path,
+          ) -> None:
+              tokens = command_payload_tokens(command_text)
+              source_token = str(source_path.resolve())
+              helper_token = str(helper_path.resolve())
+              explicit_language: str | None = None
+              seen_x_c = False
+              seen_source_after_x_c = False
+              seen_x_none = False
+
+              index = 0
+              while index < len(tokens):
+                  token = tokens[index]
+                  language: str | None = None
+                  if token == "-x":
+                      if index + 1 >= len(tokens):
+                          raise SystemExit(f"[FAIL] malformed -x token in {command_key}")
+                      language = tokens[index + 1]
+                      index += 2
+                  elif token.startswith("-x") and len(token) > 2:
+                      language = token[2:]
+                      index += 1
+                  else:
+                      index += 1
+
+                  if language is not None:
+                      explicit_language = language
+                      if language == "c":
+                          seen_x_c = True
+                      if language == "none":
+                          seen_x_none = True
+                      continue
+
+                  if token == source_token:
+                      if not seen_x_c:
+                          raise SystemExit(f"[FAIL] source token must follow -x c in {command_key}")
+                      seen_source_after_x_c = True
+
+                  is_object_or_archive = re.search(r"\.(?:o|obj|a|lib)$", token) is not None
+                  if is_object_or_archive and explicit_language not in {None, "none"}:
+                      raise SystemExit(f"[FAIL] object/archive token under -x {explicit_language} in {command_key}: {token}")
+
+                  if token == helper_token and not seen_x_none:
+                      raise SystemExit(f"[FAIL] helper input requires -x none before it in {command_key}")
+
+              if not seen_x_c:
+                  raise SystemExit(f"[FAIL] missing -x c in {command_key}")
+              if not seen_source_after_x_c:
+                  raise SystemExit(f"[FAIL] missing source token after -x c in {command_key}")
 
           host_compiler = Path(kv["host_compiler_path"]).resolve()
           android_compiler = Path(kv["android_target_compiler_path"]).resolve()
@@ -273,7 +338,7 @@ jobs:
           check_sidecar("android_user_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-fPIC", str(Path(kv["android_user_helper_o"]).resolve())])
           check_sidecar("android_kernel_helper_compile_command", android_compiler, [str(helper_source), str(shared_include), str(runtime_include), str(android_sysroot), "--target=aarch64-linux-android24", "-std=c++20", "-fno-exceptions", "-fno-rtti", "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", str(Path(kv["android_kernel_helper_o"]).resolve())])
 
-          def check_single_input(key: str, expected_name: str, command_key: str, driver_path: Path) -> None:
+          def check_single_input(key: str, expected_name: str, command_key: str, driver_path: Path, source_path: Path) -> None:
               entries = [item for item in kv[key].split(";") if item]
               if len(entries) != 1:
                   raise SystemExit(f"[FAIL] unexpected link input count for {key}")
@@ -304,12 +369,13 @@ jobs:
               unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
               if unexpected:
                   raise SystemExit(f"[FAIL] unexpected explicit object/archive input for {command_key}: {';'.join(unexpected)}")
+              enforce_link_language_token_state_machine(command_text, command_key, source_path, entry.resolve())
 
-          check_single_input("linux_elf_link_inputs", "string_token_runtime.linux.user.o", "linux_elf_link_command", host_compiler)
-          check_single_input("linux_so_link_inputs", "string_token_runtime.linux.user.o", "linux_so_link_command", host_compiler)
-          check_single_input("linux_ko_link_inputs", "string_token_runtime.linux.ko.o", "linux_ko_link_command", host_compiler)
-          check_single_input("android_so_link_inputs", "string_token_runtime.android.user.o", "android_so_link_command", android_compiler)
-          check_single_input("android_ko_link_inputs", "string_token_runtime.android.ko.o", "android_ko_link_command", android_link_driver)
+          check_single_input("linux_elf_link_inputs", "string_token_runtime.linux.user.o", "linux_elf_link_command", host_compiler, linux_elf_source)
+          check_single_input("linux_so_link_inputs", "string_token_runtime.linux.user.o", "linux_so_link_command", host_compiler, linux_so_source)
+          check_single_input("linux_ko_link_inputs", "string_token_runtime.linux.ko.o", "linux_ko_link_command", host_compiler, linux_ko_source)
+          check_single_input("android_so_link_inputs", "string_token_runtime.android.user.o", "android_so_link_command", android_compiler, android_so_source)
+          check_single_input("android_ko_link_inputs", "string_token_runtime.android.ko.o", "android_ko_link_command", android_link_driver, android_ko_source)
           if Path(kv["linux_elf_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
               raise SystemExit("[FAIL] linux_elf link/helper binding mismatch")
           if Path(kv["linux_so_link_inputs"].split(";")[0]).resolve() != Path(kv["linux_user_helper_o"]).resolve():
@@ -345,26 +411,95 @@ jobs:
       - name: Preflight LLVM Toolchain
         shell: powershell
         run: |
-          $bundledPrefix = Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64"
-          $bundledRoot = Join-Path $bundledPrefix "lib\cmake\llvm"
-          $bundledConfig = Join-Path $bundledRoot "LLVMConfig.cmake"
-          if (Test-Path $bundledConfig) {
-            "EIPPF_VS_LLVM_DIR=$bundledRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "EIPPF_ALLOWED_LLVM_DIR=$bundledRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "EIPPF_ALLOWED_LLVM_ROOT=$bundledPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Host "[INFO] Using Visual Studio bundled LLVM: $bundledRoot"
-          } else {
-            choco install llvm --yes --no-progress
-            $fallbackPrefix = "C:\Program Files\LLVM"
-            $fallbackRoot = Join-Path $fallbackPrefix "lib\cmake\llvm"
-            $fallbackConfig = Join-Path $fallbackRoot "LLVMConfig.cmake"
-            if (!(Test-Path $fallbackConfig)) {
-              throw "[FAIL] fallback LLVMConfig.cmake missing: $fallbackConfig"
+          $ErrorActionPreference = "Stop"
+          function Get-NormalizedPath([string]$PathValue) {
+            return [System.IO.Path]::GetFullPath($PathValue).TrimEnd('\')
+          }
+          function Get-CandidateRoots {
+            $roots = New-Object System.Collections.Generic.List[string]
+            $roots.Add((Join-Path $env:VCINSTALLDIR "Tools\Llvm\x64"))
+            $roots.Add((Join-Path $env:VCINSTALLDIR "Tools\Llvm"))
+            $clangCommands = @(Get-Command clang-cl.exe -All -ErrorAction SilentlyContinue)
+            foreach ($command in $clangCommands) {
+              if ([string]::IsNullOrWhiteSpace($command.Path)) { continue }
+              $binDir = Split-Path -Parent $command.Path
+              if ([string]::IsNullOrWhiteSpace($binDir)) { continue }
+              $root = Split-Path -Parent $binDir
+              if ([string]::IsNullOrWhiteSpace($root)) { continue }
+              $roots.Add($root)
             }
-            "LLVM_DIR=$fallbackRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "EIPPF_ALLOWED_LLVM_DIR=$fallbackRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            "EIPPF_ALLOWED_LLVM_ROOT=$fallbackPrefix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-            Write-Host "[INFO] Using fallback LLVM: $fallbackRoot"
+            if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+              $roots.Add((Join-Path $env:ProgramFiles "LLVM"))
+            }
+            $programFilesX86 = ${env:ProgramFiles(x86)}
+            if (-not [string]::IsNullOrWhiteSpace($programFilesX86)) {
+              $roots.Add((Join-Path $programFilesX86 "LLVM"))
+            }
+            $uniqueRoots = New-Object System.Collections.Generic.List[string]
+            $seen = @{}
+            foreach ($root in $roots) {
+              if ([string]::IsNullOrWhiteSpace($root)) { continue }
+              $normalized = Get-NormalizedPath $root
+              $key = $normalized.ToLowerInvariant()
+              if ($seen.ContainsKey($key)) { continue }
+              $seen[$key] = $true
+              $uniqueRoots.Add($normalized)
+            }
+            return @($uniqueRoots)
+          }
+          function Invoke-LlvmDiscovery([string]$Attempt) {
+            $candidates = @(Get-CandidateRoots)
+            $checks = New-Object System.Collections.Generic.List[object]
+            $selectedRoot = $null
+            foreach ($root in $candidates) {
+              $clangPath = Join-Path $root "bin\clang-cl.exe"
+              $configPath = Join-Path $root "lib\cmake\llvm\LLVMConfig.cmake"
+              $missing = New-Object System.Collections.Generic.List[string]
+              if (-not (Test-Path -LiteralPath $clangPath -PathType Leaf)) { $missing.Add("clang-cl.exe") }
+              if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) { $missing.Add("LLVMConfig.cmake") }
+              $checks.Add([pscustomobject]@{
+                Attempt = $Attempt
+                Root = $root
+                Missing = @($missing)
+              })
+              if ($missing.Count -eq 0 -and $null -eq $selectedRoot) { $selectedRoot = $root }
+            }
+            return [pscustomobject]@{
+              SelectedRoot = $selectedRoot
+              Checks = @($checks)
+            }
+          }
+          $allChecks = New-Object System.Collections.Generic.List[object]
+          $discovery = Invoke-LlvmDiscovery "initial"
+          foreach ($check in $discovery.Checks) { $allChecks.Add($check) }
+          if ($null -eq $discovery.SelectedRoot) {
+            choco install llvm --yes --no-progress
+            $discovery = Invoke-LlvmDiscovery "post_choco"
+            foreach ($check in $discovery.Checks) { $allChecks.Add($check) }
+          }
+          if ($null -eq $discovery.SelectedRoot) {
+            $errorLines = New-Object System.Collections.Generic.List[string]
+            $errorLines.Add("[FAIL] no usable LLVM root found")
+            foreach ($check in $allChecks) {
+              $missingText = if ($check.Missing.Count -eq 0) { "none" } else { ($check.Missing -join ", ") }
+              $errorLines.Add("candidate_root=$($check.Root); attempt=$($check.Attempt); missing=$missingText")
+            }
+            throw ($errorLines -join "`n")
+          }
+          $selectedRoot = Get-NormalizedPath $discovery.SelectedRoot
+          $selectedLlvmDir = Join-Path $selectedRoot "lib\cmake\llvm"
+          $vsLlvmBase = Get-NormalizedPath (Join-Path $env:VCINSTALLDIR "Tools\Llvm")
+          $isVsBundled = $selectedRoot.Equals($vsLlvmBase, [System.StringComparison]::OrdinalIgnoreCase) -or $selectedRoot.StartsWith($vsLlvmBase + "\", [System.StringComparison]::OrdinalIgnoreCase)
+          if ($isVsBundled) {
+            "EIPPF_VS_LLVM_DIR=$selectedLlvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_DIR=$selectedLlvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_ROOT=$selectedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "[INFO] Using Visual Studio bundled LLVM root: $selectedRoot"
+          } else {
+            "LLVM_DIR=$selectedLlvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_DIR=$selectedLlvmDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            "EIPPF_ALLOWED_LLVM_ROOT=$selectedRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            Write-Host "[INFO] Using fallback LLVM root: $selectedRoot"
           }
 
       - name: Build Windows Samples
@@ -376,6 +511,9 @@ jobs:
       - name: Validate Windows Toolchain Report
         shell: powershell
         run: |
+          $hasVsLlvmDir = -not [string]::IsNullOrWhiteSpace($env:EIPPF_VS_LLVM_DIR)
+          $hasLlvmDir = -not [string]::IsNullOrWhiteSpace($env:LLVM_DIR)
+          if ($hasVsLlvmDir -and $hasLlvmDir) { throw "[FAIL] mixed LLVM env exports: both EIPPF_VS_LLVM_DIR and LLVM_DIR are set" }
           $report = "sample_suite_inputs/toolchain_reports/windows.txt"
           if (!(Test-Path $report)) { throw "[FAIL] missing report: $report" }
           $bytes = [System.IO.File]::ReadAllBytes($report)
@@ -403,6 +541,9 @@ jobs:
             $childFull = [System.IO.Path]::GetFullPath($Child)
             $rootFull = [System.IO.Path]::GetFullPath($Root).TrimEnd('\\')
             return $childFull.Equals($rootFull, [System.StringComparison]::OrdinalIgnoreCase) -or $childFull.StartsWith($rootFull + '\\', [System.StringComparison]::OrdinalIgnoreCase)
+          }
+          function Test-PathEquals([string]$Left, [string]$Right) {
+            return [System.IO.Path]::GetFullPath($Left).TrimEnd('\').Equals([System.IO.Path]::GetFullPath($Right).TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)
           }
           function Get-CommandTokens([string]$Text) {
             $tokens = New-Object System.Collections.Generic.List[string]
@@ -448,9 +589,15 @@ jobs:
           $sharedInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\include"))
           $runtimeInclude = [System.IO.Path]::GetFullPath((Join-Path $repoRoot "core\\runtime\\include"))
           $expectedCompilerRoot = Join-Path $allowedRoot.Path "bin"
-          $expectedLlvmDir = (Resolve-Path $env:EIPPF_ALLOWED_LLVM_DIR).Path
-          if (-not (Test-UnderRoot $compilerPath $expectedCompilerRoot)) { throw "[FAIL] compiler provenance mismatch" }
-          if (-not ([System.IO.Path]::GetFullPath($llvmDir).Equals($expectedLlvmDir, [System.StringComparison]::OrdinalIgnoreCase))) { throw "[FAIL] llvm_dir provenance mismatch" }
+          $compilerParent = Split-Path -Parent $compilerPath
+          if (-not (Test-PathEquals $compilerParent $expectedCompilerRoot)) { throw "[FAIL] compiler provenance mismatch" }
+          $expectedLlvmDir = [System.IO.Path]::GetFullPath((Join-Path $allowedRoot.Path "lib\\cmake\\llvm"))
+          if (-not (Test-PathEquals $llvmDir $expectedLlvmDir)) { throw "[FAIL] llvm_dir provenance mismatch" }
+          $vsLlvmBase = [System.IO.Path]::GetFullPath((Join-Path $env:VCINSTALLDIR "Tools\\Llvm")).TrimEnd('\')
+          $allowedRootPath = [System.IO.Path]::GetFullPath($allowedRoot.Path).TrimEnd('\')
+          $isVsBundledRoot = $allowedRootPath.Equals($vsLlvmBase, [System.StringComparison]::OrdinalIgnoreCase) -or $allowedRootPath.StartsWith($vsLlvmBase + "\", [System.StringComparison]::OrdinalIgnoreCase)
+          if ($kv["llvm_source"] -eq "vs_bundled" -and -not $isVsBundledRoot) { throw "[FAIL] llvm_source/root mismatch for vs_bundled" }
+          if ($kv["llvm_source"] -eq "choco_fallback" -and $isVsBundledRoot) { throw "[FAIL] llvm_source/root mismatch for choco_fallback" }
           foreach ($key in @("plugin_path","helper_user_o","helper_kernel_o")) {
             $resolved = (Resolve-Path $kv[$key]).Path
             if (-not (Test-UnderRoot $resolved $outputRoot.Path)) { throw "[FAIL] output path escaped sample_suite_inputs for $key" }
@@ -597,6 +744,7 @@ jobs:
           llvm_config = (llvm_prefix / "lib" / "cmake" / "llvm" / "LLVMConfig.cmake").resolve()
           repo_root = Path.cwd().resolve()
           helper_source = repo_root / "core" / "runtime" / "src" / "string_token_runtime.cpp"
+          ios_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "ios" / "ios_macho_main.c"
           shared_include = repo_root / "core" / "include"
           runtime_include = repo_root / "core" / "runtime" / "include"
 
@@ -638,6 +786,68 @@ jobs:
                           path = path.resolve()
                       inputs.append(path)
               return inputs
+
+          def command_payload_tokens(text: str) -> list[str]:
+              tokens = shlex.split(text, posix=True)
+              if "--" in tokens:
+                  return tokens[tokens.index("--") + 1 :]
+              return tokens
+
+          def enforce_link_language_token_state_machine(
+              command_text: str,
+              command_key: str,
+              source_path: Path,
+              helper_path: Path,
+          ) -> None:
+              tokens = command_payload_tokens(command_text)
+              source_token = str(source_path.resolve())
+              helper_token = str(helper_path.resolve())
+              explicit_language: str | None = None
+              seen_x_c = False
+              seen_source_after_x_c = False
+              seen_x_none = False
+
+              index = 0
+              while index < len(tokens):
+                  token = tokens[index]
+                  language: str | None = None
+                  if token == "-x":
+                      if index + 1 >= len(tokens):
+                          raise SystemExit(f"[FAIL] malformed -x token in {command_key}")
+                      language = tokens[index + 1]
+                      index += 2
+                  elif token.startswith("-x") and len(token) > 2:
+                      language = token[2:]
+                      index += 1
+                  else:
+                      index += 1
+
+                  if language is not None:
+                      if language == "c++":
+                          raise SystemExit(f"[FAIL] forbidden language token -x c++ in {command_key}")
+                      explicit_language = language
+                      if language == "c":
+                          seen_x_c = True
+                      if language == "none":
+                          seen_x_none = True
+                      continue
+
+                  if token == source_token:
+                      if not seen_x_c:
+                          raise SystemExit(f"[FAIL] source token must follow -x c in {command_key}")
+                      seen_source_after_x_c = True
+
+                  is_object_or_archive = re.search(r"\.(?:o|obj|a|lib)$", token) is not None
+                  if is_object_or_archive and explicit_language not in {None, "none"}:
+                      raise SystemExit(f"[FAIL] object/archive token under -x {explicit_language} in {command_key}: {token}")
+
+                  if token == helper_token and not seen_x_none:
+                      raise SystemExit(f"[FAIL] helper input requires -x none before it in {command_key}")
+
+              if not seen_x_c:
+                  raise SystemExit(f"[FAIL] missing -x c in {command_key}")
+              if not seen_source_after_x_c:
+                  raise SystemExit(f"[FAIL] missing source token after -x c in {command_key}")
 
           xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
           ios_sdk = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"], text=True).strip()).resolve()
@@ -723,6 +933,7 @@ jobs:
           unexpected = sorted({str(path) for path in explicit_inputs if path != entry.resolve()})
           if unexpected:
               raise SystemExit(f"[FAIL] unexpected explicit object/archive input for ios_link_command: {';'.join(unexpected)}")
+          enforce_link_language_token_state_machine(command_text, "ios_link_command", ios_source, entry.resolve())
           PY
 
       - name: Upload macOS iOS Samples

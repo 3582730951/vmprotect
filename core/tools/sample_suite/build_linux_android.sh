@@ -322,10 +322,11 @@ run_and_record "${ANDROID_KERNEL_HELPER_SIDECAR}" "${ANDROID_KERNEL_HELPER_CMD[@
 
 LINUX_ELF_LINK_ARGS=(
   -x c
+  "${SRC_ROOT}/linux/linux_elf_main.c"
+  -x none
   -O2
   -Wall
   -Wextra
-  "${SRC_ROOT}/linux/linux_elf_main.c"
   -o "${LINUX_ELF_OUTPUT}"
   "${LINUX_USER_HELPER_O}"
 )
@@ -333,12 +334,13 @@ run_wrapper_and_record "${LINUX_ELF_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_EL
 
 LINUX_SO_LINK_ARGS=(
   -x c
+  "${SRC_ROOT}/linux/linux_so.c"
+  -x none
   -O2
   -Wall
   -Wextra
   -fPIC
   -shared
-  "${SRC_ROOT}/linux/linux_so.c"
   -Wl,-soname,libsample_linux.so
   -o "${LINUX_SO_OUTPUT}"
   "${LINUX_USER_HELPER_O}"
@@ -347,6 +349,8 @@ run_wrapper_and_record "${LINUX_SO_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_SO_
 
 LINUX_KO_LINK_ARGS=(
   -x c
+  "${SRC_ROOT}/kernel/linux_module.c"
+  -x none
   -O2
   -ffreestanding
   -fno-builtin
@@ -355,22 +359,22 @@ LINUX_KO_LINK_ARGS=(
   -nostdlib
   -fuse-ld=lld
   -Wl,-r
-  "${SRC_ROOT}/kernel/linux_module.c"
   -o "${LINUX_KO_OUTPUT}"
   "${LINUX_KERNEL_HELPER_O}"
 )
 run_wrapper_and_record "${LINUX_KO_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_KO_LINK_ARGS[@]}"
 
 ANDROID_SO_LINK_ARGS=(
+  -x c
+  "${SRC_ROOT}/android/android_so.c"
+  -x none
   --target=aarch64-linux-android24
   --sysroot="${ANDROID_SYSROOT}"
-  -x c
   -O2
   -Wall
   -Wextra
   -fPIC
   -shared
-  "${SRC_ROOT}/android/android_so.c"
   -o "${ANDROID_SO_OUTPUT}"
   "${ANDROID_USER_HELPER_O}"
 )
@@ -385,9 +389,11 @@ mapfile -t CLASS_FILES < <(find "${ANDROID_DEX_DIR}/classes" -type f -name '*.cl
 rm -rf "${ANDROID_DEX_DIR}/classes"
 
 ANDROID_KO_LINK_ARGS=(
+  -x c
+  "${SRC_ROOT}/kernel/android_module.c"
+  -x none
   --target=aarch64-linux-android24
   --sysroot="${ANDROID_SYSROOT}"
-  -x c
   -O2
   -ffreestanding
   -fno-builtin
@@ -396,7 +402,6 @@ ANDROID_KO_LINK_ARGS=(
   -nostdlib
   -fuse-ld=lld
   -Wl,-r
-  "${SRC_ROOT}/kernel/android_module.c"
   -o "${ANDROID_KO_OUTPUT}"
   "${ANDROID_KERNEL_HELPER_O}"
 )

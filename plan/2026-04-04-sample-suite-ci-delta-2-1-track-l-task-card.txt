@@ -1,0 +1,83 @@
+# 2026-04-04 Track L 任务卡
+
+## Track
+- Linux/Android Script + Validator
+
+## Owner
+- `Engineer-L`
+
+## Reviewer
+- `Security Reviewer` / `Validation Reviewer`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 只允许修改 `Validate Linux Android Toolchain Report`
+
+## No-Touch Files
+- `/workspace/core/wrapper/eippf_cc.py`
+- `/workspace/core/tests/sample_suite/**`
+
+## Root Cause
+- 当前 5 组 wrapper link args 都是：
+  - `-x c ... <source.c> -o <out> <helper.o>`
+- `-x c` 的语言状态没有在 helper 对象前 reset，所以 `.o` 被 clang 当前前端当成 C 源读入。
+- job `69911013524` 的错误正是 `string_token_runtime.linux.user.o` 被当成源码解析。
+
+## Exact Change
+1. 只修改以下 5 组 link args：
+   - `LINUX_ELF_LINK_ARGS`
+   - `LINUX_SO_LINK_ARGS`
+   - `LINUX_KO_LINK_ARGS`
+   - `ANDROID_SO_LINK_ARGS`
+   - `ANDROID_KO_LINK_ARGS`
+2. 每组都把参数顺序固定为：
+   - `-x c`
+   - `<source.c>`
+   - `-x none`
+   - 其余已有 link 参数
+   - `<helper.o>`
+3. 具体必须变成：
+   - `linux_elf_main.c ... -x none -o sample_linux_elf string_token_runtime.linux.user.o`
+   - `linux_so.c ... -x none -o libsample_linux.so string_token_runtime.linux.user.o`
+   - `linux_module.c ... -x none -o sample_linux_module.ko string_token_runtime.linux.ko.o`
+   - `android_so.c ... -x none -o libsample_android.so string_token_runtime.android.user.o`
+   - `android_module.c ... -x none -o sample_android_module.ko string_token_runtime.android.ko.o`
+4. 除新增 `-x none` 和必要的顺序调整外，以下内容一律不改：
+   - `--target`
+   - `--sysroot`
+   - `-nostdlib`
+   - `-fuse-ld=lld`
+   - `-Wl,-r`
+   - `-shared`
+   - `-fPIC`
+   - 输出名
+   - helper 对象路径
+5. 在 Linux/Android validator 中新增一个 token 状态机校验函数，应用到以下 5 个 sidecar：
+   - `linux_elf_link_command`
+   - `linux_so_link_command`
+   - `linux_ko_link_command`
+   - `android_so_link_command`
+   - `android_ko_link_command`
+6. 状态机规则固定为：
+   - 必须出现 `-x c`
+   - 源文件 token 必须出现在 `-x c` 之后
+   - helper `.o` 之前必须出现 `-x none`
+   - 对象/归档输入只允许出现在当前语言状态是 `none` 或未显式设置时
+   - 任意显式 `-x <lang>` 只要 `<lang> != none`，命中 `.o/.obj/.a/.lib` 就直接失败
+   - 不接受单纯字符串包含检查
+7. 保留现有这些检查，不得删：
+   - `legacy runtime archive leaked`
+   - `explicit helper input set mismatch`
+   - `forbidden linker controls`
+
+## Forbidden
+- 禁止把 helper `.o` 改成 archive/shared lib
+- 禁止把 `-x c` 改成 `-x c++`
+- 禁止把平台脚本 link 语义搬回 workflow
+- 禁止删现有 provenance / explicit input 检查
+
+## Completion Standard
+- `build-linux-android` 成功
+- 去掉 `-x none` 时 validator 能稳定失败
+- `linux_android.txt` key 集合不变

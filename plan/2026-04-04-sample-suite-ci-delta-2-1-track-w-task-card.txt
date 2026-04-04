@@ -1,0 +1,71 @@
+# 2026-04-04 Track W 任务卡
+
+## Track
+- Windows LLVM Preflight + Validator
+
+## Owner
+- `Engineer-W`
+
+## Reviewer
+- `Security Reviewer` / `Validation Reviewer`
+
+## Owned Files
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 只允许修改 `build-windows` job 内：
+    - `Preflight LLVM Toolchain`
+    - `Validate Windows Toolchain Report`
+
+## No-Touch Files
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/wrapper/eippf_cc.py`
+
+## Root Cause
+- 当前 workflow 在 VS bundled LLVM 未命中后，直接假定 fallback 是 `C:\Program Files\LLVM\lib\cmake\llvm`。
+- run `23967734619` 的 job `69911013528` 证明这个假定不成立，导致 preflight 在构建脚本运行前就失败。
+
+## Exact Change
+1. 重写 `Preflight LLVM Toolchain`，不要再用“试 VS，一旦 miss 就直接假定 `C:\Program Files\LLVM`”的两段式逻辑。
+2. 在该 step 内定义一个候选根列表，顺序固定为：
+   - `Join-Path $env:VCINSTALLDIR "Tools\\Llvm\\x64"`
+   - `Join-Path $env:VCINSTALLDIR "Tools\\Llvm"`
+   - 对 `Get-Command clang-cl.exe -All` 的每个结果，取 `<clang-cl.exe 所在目录的父目录>` 作为 `<root>`
+   - `${env:ProgramFiles}\\LLVM`
+   - `${env:ProgramFiles(x86)}\\LLVM`
+3. 可用根判定条件必须同时满足：
+   - `<root>\\bin\\clang-cl.exe` 存在
+   - `<root>\\lib\\cmake\\llvm\\LLVMConfig.cmake` 存在
+4. 第一次扫描若没有命中，执行一次且仅一次：
+   - `choco install llvm --yes --no-progress`
+   - 然后完整重跑第 2 步的同一套候选发现逻辑
+5. 找到根后：
+   - 如果根位于 `VCINSTALLDIR\\Tools\\Llvm*` 下：
+     - 只写：
+       - `EIPPF_VS_LLVM_DIR=<root>\\lib\\cmake\\llvm`
+       - `EIPPF_ALLOWED_LLVM_DIR=<root>\\lib\\cmake\\llvm`
+       - `EIPPF_ALLOWED_LLVM_ROOT=<root>`
+   - 否则：
+     - 只写：
+       - `LLVM_DIR=<root>\\lib\\cmake\\llvm`
+       - `EIPPF_ALLOWED_LLVM_DIR=<root>\\lib\\cmake\\llvm`
+       - `EIPPF_ALLOWED_LLVM_ROOT=<root>`
+   - 禁止同时写 `EIPPF_VS_LLVM_DIR` 和 `LLVM_DIR`
+6. 若没有找到任何可用根，报错信息必须输出：
+   - 所有尝试过的 candidate root
+   - 每个 root 缺失的是 `clang-cl.exe` 还是 `LLVMConfig.cmake`
+7. 在 `Validate Windows Toolchain Report` 中新增负向 gate：
+   - 若环境中同时存在 `EIPPF_VS_LLVM_DIR` 和 `LLVM_DIR`，直接失败
+   - `compiler_path` 必须严格位于 `${EIPPF_ALLOWED_LLVM_ROOT}\\bin`
+   - `llvm_dir` 必须严格等于 `${EIPPF_ALLOWED_LLVM_ROOT}\\lib\\cmake\\llvm`
+   - `llvm_source=vs_bundled` 时，`${EIPPF_ALLOWED_LLVM_ROOT}` 必须位于 `${VCINSTALLDIR}\\Tools\\Llvm*`
+   - `llvm_source=choco_fallback` 时，`${EIPPF_ALLOWED_LLVM_ROOT}` 不得位于 `${VCINSTALLDIR}\\Tools\\Llvm*`
+
+## Forbidden
+- 禁止修改 `build_windows.ps1`
+- 禁止把 `cl.exe` 引入为回退
+- 禁止改 report key 集合
+- 禁止继续硬编码“安装后一定是 `C:\Program Files\LLVM`”
+
+## Completion Standard
+- `build-windows` 能通过 preflight 进入构建
+- validator 能主动拒绝混源回归
+- `windows.txt` key 集合不变

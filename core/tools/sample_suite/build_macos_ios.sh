@@ -193,7 +193,9 @@ ios_link_cmd=(
   -isysroot "${IOS_SDK}"
   -O2
   -fvisibility=hidden
+  -x c
   "${SRC_FILE}"
+  -x none
   -o "${IOS_OUTPUT_BIN}"
   "${IOS_USER_HELPER_O}"
 )

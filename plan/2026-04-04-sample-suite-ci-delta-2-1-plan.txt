@@ -1,0 +1,241 @@
+# 2026-04-04 sample-suite CI Delta-2.1 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 本轮只修 `sample-suite-eval` 在 run `23967734619` 新暴露的 3 个真实阻塞点，不扩范围：
+  1. Windows workflow 的 LLVM preflight 发现逻辑错误，导致 bundled/fallback 都不能稳定落到可用根。
+  2. Linux/Android 平台脚本在 `-x c` 后没有对 helper `.o` 做语言复位，导致对象文件被当前语言状态当成源码。
+  3. macOS/iOS 平台脚本用 `clang++` 驱动 `.c` 样例但没有显式语言边界，触发 `treating 'c' input as 'c++'` 并走到 Apple clang frontend crash。
+- 本轮目标是把这 3 个失败点关掉，并把 validator 升级到能稳定阻止同类回归。
+
+## Task Charter
+- Objective
+  - 让 GitHub Actions `sample-suite-eval` 重新全绿，并把 Windows preflight、Linux/Android 语言边界、macOS/iOS 语言边界冻结成不会再次漂移的机器校验合同。
+- Scope
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Conditional Scope
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 当前默认 `no-touch`；只有 reviewer 明确指出 workflow 无法独立完成 Windows 根发现时，才允许追加 delta 卡触达它。
+- Non-Goals
+  - 不修改 `eippf_cc.py`、`artifact_audit.py`、`post_link_mutator`、`dex_toolchain`、`script_guard`、sample 源码、pass 逻辑。
+  - 不新增 report key schema。
+  - 不把平台脚本构建逻辑复制回 workflow。
+- Constraints
+  - workflow 只允许做 `preflight + 调脚本 + 机器校验`。
+  - 平台脚本继续是样例真实构建链唯一事实来源。
+  - Linux/Android 与 macOS/iOS 的参数修复只能落在对应平台脚本。
+  - Windows 的 LLVM 根必须由 workflow 单一决策；禁止 bundled 与 fallback 混源。
+  - validator 必须新增负向 gate；不能只保留“文件存在”或“字符串包含”。
+- Acceptance Criteria
+  - `sample-suite-eval` run 中以下 4 个 job 全部 `success`：
+    - `build-windows`
+    - `build-linux-android`
+    - `build-macos-ios`
+    - `protect-and-evaluate`
+  - Windows validator 能拒绝混源 LLVM 根与硬编码 fallback 回归。
+  - Linux/Android validator 能拒绝 helper `.o` 仍在 `-x c` 语言状态下的回归。
+  - macOS/iOS validator 能拒绝缺失 `-x none` 或用 `-x c++` 兜底的回归。
+  - 三个平台报告 key 集合与 artifact 目录布局保持不变。
+- Forbidden Shortcuts
+  - 禁止关闭 pass plugin 让样例裸编译。
+  - 禁止把 helper `.o` 改成 `.a/.so/.lib` 来绕过语言状态问题。
+  - 禁止通过改 sample 输入扩展名、删 helper、改报告字段、弱化 validator 来“修绿”。
+  - 禁止固定 `C:\Program Files\LLVM` 作为唯一 fallback 真相源。
+
+## Canonical Artifacts
+- `Task Charter`: 本文件
+- `Architecture Contract`: 本文件中的架构合同章节
+- `Decision Log`: 本文件中的决策记录章节
+- `State Snapshot`: 本文件末尾状态快照
+- `Track W Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-w-task-card.txt`
+- `Track L Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-l-task-card.txt`
+- `Track M Task Card`: `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-m-task-card.txt`
+
+## Agent Roster
+- `Agent 1 (Planner / PM)`: 主会话；负责计划、审核协调、任务分发、集成验证、推送、CI 跟踪。
+- `Architect`: `gpt-5.4 high`
+  - 已对本轮根因给出架构方案。
+- `Architecture Reviewer`: `gpt-5.4 high`
+- `Security Reviewer`: `gpt-5.4 high`
+- `Validation Reviewer`: `gpt-5.2 high`
+- `Engineer-W`: `gpt-5.3-codex high`
+  - 只负责 Windows workflow preflight + validator。
+- `Engineer-L`: `gpt-5.3-codex high`
+  - 只负责 Linux/Android script + validator。
+- `Engineer-M`: `gpt-5.3-codex high`
+  - 只负责 macOS/iOS script + validator。
+
+## Delegation Map
+- Track W -> `Engineer-W`
+- Track L -> `Engineer-L`
+- Track M -> `Engineer-M`
+- 三个 reviewer 只审计划、task card、diff、证据，不改实现。
+- PM 不写上述 3 条工程轨的实现文件，只做计划、审批、回退、验证与推送。
+
+## Architecture Contract
+### Objective
+- 把 workflow 的职责重新收紧为环境发现、脚本调度、机器校验。
+- 把语言边界修复固定在平台脚本内，不让 workflow 或 wrapper 成为第二事实来源。
+
+### System Boundaries
+- Windows
+  - workflow 负责找到唯一可用 LLVM 根并导出环境。
+  - `build_windows.ps1` 继续消费环境并产出既有报告，不改其内部构建语义。
+- Linux/Android
+  - `build_linux_android.sh` 负责所有 link args 真相。
+  - workflow validator 只读取 sidecar/report 做 token 状态机校验。
+- macOS/iOS
+  - `build_macos_ios.sh` 负责最终 wrapper link 真相。
+  - workflow validator 只检查 `-x c -> source -> -x none -> helper.o` 合约与现有 provenance。
+
+### Invariants
+- report key 集合不变。
+- artifact upload/download 布局不变。
+- helper 编译 flags 不变。
+- Windows job 继续使用 `clang-cl`。
+- macOS job 继续使用 `xcrun --sdk iphonesimulator --find clang++` 作为最终 wrapper `--compiler`。
+
+### Failure Handling
+- Windows preflight 必须在找不到任何满足条件的 LLVM 根时 fail-closed，并列出所有尝试的 candidate root。
+- Linux/Android 与 macOS/iOS validator 只要发现 helper 对象仍处于显式源语言状态，直接 fail。
+- 所有新增 gate 都必须是机器可判定，不能依赖日志人工阅读。
+
+## Parallel Tracks
+- Track W / Windows LLVM Preflight + Validator
+  - Owner: `Engineer-W`
+  - Files:
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - Output:
+    - 稳定的 Windows LLVM 根发现逻辑
+    - Windows validator 负向 gate
+  - Depends On:
+    - 本计划通过三审
+- Track L / Linux Android Script + Validator
+  - Owner: `Engineer-L`
+  - Files:
+    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - Output:
+    - 5 条 wrapper link 命令的 `-x none` 复位
+    - Linux/Android 语言状态机 validator
+  - Depends On:
+    - 本计划通过三审
+- Track M / macOS iOS Script + Validator
+  - Owner: `Engineer-M`
+  - Files:
+    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - Output:
+    - iOS wrapper link 明确语言边界
+    - macOS/iOS 语言状态机 validator
+  - Depends On:
+    - 本计划通过三审
+
+## File Ownership
+- PM
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-plan.txt`
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-w-task-card.txt`
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-l-task-card.txt`
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-track-m-task-card.txt`
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-1-approval-and-assignment.txt`
+- Engineer-W
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Windows preflight 与 Windows validator 段
+- Engineer-L
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Linux/Android validator 段
+- Engineer-M
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 macOS/iOS validator 段
+- No-Touch
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/wrapper/eippf_cc.py`
+
+## Dependencies
+- 所有工程轨都依赖本计划和 task card 先通过三审。
+- Track W 先落地，因为它卡在最前置 preflight。
+- Track L 与 Track M 逻辑上可并行实现，但因为共享 workflow 文件，合并顺序必须串行。
+
+## Regression Perimeter
+### Root Cause
+- Windows
+  - workflow 安装后直接假定 `C:\Program Files\LLVM\lib\cmake\llvm`，没有重跑发现逻辑。
+- Linux/Android
+  - `-x c` 没有在 helper `.o` 前显式 reset，`.o` 被前端按源码读入。
+- macOS/iOS
+  - `clang++` 处理 `.c` 源时没有 `-x c` 和 `-x none` 语言边界。
+
+### Directly Changed Paths
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+### Adjacent Paths
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/wrapper/eippf_cc.py`
+
+### Unchanged Guarantees
+- helper 构建语义不改。
+- toolchain report key schema 不改。
+- `protect-and-evaluate` job 不改。
+
+### Second-Order Risks
+- 三条工程轨都碰同一个 workflow 文件，容易冲突。
+- validator 如果只用字符串匹配而不做 token 状态机，会漏掉顺序错位。
+- Windows runner 可能存在第三种 LLVM 布局，preflight 必须报告完整 candidate 列表。
+- 若状态机只枚举常见源语言而不把“任何显式 `-x <lang>` 命中对象输入”一律判死，会留下侥幸过关路径。
+
+## Quality Gates
+- G1
+  - workflow 仍然只有 `preflight + 调脚本 + 机器校验` 三类职责。
+- G2
+  - Windows validator 能拒绝混源环境变量与根路径不一致回归。
+- G3
+  - Linux/Android validator 能拒绝 helper `.o` 落在任何显式源语言状态下的回归；对象/归档输入只允许出现在 `none/未设置`。
+- G4
+  - macOS/iOS validator 能拒绝缺失 `-x none`、改成 `-x c++`，以及任意显式 `-x <lang>` 命中对象输入的回归。
+- G5
+  - 三个平台报告 key 集合与 artifact 布局不变。
+- G6
+  - 合并后 rerun `sample-suite-eval`，4 个 job 全绿。
+
+## Merge Order
+1. Track W
+2. Track L
+3. Track M
+4. 全量 PM 集成验证
+5. 推送并等待 GitHub Actions 结果
+
+## Decision Log
+- D1
+  - Windows 本轮优先修 workflow preflight，不碰 `build_windows.ps1`。
+  - 理由：当前失败发生在脚本启动前，且现有 Windows 报告 schema 已足够支撑 validator。
+- D2
+  - Linux/Android 与 macOS/iOS 都采用显式 `-x c` / `-x none` 语言边界，不改 wrapper。
+  - 理由：失败根因在平台脚本参数序列，不在 wrapper 语义。
+- D3
+  - validator 必须升级为 token 状态机，不接受简单字符串包含。
+  - 理由：只有状态机才能稳定拦截顺序错误与带空格路径。
+
+## Open Risks
+- Windows runner 可能返回多个候选 LLVM 根；preflight 必须按顺序选第一个同时满足 `clang-cl.exe + LLVMConfig.cmake` 的根。
+- macOS 若 Apple clang 本身存在 frontend bug，本轮也只能通过显式语言边界规避，不会改变 Apple toolchain 行为。
+
+## State Snapshot
+- Current Truth
+  - run `23967734619` 失败。
+  - Windows job `69911013528` 卡在 LLVM preflight。
+  - Linux/Android job `69911013524` 因 helper `.o` 被当源码解析而失败。
+  - macOS job `69911013527` 因 `.c` 样例在 `clang++` 下没有显式语言边界而失败。
+- Next Actions
+  - 送 3 审。
+  - 审核通过后按 3 张 task card 分配 `Engineer-W/L/M` 并行实施。
