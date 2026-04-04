@@ -1,0 +1,49 @@
+# 2026-04-04 Delta-2.3a 单 Worker 任务卡
+
+## Track
+- 单文件 validator gap 修补
+
+## Owner
+- `Engineer-D`
+
+## Allowed File
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## No-Touch
+- 任何 `core/tools/*`
+- 任何 `core/wrapper/*`
+- 任何 `core/tests/*`
+- 任何其它 workflow / script / plan 文件
+
+## Exact Change
+1. 定位 Linux/Android validator 的通用路径存在性循环，位置约 `154-160` 行。
+2. 在该循环的排除集合 `if key in {...} or key.endswith("_version_first_line")` 中，仅新增：
+   - `android_so_link_inputs`
+   - `android_ko_link_inputs`
+3. 不要改这个循环的其它判断逻辑；不要删除 `Path(value).is_absolute()` 和 `Path(value).exists()`。
+4. 定位 macOS/iOS validator 的通用路径存在性循环，位置约 `922-928` 行。
+5. 在该循环的排除集合中，仅新增：
+   - `ios_link_inputs`
+6. 不要改这个循环的其它判断逻辑；不要删除 `Path(value).is_absolute()` 和 `Path(value).exists()`。
+7. 定位 macOS/iOS 的 `enforce_compile_only_language_token_state_machine()`，位置约 `1043-1115` 行。
+8. 参照同文件 Android 版本的同名函数，给 iOS 版本补上“立即相邻 source token”状态机，严格按下面做：
+   - 新增布尔状态：`pending_source_after_x_c = False`
+   - 在循环开头优先处理这个状态：
+     - 若 `pending_source_after_x_c` 为真，当前 token 必须等于 `source_token`
+     - 不等于则 `raise SystemExit("[FAIL] source token must immediately follow -x c in {command_key}")`
+     - 等于则置 `seen_source_after_x_c = True`，再清空 `pending_source_after_x_c`
+   - 在处理 `-x` / `-xc` 时：
+     - 若显式语言是 `c`，除 `seen_x_c = True` 外，还必须置 `pending_source_after_x_c = True`
+   - 在循环结束后的收尾校验里新增：
+     - 若 `pending_source_after_x_c` 仍为真，则 `raise SystemExit("[FAIL] missing immediate source token after -x c in {command_key}")`
+9. 除上面这几处外，不要改 iOS 状态机的其它约束，不要改 Android 状态机，不要改函数名、参数、错误口径。
+10. 保存后只做 2 个本地自检：
+   - YAML 解析通过
+   - `git diff --check` 为空
+
+## Completion Standard
+- diff 只包含 `.github/workflows/sample-suite-eval.yml`
+- 只出现 3 类改动：
+  - Android 双输入 key 排除
+  - iOS 双输入 key 排除
+  - iOS compile-only 立即相邻状态机加严

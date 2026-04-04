@@ -1,0 +1,305 @@
+# 2026-04-04 sample-suite CI Delta-2.3 计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `high`
+
+## Task Summary
+- 本轮只解决 run `23981450573` 暴露的 3 个真实 blocker：
+  1. Windows 没有拿到真正可用于 pass plugin 构建的 LLVM18 `LLVM_DIR`
+  2. Android NDK `clang-17` 加载 LLVM18 pass plugin 崩溃
+  3. Apple clang 17 加载 LLVM18 pass plugin 崩溃
+- 本轮不再继续修表层 validator 条件，而是把“pass plugin 编译器 ABI”和“最终目标链接驱动”拆成两个明确阶段。
+
+## Objective
+- 让 `sample-suite-eval` 的 `build-windows`、`build-linux-android`、`build-macos-ios`、`protect-and-evaluate` 全部通过。
+- Windows 不再猜 LLVM root，而是显式 provision 并验证 pinned LLVM18。
+- Android/iOS 不再让 clang17/Apple clang 直接加载 LLVM18 pass plugin，而是改成：
+  - host LLVM18 负责“受保护目标对象编译”
+  - target-native driver 只负责“最终链接”
+
+## Scope
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## Non-Goals
+- 不修改 `/workspace/core/wrapper/eippf_cc.py`
+- 不修改 `protect-and-evaluate` job
+- 不重做 `.ko` 的 no-pie 规则
+- 不扩展到 sample-suite 之外的主仓库构建链
+- 不引入新的 pass/plugin 产物格式
+
+## Source Artifacts
+- 失败 run: `23981450573`
+- Windows job: `69946371263`
+- macOS/iOS job: `69946371267`
+- Linux/Android job: `69946371269`
+- 现有执行记录：
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-execution.txt`
+- 关键实现：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/core/wrapper/eippf_cc.py`
+
+## System Boundaries
+- Windows:
+  - workflow 负责显式 provision 和验证 LLVM18 root
+  - `build_windows.ps1` 只消费已验证的 `LLVM_DIR` / `EIPPF_ALLOWED_LLVM_ROOT`
+- Android:
+  - wrapper 只用于 host LLVM18 的 compile-only 保护编译
+  - NDK `clang++` 只负责 object-only 最终链接
+- iOS:
+  - wrapper 只用于 host LLVM18 的 compile-only 保护编译
+  - `xcrun clang` 只负责 object-only 最终链接
+- validator 必须同时证明：
+  - 保护编译阶段确实发生在 LLVM18 兼容编译器上
+  - 最终链接阶段不再包含 source 输入，也不再触发 pass plugin 注入
+
+## Architecture Contract
+- Windows 不再做 candidate-root 猜测式发现；改成“显式 provision pinned LLVM18 + 固定 root 验证”。
+- Android/iOS 都采用两段式：
+  1. `protected compile`
+     - 使用 wrapper
+     - compile-only
+     - 含 source 输入
+     - 由 host LLVM18 compiler 执行
+     - 允许注入 pass plugin
+     - 产出单独的 protected object
+  2. `final link`
+     - 使用 target-native driver 直接执行，不走 wrapper
+     - object-only
+     - 输入为 `protected object + helper object`
+     - 不再含 source 输入
+     - 不得出现 `-fpass-plugin` / wrapper path / plugin path
+- 这套方案利用 `eippf_cc.py` 现有事实：
+  - compile-only 或 source 输入才注入 pass plugin
+  - object-only link 不会注入 pass plugin
+- 所有 report/validator 必须升级到能表达“compile provenance”和“link provenance”分离。
+- Linux/Android validator 中现有 `check_single_input()` 只保留给 `linux_elf/linux_so/linux_ko`。
+- Android `android_so/android_ko` 必须改成新的双输入校验：
+  - `link_inputs=<protected_o>;<helper_o>`
+  - final link 不再跑 `enforce_link_language_token_state_machine()`
+  - 新增 compile-only 专用状态机函数用于 `*_protected_compile_command`
+- macOS/iOS validator 中现有 `ios_link_inputs` 单输入 helper-only 契约必须删除。
+- iOS final link 不再跑 `enforce_link_language_token_state_machine()`；改为新增 compile-only 专用状态机函数校验 `ios_protected_compile_command`。
+- compile-only 专用状态机函数固定接受：
+  - `command_text`
+  - `command_key`
+  - `source_path`
+  - `output_path`
+- compile-only 专用状态机函数固定规则：
+  - 允许 `-o <protected>.o` 或 `-o<protected>.o`
+  - 不把 `-o` 的值视为“非法 object/archive token”
+  - 不需要 `helper_path`
+  - 必须有 `-c`
+  - 必须有 `-x c`
+  - source token 必须跟在 `-x c` 之后
+
+## File And Module Ownership
+- Track A / Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 `build-windows` job
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Track B / Engineer-B
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Linux/Android validator 段
+- Track C / Engineer-C
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 macOS/iOS validator 段
+
+## Interfaces And Data Contracts
+- Windows 新增环境契约：
+  - `EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18`
+  - `LLVM_DIR=<pinned-root>\\lib\\cmake\\llvm`
+  - `EIPPF_ALLOWED_LLVM_DIR=<same>`
+  - `EIPPF_ALLOWED_LLVM_ROOT=<pinned-root>`
+- Windows report `llvm_source` 新增允许值：
+  - `pinned_llvm18`
+- Android report 新增：
+  - `android_so_protected_o`
+  - `android_ko_protected_o`
+  - `android_so_protected_compile_command`
+  - `android_ko_protected_compile_command`
+  - `android_so_link_driver_path`
+- Android 变更：
+  - `android_so_link_inputs=<protected_o>;<helper_o>`
+  - `android_ko_link_inputs=<protected_o>;<helper_o>`
+- iOS report 新增：
+  - `ios_protected_o`
+  - `ios_protected_compile_command`
+- iOS 变更：
+  - `ios_link_inputs=<protected_o>;<helper_o>`
+
+## Invariants
+- `.ko` 现有 `-no-pie` 规则必须保留，不允许回退。
+- Windows validator 仍必须验证：
+  - `LLVMConfig.cmake`
+  - compiler provenance
+  - plugin build sidecar
+  - helper compile sidecar
+- Android/iOS helper 编译路径不变：
+  - Android helper 继续走 target-native NDK clang++
+  - iOS helper 继续走 `xcrun clang++`
+- wrapper 不修改；通过脚本重排 compile/link 阶段来规避 ABI 崩溃。
+- Android/iOS final link validator 固定为“双输入 object-only 契约”，不得保留旧的 helper-only 单输入断言。
+- Android/iOS protected compile validator 固定承担 compile-only 专用状态机校验，而不是复用现有 link 状态机函数。
+
+## Failure Modes And Error Handling
+- Windows:
+  - pinned LLVM18 缺任一关键文件，workflow 立即 fail
+  - 不允许 fallback 到 VS bundled LLVM 或 preinstalled LLVM20
+- Android/iOS:
+  - protected compile 输出缺失，脚本立即 fail
+  - final link 若仍含 source token、wrapper path、plugin path，validator fail
+  - link inputs 数量或顺序错误，validator fail
+
+## Regression Perimeter
+- 直接改变：
+  - Windows LLVM provision/preflight/export
+  - Android SO/KO build orchestration
+  - iOS Mach-O build orchestration
+  - Linux/Android validator
+  - macOS/iOS validator
+- 邻近风险：
+  - Windows `llvm_source` 报告语义
+  - Android `.ko` no-pie gate
+  - iOS 现有 `ios_link_driver_*` 语义
+  - report key set 和 validator required 集
+- 必须保持不变：
+  - Linux user-mode 样例链路
+  - Windows sample-suite 输出结构
+  - sample-suite artifact/upload job 结构
+
+## Unchanged Guarantees
+- `.ko` 两条链路仍然要求 `-no-pie`
+- `-x` 状态机 gate 不删除，只迁移到 protected compile 阶段
+- `protect-and-evaluate` job 不改
+- `eippf_cc.py` 不改
+- worker 仍然单写者，PM 不接管实现代码
+
+## Probable Failure Scenarios
+- Windows pinned install 仍然得到错误版本或 stale root，导致 validator 通过但 build 失败
+- Android/iOS final link 仍然通过 wrapper 或仍带 source 输入，导致 plugin 重新注入
+- protected compile 输出路径未进入 report/validator，导致 validator 自身失真
+- link inputs 顺序不对，helper 或 protected object 丢失
+- `.ko` no-pie 新规则被 Android split-link 改坏
+
+## Task-Specific Coding Rules
+- Windows preflight 禁止继续使用 candidate-root 猜测逻辑。
+- Windows 必须显式 provision pinned LLVM18，并验证：
+  - `bin\\clang-cl.exe`
+  - `lib\\cmake\\llvm\\LLVMConfig.cmake`
+  - `include\\llvm\\Passes\\PassPlugin.h`
+- Android/iOS protected compile 必须：
+  - 使用 wrapper
+  - 使用 host LLVM18 compiler
+  - compile-only
+  - 带 `-x c`
+  - 带 source path
+  - 产出独立 protected object
+- Android/iOS final link 必须：
+  - 直接调用 target-native driver
+  - object-only
+  - 禁止 source path
+  - 禁止 wrapper path
+  - 禁止 plugin path
+  - 禁止 `-fpass-plugin`
+- validator 必须用显式路径、显式 token、显式 input count/order 做校验，不能只做 substring。
+
+## Parallel Tracks
+- Track A / Windows pinned LLVM18 contract
+  - owner: `Engineer-A`
+  - outputs:
+    - workflow Windows provision + preflight
+    - `build_windows.ps1` report source contract
+    - Windows validator sync
+- Track B / Android split protected-compile vs final-link
+  - owner: `Engineer-B`
+  - outputs:
+    - Android SO/KO split build
+    - report key 升级
+    - Linux/Android validator sync
+- Track C / iOS split protected-compile vs final-link
+  - owner: `Engineer-C`
+  - outputs:
+    - iOS protected object build
+    - report key 升级
+    - macOS/iOS validator sync
+
+## Dependencies
+- Track A 可独立先行
+- Track B 与 Track C 都依赖同一个架构合同，但实现互不依赖
+- Track B/C 都共享“compile-only by host LLVM18 / object-only final link”契约
+- 共享 workflow 文件必须按 `A -> B -> C` 顺序串行合并
+
+## Validation Strategy
+- 本地最小验证：
+  - `python3 -c 'import yaml; yaml.safe_load(...)'`
+  - `bash -n build_linux_android.sh`
+  - `bash -n build_macos_ios.sh`
+  - `git diff --check`
+  - `rg` 校验新增 report key 和 validator required key
+- 远端验收：
+  - `sample-suite-eval` 全绿
+  - `protect-and-evaluate` 取消 skip，真实运行
+
+## Quality Gates
+- G1 Windows
+  - workflow 有独立 pinned LLVM18 provision step
+  - preflight 不再使用 candidate-root 猜测
+  - `build_windows.ps1` / validator 接受 `llvm_source=pinned_llvm18`
+  - 新 run 不再出现 `[FAIL] no usable LLVM root found`
+- G2 Android
+  - `android_so` / `android_ko` 新增 protected compile sidecar 和 protected object
+  - target-native final link 不再含 source path
+  - 新 run 不再出现 `llvm::PassPlugin::Load(...)` / `clang-17` crash
+- G3 iOS
+  - 新增 protected compile sidecar 和 protected object
+  - final link 只走 `xcrun clang` object-only link
+  - 新 run 不再出现 Apple clang 17 frontend crash
+- G4 Validator
+  - report key set 与脚本产物一一对应
+  - compile provenance / link provenance 分离可验证
+  - Android 旧的 `check_single_input()` / helper-first 断言不再覆盖 `android_so/android_ko`
+  - iOS 旧的 `ios_link_inputs` 单输入 helper-only 断言被替换为双输入 object-only 契约
+- G5 End-to-End
+  - `build-windows`、`build-linux-android`、`build-macos-ios`、`protect-and-evaluate` 全部 success
+
+## Forbidden Shortcuts
+- 禁止继续让 clang17 / Apple clang 直接加载 LLVM18 pass plugin
+- 禁止只改 validator/report 让 crash 看起来像“已解决”
+- 禁止 Android/iOS final link 继续通过 wrapper 带 source 输入
+- 禁止 Windows 继续依赖 runner 上现成 LLVM20 或 VS bundled LLVM 猜测式发现
+- 禁止修改 `eippf_cc.py` 规避问题
+
+## Merge Order
+1. Track A
+2. Track B
+3. Track C
+4. PM 集成验证
+5. 计划三审
+6. 提交 / push / 观察新 run
+
+## Reviewer Focus
+1. Windows pinned LLVM18 是否真的消除了 LLVM20 / VS bundled root 漂移
+2. Android/iOS protected compile 是否真的改为 host LLVM18
+3. Android/iOS final link 是否真的 object-only 且无 plugin path
+4. report key / validator required key 是否自洽
+5. `.ko` no-pie 规则是否被 split-link 改坏
+
+## State Snapshot
+- Current Truth
+  - `cbf277f` 已推送，run `23981450573` 失败
+  - Windows 不再有 Generic.List 问题，真实失败是 LLVM root/LLVM_DIR 契约不成立
+  - Android 与 iOS 的真实失败都已收敛到“非 LLVM18 编译器加载 LLVM18 pass plugin 崩溃”
+- Next Actions
+  - 三审当前 Delta-2.3 计划
+  - 审过后分发 3 张任务卡并发实施

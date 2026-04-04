@@ -1,0 +1,53 @@
+# 2026-04-04 Delta-2.3a 执行记录
+
+## Scope
+- 收口 `sample-suite-eval` validator 的 3 个实现级缺口：
+  - Linux/Android 复合 `link_inputs` 被通用路径循环误判
+  - macOS/iOS `ios_link_inputs` 被通用路径循环误判
+  - iOS compile-only 状态机未强制 `-x c` 后立即跟 source
+
+## Input Artifacts
+- [2026-04-04-sample-suite-ci-delta-2-3a-plan.txt](/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-plan.txt)
+- [2026-04-04-sample-suite-ci-delta-2-3a-task-card.txt](/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-task-card.txt)
+- [2026-04-04-sample-suite-ci-delta-2-3a-approval-and-assignment.txt](/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-approval-and-assignment.txt)
+
+## Single Writer
+- `Engineer-D`
+- 允许文件：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- PM 未直接编辑该 workflow 文件
+
+## Implementation Result
+- Linux/Android 通用路径循环排除集合新增：
+  - `android_so_link_inputs`
+  - `android_ko_link_inputs`
+- macOS/iOS 通用路径循环排除集合新增：
+  - `ios_link_inputs`
+- iOS `enforce_compile_only_language_token_state_machine()` 新增：
+  - `pending_source_after_x_c`
+  - 立即相邻 source 校验
+  - 尾部 pending 未消费失败
+
+## PM Static Gates
+- `python3` YAML parse: `PASS`
+- `git diff --check`: `PASS`
+- `bash -n core/tools/sample_suite/build_linux_android.sh`: `PASS`
+- `bash -n core/tools/sample_suite/build_macos_ios.sh`: `PASS`
+- 文本存在性检查：
+  - `android_path_loop_exclusion=true`
+  - `ios_path_loop_exclusion=true`
+  - `ios_pending_state=true`
+  - `ios_immediate_error=true`
+  - `ios_missing_immediate_error=true`
+
+## Three-Agent Implementation Review
+- Architecture Reviewer: `PASS`
+  - 证据：Linux/Android 与 iOS 的复合键排除和 iOS 邻接状态机都已落地，未发现实现级 blocker。
+- Security Reviewer: `PASS`
+  - 证据：复合键从通用循环排除后仍有专用 validator 覆盖；iOS 邻接约束已不可被中间 token 绕过；未放宽其它 gate。
+- Validation Reviewer: `PASS`
+  - 证据：任务卡完成标准 4 项全部满足；Android 状态机保持独立，错误文案精确匹配。
+
+## Outcome
+- Delta-2.3a `PASS`
+- 可以进入整体提交与远端 CI 触发阶段

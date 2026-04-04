@@ -94,11 +94,18 @@ if (-not (Test-Path -LiteralPath $WrapperPath)) {
     throw "[FAIL] wrapper script is missing: $WrapperPath"
 }
 
+$RawPinnedLlvmSource = $env:EIPPF_WINDOWS_LLVM_SOURCE
 $RawVsLlvmDir = $env:EIPPF_VS_LLVM_DIR
 $RawFallbackLlvmDir = $env:LLVM_DIR
 $LLVMSource = ""
 $SelectedLlvmCandidate = ""
-if (-not [string]::IsNullOrWhiteSpace($RawVsLlvmDir)) {
+if (-not [string]::IsNullOrWhiteSpace($RawPinnedLlvmSource)) {
+    if ([string]::IsNullOrWhiteSpace($RawFallbackLlvmDir)) {
+        throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE is set but LLVM_DIR is missing"
+    }
+    $LLVMSource = $RawPinnedLlvmSource.Trim()
+    $SelectedLlvmCandidate = $RawFallbackLlvmDir
+} elseif (-not [string]::IsNullOrWhiteSpace($RawVsLlvmDir)) {
     $LLVMSource = "vs_bundled"
     $SelectedLlvmCandidate = $RawVsLlvmDir
 } elseif (-not [string]::IsNullOrWhiteSpace($RawFallbackLlvmDir)) {

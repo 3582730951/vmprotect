@@ -1,0 +1,82 @@
+# 2026-04-04 sample-suite CI Delta-2.3a 微计划
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `high`
+
+## Task Summary
+- 本轮只修 `/workspace/.github/workflows/sample-suite-eval.yml` 里的 3 个 validator/contract gap：
+  1. Linux/Android 通用路径存在性循环错误地把 `android_so_link_inputs`、`android_ko_link_inputs` 当单一路径校验
+  2. macOS/iOS 通用路径存在性循环错误地把 `ios_link_inputs` 当单一路径校验
+  3. macOS/iOS 的 `enforce_compile_only_language_token_state_machine()` 强度低于 Android 同类实现，没有强制 `source token` 必须紧跟 `-x c`
+
+## Objective
+- 只修本轮实现后复审暴露的 3 个 workflow validator gap
+- 不扩 scope，不改脚本，不改 wrapper，不改 report schema
+
+## Scope
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## Non-Goals
+- 不改任何 `core/tools/*`
+- 不改任何 `core/wrapper/*`
+- 不改任何 `core/tests/*`
+- 不改任何 sample 源码
+- 不重构 validator 结构
+- 不新增任何与本次 3 个 blocker 无关的校验逻辑
+
+## Constraints
+- 单轨执行，只分配 1 个 worker
+- 只修 contract gap，不改实现架构
+- iOS compile-only 状态机必须与 Android 同类实现保持同强度
+- 不允许通过删除通用路径循环或扩大白名单“洗绿”
+
+## Canonical Artifacts
+- 主计划：本文件
+- 任务卡：`/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-task-card.txt`
+
+## File Ownership
+- Worker 唯一写者：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- PM：
+  - 只负责落盘、分发、回收、静态验收、复审、提交、推送、CI 跟踪
+
+## Architecture Contract
+- Linux/Android 通用路径存在性循环继续保留；仅把 `android_so_link_inputs`、`android_ko_link_inputs` 纳入“非单路径字段”排除集合
+- macOS/iOS 通用路径存在性循环继续保留；仅把 `ios_link_inputs` 纳入“非单路径字段”排除集合
+- iOS compile-only 状态机必须加严到 Android 同强度：
+  - `-x c` 后的下一个 token 必须是 source token
+  - 命令结束时若仍在等待 source token，直接失败
+- 不改 Android compile-only 状态机
+- 不改任何错误口径以外的无关逻辑
+
+## Quality Gates
+- `python3 - <<'PY' ... yaml.safe_load(...) ... PY` 能成功解析 `.github/workflows/sample-suite-eval.yml`
+- `git diff --check` 无输出
+- 静态复核满足：
+  - Linux/Android 通用路径循环排除集合包含 `android_so_link_inputs`、`android_ko_link_inputs`
+  - macOS/iOS 通用路径循环排除集合包含 `ios_link_inputs`
+  - iOS `enforce_compile_only_language_token_state_machine()` 中存在 `pending_source_after_x_c` 或等价立即相邻状态变量
+  - iOS 状态机同时覆盖：
+    - 下一 token 不是 source token 的失败分支
+    - 命令结束时仍缺失紧邻 source token 的失败分支
+
+## Forbidden Shortcuts
+- 不允许删除通用路径循环
+- 不允许把双输入字段改回单字符串语义
+- 不允许放宽 iOS 校验，只能加严到 Android 同强度
+- 不允许复制 Android 整段代码后顺手改其它逻辑
+- 不允许修改脚本、wrapper、tests、report schema
+
+## Merge Order
+1. Delta-2.3a 单 worker 改动
+2. PM 静态验收
+3. 实现后复审
+4. 提交 / push / 观察 CI
+
+## State Snapshot
+- 当前主工作区已经落下 Delta-2.3 的主体实现
+- 实现后复审仅剩 3 个 workflow validator gap
+- 本轮是单文件、单写者、微补丁轮次

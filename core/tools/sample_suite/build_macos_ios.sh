@@ -39,10 +39,12 @@ REPORT_DIR="${OUT_ROOT}/toolchain_reports"
 COMMANDS_DIR="${REPORT_DIR}/commands"
 PASS_PLUGIN_PATH="${PASS_PLUGIN_DIR}/eippf_protection_suite_pass.dylib"
 IOS_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.ios.user.o"
+IOS_PROTECTED_O="${RUNTIME_LIB_DIR}/ios_macho.protected.o"
 IOS_OUTPUT_BIN="${IOS_DIR}/sample_ios_macho"
 REPORT_PATH="${REPORT_DIR}/macos_ios.txt"
 PLUGIN_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.plugin_build.txt"
 IOS_HELPER_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_user_helper_compile.txt"
+IOS_PROTECTED_COMPILE_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_protected_compile.txt"
 IOS_LINK_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_link.txt"
 IOS_TARGET="arm64-apple-ios17.0-simulator"
 
@@ -191,20 +193,37 @@ if [[ ! -f "${IOS_USER_HELPER_O}" ]]; then
   fail "iOS helper output missing: ${IOS_USER_HELPER_O}"
 fi
 
-ios_link_cmd=(
+ios_protected_compile_cmd=(
   python3
   "${WRAPPER}"
   --pass-plugin "${PASS_PLUGIN_PATH}"
-  --compiler "${IOS_TARGET_CLANG}"
+  --compiler "${HOST_CLANGXX}"
   --
   -target arm64-apple-ios17.0-simulator
   -isysroot "${IOS_SDK}"
   -O2
   -fvisibility=hidden
+  -fPIC
   -x c
   "${SRC_FILE}"
-  -x none
+  -c
+  -o "${IOS_PROTECTED_O}"
+)
+
+join_argv "${ios_protected_compile_cmd[@]}" > "${IOS_PROTECTED_COMPILE_COMMAND_PATH}"
+printf '\n' >> "${IOS_PROTECTED_COMPILE_COMMAND_PATH}"
+"${ios_protected_compile_cmd[@]}"
+
+if [[ ! -f "${IOS_PROTECTED_O}" ]]; then
+  fail "iOS protected object output missing: ${IOS_PROTECTED_O}"
+fi
+
+ios_link_cmd=(
+  "${IOS_TARGET_CLANG}"
+  -target arm64-apple-ios17.0-simulator
+  -isysroot "${IOS_SDK}"
   -o "${IOS_OUTPUT_BIN}"
+  "${IOS_PROTECTED_O}"
   "${IOS_USER_HELPER_O}"
 )
 
@@ -212,7 +231,7 @@ join_argv "${ios_link_cmd[@]}" > "${IOS_LINK_COMMAND_PATH}"
 printf '\n' >> "${IOS_LINK_COMMAND_PATH}"
 "${ios_link_cmd[@]}"
 
-IOS_LINK_INPUTS="${IOS_USER_HELPER_O}"
+IOS_LINK_INPUTS="${IOS_PROTECTED_O};${IOS_USER_HELPER_O}"
 
 {
   printf 'platform=macos_ios\n'
@@ -226,8 +245,10 @@ IOS_LINK_INPUTS="${IOS_USER_HELPER_O}"
   printf 'llvm_dir=%s\n' "${LLVM_CMAKE_DIR}"
   printf 'plugin_path=%s\n' "${PASS_PLUGIN_PATH}"
   printf 'ios_user_helper_o=%s\n' "${IOS_USER_HELPER_O}"
+  printf 'ios_protected_o=%s\n' "${IOS_PROTECTED_O}"
   printf 'plugin_build_command=%s\n' "${PLUGIN_COMMAND_PATH}"
   printf 'ios_user_helper_compile_command=%s\n' "${IOS_HELPER_COMMAND_PATH}"
+  printf 'ios_protected_compile_command=%s\n' "${IOS_PROTECTED_COMPILE_COMMAND_PATH}"
   printf 'ios_link_inputs=%s\n' "${IOS_LINK_INPUTS}"
   printf 'ios_link_command=%s\n' "${IOS_LINK_COMMAND_PATH}"
   printf 'ios_target=%s\n' "${IOS_TARGET}"

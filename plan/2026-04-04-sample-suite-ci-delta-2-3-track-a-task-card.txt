@@ -1,0 +1,55 @@
+# 2026-04-04 Delta-2.3 Track A 任务卡
+
+## Track
+- Windows pinned LLVM18 contract
+
+## Owner
+- `Engineer-A`
+
+## Owned Files
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 `build-windows` job
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## No-Touch
+- `/workspace/core/wrapper/eippf_cc.py`
+- Linux/Android validator 段
+- macOS/iOS validator 段
+- `protect-and-evaluate` job
+
+## Exact Change
+1. 在 `build-windows` 中新增独立步骤 `Install Pinned LLVM 18`，位置在 `Setup MSVC Environment` 后、`Preflight LLVM Toolchain` 前。
+2. 新步骤固定做：
+   - 目标 root：`C:\\Program Files\\LLVM`
+   - 若以下任一缺失或 clang 版本不是 18，则执行：
+     - `choco install llvm --version=18.1.8 --allow-downgrade --force --yes --no-progress`
+   - 必须校验：
+     - `C:\\Program Files\\LLVM\\bin\\clang-cl.exe`
+     - `C:\\Program Files\\LLVM\\lib\\cmake\\llvm\\LLVMConfig.cmake`
+     - `C:\\Program Files\\LLVM\\include\\llvm\\Passes\\PassPlugin.h`
+3. 重写 `Preflight LLVM Toolchain`：
+   - 删除 candidate-root 猜测和 `Invoke-LlvmDiscovery`
+   - 只验证上一步 provision 的 pinned root
+   - 成功后固定导出：
+     - `LLVM_DIR=C:\\Program Files\\LLVM\\lib\\cmake\\llvm`
+     - `EIPPF_ALLOWED_LLVM_DIR=C:\\Program Files\\LLVM\\lib\\cmake\\llvm`
+     - `EIPPF_ALLOWED_LLVM_ROOT=C:\\Program Files\\LLVM`
+     - `EIPPF_WINDOWS_LLVM_SOURCE=pinned_llvm18`
+   - 不再导出 `EIPPF_VS_LLVM_DIR`
+4. 修改 `build_windows.ps1`：
+   - 若存在 `EIPPF_WINDOWS_LLVM_SOURCE`，报告中的 `llvm_source` 直接使用它
+   - 否则保留现有 `vs_bundled/choco_fallback` 逻辑作为兼容分支
+5. 修改 Windows validator：
+   - `llvm_source` 允许值加入 `pinned_llvm18`
+   - 若 `llvm_source=pinned_llvm18`：
+     - 禁止 `EIPPF_VS_LLVM_DIR`
+     - `compiler_path` 必须位于 `EIPPF_ALLOWED_LLVM_ROOT\\bin`
+     - `llvm_dir` 必须等于 `EIPPF_ALLOWED_LLVM_ROOT\\lib\\cmake\\llvm`
+     - `compiler_version_first_line` 必须含 `clang version 18`
+   - 保留其余 plugin/helper/link sidecar 校验
+
+## Completion Standard
+- Windows preflight 不再出现 `[FAIL] no usable LLVM root found`
+- Windows 不再依赖 runner 上现有 LLVM20 或 VS bundled LLVM 猜测
+- `build_windows.ps1` 和 validator 能正确接受 `llvm_source=pinned_llvm18`
+

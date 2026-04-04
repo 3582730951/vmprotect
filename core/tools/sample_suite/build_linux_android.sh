@@ -176,6 +176,8 @@ LINUX_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.linux.user.o"
 LINUX_KERNEL_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.linux.ko.o"
 ANDROID_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.android.user.o"
 ANDROID_KERNEL_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.android.ko.o"
+ANDROID_SO_PROTECTED_O="${RUNTIME_LIB_DIR}/sample_android_so.protected.o"
+ANDROID_KO_PROTECTED_O="${RUNTIME_LIB_DIR}/sample_android_ko.protected.o"
 
 LINUX_ELF_OUTPUT="${LINUX_ELF_DIR}/sample_linux_elf"
 LINUX_SO_OUTPUT="${LINUX_SO_DIR}/libsample_linux.so"
@@ -188,6 +190,8 @@ LINUX_USER_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.linux_user_helper_compi
 LINUX_KERNEL_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.linux_kernel_helper_compile.txt"
 ANDROID_USER_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.android_user_helper_compile.txt"
 ANDROID_KERNEL_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.android_kernel_helper_compile.txt"
+ANDROID_SO_PROTECTED_COMPILE_SIDECAR="${COMMANDS_DIR}/linux_android.android_so_protected_compile.txt"
+ANDROID_KO_PROTECTED_COMPILE_SIDECAR="${COMMANDS_DIR}/linux_android.android_ko_protected_compile.txt"
 LINUX_ELF_LINK_SIDECAR="${COMMANDS_DIR}/linux_android.linux_elf_link.txt"
 LINUX_SO_LINK_SIDECAR="${COMMANDS_DIR}/linux_android.linux_so_link.txt"
 LINUX_KO_LINK_SIDECAR="${COMMANDS_DIR}/linux_android.linux_ko_link.txt"
@@ -365,21 +369,29 @@ LINUX_KO_LINK_ARGS=(
 )
 run_wrapper_and_record "${LINUX_KO_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_KO_LINK_ARGS[@]}"
 
-ANDROID_SO_LINK_ARGS=(
+ANDROID_SO_PROTECTED_COMPILE_ARGS=(
   -x c
   "${SRC_ROOT}/android/android_so.c"
-  -x none
+  -c
   --target=aarch64-linux-android24
   --sysroot="${ANDROID_SYSROOT}"
   -O2
   -Wall
   -Wextra
   -fPIC
+  -o "${ANDROID_SO_PROTECTED_O}"
+)
+run_wrapper_and_record "${ANDROID_SO_PROTECTED_COMPILE_SIDECAR}" "${HOST_CLANGXX}" "${ANDROID_SO_PROTECTED_COMPILE_ARGS[@]}"
+
+ANDROID_SO_LINK_ARGS=(
+  --target=aarch64-linux-android24
+  --sysroot="${ANDROID_SYSROOT}"
   -shared
   -o "${ANDROID_SO_OUTPUT}"
+  "${ANDROID_SO_PROTECTED_O}"
   "${ANDROID_USER_HELPER_O}"
 )
-run_wrapper_and_record "${ANDROID_SO_LINK_SIDECAR}" "${ANDROID_TARGET_CLANGXX}" "${ANDROID_SO_LINK_ARGS[@]}"
+run_and_record "${ANDROID_SO_LINK_SIDECAR}" "${ANDROID_TARGET_CLANGXX}" "${ANDROID_SO_LINK_ARGS[@]}"
 
 mkdir -p "${ANDROID_DEX_DIR}/classes"
 javac -source 8 -target 8 \
@@ -389,10 +401,10 @@ mapfile -t CLASS_FILES < <(find "${ANDROID_DEX_DIR}/classes" -type f -name '*.cl
 "${D8_BIN}" --min-api 24 --output "${ANDROID_DEX_DIR}" "${CLASS_FILES[@]}"
 rm -rf "${ANDROID_DEX_DIR}/classes"
 
-ANDROID_KO_LINK_ARGS=(
+ANDROID_KO_PROTECTED_COMPILE_ARGS=(
   -x c
   "${SRC_ROOT}/kernel/android_module.c"
-  -x none
+  -c
   --target=aarch64-linux-android24
   --sysroot="${ANDROID_SYSROOT}"
   -O2
@@ -400,14 +412,22 @@ ANDROID_KO_LINK_ARGS=(
   -fno-builtin
   -fno-stack-protector
   -fno-asynchronous-unwind-tables
+  -o "${ANDROID_KO_PROTECTED_O}"
+)
+run_wrapper_and_record "${ANDROID_KO_PROTECTED_COMPILE_SIDECAR}" "${HOST_CLANGXX}" "${ANDROID_KO_PROTECTED_COMPILE_ARGS[@]}"
+
+ANDROID_KO_LINK_ARGS=(
+  --target=aarch64-linux-android24
+  --sysroot="${ANDROID_SYSROOT}"
   -nostdlib
   -no-pie
   -fuse-ld=lld
   -Wl,-r
   -o "${ANDROID_KO_OUTPUT}"
+  "${ANDROID_KO_PROTECTED_O}"
   "${ANDROID_KERNEL_HELPER_O}"
 )
-run_wrapper_and_record "${ANDROID_KO_LINK_SIDECAR}" "${ANDROID_TARGET_CLANGXX}" "${ANDROID_KO_LINK_ARGS[@]}"
+run_and_record "${ANDROID_KO_LINK_SIDECAR}" "${ANDROID_TARGET_CLANGXX}" "${ANDROID_KO_LINK_ARGS[@]}"
 
 cp "${SRC_ROOT}/shell/sample_eval.sh" "${SHELL_DIR}/sample_eval.sh"
 chmod +x "${SHELL_DIR}/sample_eval.sh"
@@ -424,12 +444,16 @@ LINUX_USER_HELPER_O_ABS="$(resolve_path "${LINUX_USER_HELPER_O}")"
 LINUX_KERNEL_HELPER_O_ABS="$(resolve_path "${LINUX_KERNEL_HELPER_O}")"
 ANDROID_USER_HELPER_O_ABS="$(resolve_path "${ANDROID_USER_HELPER_O}")"
 ANDROID_KERNEL_HELPER_O_ABS="$(resolve_path "${ANDROID_KERNEL_HELPER_O}")"
+ANDROID_SO_PROTECTED_O_ABS="$(resolve_path "${ANDROID_SO_PROTECTED_O}")"
+ANDROID_KO_PROTECTED_O_ABS="$(resolve_path "${ANDROID_KO_PROTECTED_O}")"
 
 PLUGIN_BUILD_SIDECAR_ABS="$(resolve_path "${PLUGIN_BUILD_SIDECAR}")"
 LINUX_USER_HELPER_SIDECAR_ABS="$(resolve_path "${LINUX_USER_HELPER_SIDECAR}")"
 LINUX_KERNEL_HELPER_SIDECAR_ABS="$(resolve_path "${LINUX_KERNEL_HELPER_SIDECAR}")"
 ANDROID_USER_HELPER_SIDECAR_ABS="$(resolve_path "${ANDROID_USER_HELPER_SIDECAR}")"
 ANDROID_KERNEL_HELPER_SIDECAR_ABS="$(resolve_path "${ANDROID_KERNEL_HELPER_SIDECAR}")"
+ANDROID_SO_PROTECTED_COMPILE_SIDECAR_ABS="$(resolve_path "${ANDROID_SO_PROTECTED_COMPILE_SIDECAR}")"
+ANDROID_KO_PROTECTED_COMPILE_SIDECAR_ABS="$(resolve_path "${ANDROID_KO_PROTECTED_COMPILE_SIDECAR}")"
 LINUX_ELF_LINK_SIDECAR_ABS="$(resolve_path "${LINUX_ELF_LINK_SIDECAR}")"
 LINUX_SO_LINK_SIDECAR_ABS="$(resolve_path "${LINUX_SO_LINK_SIDECAR}")"
 LINUX_KO_LINK_SIDECAR_ABS="$(resolve_path "${LINUX_KO_LINK_SIDECAR}")"
@@ -450,21 +474,26 @@ linux_user_helper_o=${LINUX_USER_HELPER_O_ABS}
 linux_kernel_helper_o=${LINUX_KERNEL_HELPER_O_ABS}
 android_user_helper_o=${ANDROID_USER_HELPER_O_ABS}
 android_kernel_helper_o=${ANDROID_KERNEL_HELPER_O_ABS}
+android_so_protected_o=${ANDROID_SO_PROTECTED_O_ABS}
+android_ko_protected_o=${ANDROID_KO_PROTECTED_O_ABS}
 plugin_build_command=${PLUGIN_BUILD_SIDECAR_ABS}
 linux_user_helper_compile_command=${LINUX_USER_HELPER_SIDECAR_ABS}
 linux_kernel_helper_compile_command=${LINUX_KERNEL_HELPER_SIDECAR_ABS}
 android_user_helper_compile_command=${ANDROID_USER_HELPER_SIDECAR_ABS}
 android_kernel_helper_compile_command=${ANDROID_KERNEL_HELPER_SIDECAR_ABS}
+android_so_protected_compile_command=${ANDROID_SO_PROTECTED_COMPILE_SIDECAR_ABS}
+android_ko_protected_compile_command=${ANDROID_KO_PROTECTED_COMPILE_SIDECAR_ABS}
 linux_elf_link_inputs=${LINUX_USER_HELPER_O_ABS}
 linux_so_link_inputs=${LINUX_USER_HELPER_O_ABS}
 linux_ko_link_inputs=${LINUX_KERNEL_HELPER_O_ABS}
-android_so_link_inputs=${ANDROID_USER_HELPER_O_ABS}
-android_ko_link_inputs=${ANDROID_KERNEL_HELPER_O_ABS}
+android_so_link_inputs=${ANDROID_SO_PROTECTED_O_ABS};${ANDROID_USER_HELPER_O_ABS}
+android_ko_link_inputs=${ANDROID_KO_PROTECTED_O_ABS};${ANDROID_KERNEL_HELPER_O_ABS}
 linux_elf_link_command=${LINUX_ELF_LINK_SIDECAR_ABS}
 linux_so_link_command=${LINUX_SO_LINK_SIDECAR_ABS}
 linux_ko_link_command=${LINUX_KO_LINK_SIDECAR_ABS}
 android_so_link_command=${ANDROID_SO_LINK_SIDECAR_ABS}
 android_ko_link_command=${ANDROID_KO_LINK_SIDECAR_ABS}
+android_so_link_driver_path=${ANDROID_COMPILER_PATH}
 android_ko_link_driver_path=${ANDROID_COMPILER_PATH}
 linux_ko_link_flags=-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r
 android_ko_link_flags=--target=aarch64-linux-android24;-nostdlib;-no-pie;-fuse-ld=lld;-Wl,-r

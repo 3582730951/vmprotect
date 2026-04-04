@@ -1,72 +1,69 @@
 # 2026-04-04 sample-suite CI Delta-2.2 执行记录
 
-## Execution Mode
-- `real-multi-agent`
+## Scope
+- 本轮执行的目标是关闭 run `23968822768` 中的 3 个 blocker：
+  - Windows PowerShell Generic List 类型错误
+  - Linux/Android `.ko` 的 `-r and -pie may not be used together`
+  - macOS/iOS final driver 仍为 `clang++`
 
-## PM Verdict
-- `READY_TO_PUSH`
+## Implemented Changes
+- 提交：
+  - `cbf277f4d94173488c8e48955f2037ca4600293a`
+  - message: `fix: resolve sample-suite ci delta 2.2 blockers`
+- 修改文件：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
 
-## Worker Assignment
-- Track A / Windows workflow-only repair
-  - Engineer-A
-  - write set:
-    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 `build-windows` job
-- Track B / Linux Android `.ko` no-pie contract
-  - Engineer-B
-  - write set:
-    - `/workspace/core/tools/sample_suite/build_linux_android.sh`
-    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 Linux/Android validator 段
-- Track C / macOS iOS final driver switch
-  - Engineer-C
-  - write set:
-    - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
-    - `/workspace/.github/workflows/sample-suite-eval.yml` 中 macOS/iOS validator 段
+## Local Verification
+- `python3 -c 'import yaml; yaml.safe_load(open(".github/workflows/sample-suite-eval.yml"))'`
+  - pass
+- `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`
+  - pass
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - pass
+- 静态 gate 确认：
+  - workflow 中已无 `System.Collections.Generic.List` / `.Add(`
+  - `.ko` 两条链路已显式含 `-no-pie`
+  - iOS report / validator 已拆出 `ios_link_driver_*`
 
-## Delivered Changes
-- Track A
-  - `build-windows` job 不再使用 `System.Collections.Generic.List[...]` 与 `.Add(...)`
-  - `Invoke-LlvmDiscovery` 和 Windows validator 改为 PowerShell 原生数组 `@()` + `+=`
-- Track B
-  - `LINUX_KO_LINK_ARGS` 与 `ANDROID_KO_LINK_ARGS` 新增且仅新增一个 `-no-pie`
-  - report 新增 `linux_ko_link_flags`
-  - `android_ko_link_flags` 同步加入 `-no-pie`
-  - Linux validator 新增：
-    - `linux_ko_link_flags` required key
-    - 非路径 key 白名单
-    - `.ko` token 级 no-pie / explicit PIE gate
-    - no-pie 反向泄漏边界检查
-- Track C
-  - iOS helper 继续走 `xcrun clang++`
-  - iOS final wrapper driver 切到 `xcrun clang`
-  - report 新增：
-    - `ios_link_driver_path`
-    - `ios_link_driver_version_first_line`
-  - macOS validator 新增双 provenance 绑定
+## Remote Execution
+- GitHub Actions run:
+  - `23981450573`
+- URL:
+  - `https://github.com/3582730951/vmprotect/actions/runs/23981450573`
+- 结果：
+  - `failure`
 
-## PM Integration Validation
-- `python3` + `yaml.safe_load(.github/workflows/sample-suite-eval.yml)`：`PASS`
-- `bash -n /workspace/core/tools/sample_suite/build_linux_android.sh`：`PASS`
-- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`：`PASS`
-- `git diff --check`：`PASS`
-- 静态断言：
-  - workflow 中已无 `System.Collections.Generic.List`：`PASS`
-  - workflow 中已无 `.Add(`：`PASS`
-  - `.ko` flags 已显式含 `-no-pie`：`PASS`
-  - iOS final driver 已切换到 `IOS_TARGET_CLANG`：`PASS`
-  - iOS report/validator 已含 `ios_link_driver_*`：`PASS`
+## Actual Outcomes
+- 已解决：
+  - Windows 不再报 PowerShell `Argument types do not match`
+  - Linux/Android `.ko` 不再报 `-r and -pie may not be used together`
+- 未解决，且暴露出新的真实 blocker：
+  1. Windows / `69946371263`
+     - `Preflight LLVM Toolchain` 失败
+     - 错误：`[FAIL] no usable LLVM root found`
+     - 候选根缺 `LLVMConfig.cmake`
+  2. macOS/iOS / `69946371267`
+     - `Build iOS Mach-O Sample` 失败
+     - 错误：`clang: error: unable to execute command: Segmentation fault: 11`
+  3. Linux/Android / `69946371269`
+     - `Build Linux Android Samples` 失败
+     - 错误根因迁移为 Android NDK `clang-17` 在 `llvm::PassPlugin::Load(...)` 处崩溃
+  4. `protect-and-evaluate`
+     - 被上游 3 个 build job 失败联动 skip
 
-## Scope Compliance
-- 未修改：
-  - `/workspace/core/tools/sample_suite/build_windows.ps1`
-  - `/workspace/core/wrapper/eippf_cc.py`
-  - `protect-and-evaluate` job
-- 共享 workflow 文件未出现跨轨覆盖到非计划段的证据
+## Root-Cause Snapshot
+- Windows：
+  - 当前问题已从 PowerShell 实现错误切换为 LLVM18 root / `LLVM_DIR` 契约不成立
+- Android：
+  - 当前问题已从 `.ko` PIE 冲突切换为 NDK clang17 加载 LLVM18 pass plugin 的 ABI 不兼容
+- iOS：
+  - 当前问题已从 final driver 选择错误切换为 Apple clang17 加载 LLVM18 pass plugin 的 ABI 不兼容
 
-## Open Risk
-- 本轮只做静态集成验证；最终裁决仍以 GitHub Actions `sample-suite-eval` 新 run 为准。
-
-## Next Action
-- 提交本轮实现与计划包
-- push 到远端 `main`
-- 观察新的 `sample-suite-eval` run
-- 若仍有 blocker，进入下一轮 `replan -> 三审 -> 任务卡 -> 并行实施`
+## Decision
+- `Delta-2.2` 判定为：
+  - `implemented but not accepted`
+- 下一轮必须进入 `Delta-2.3`：
+  - Windows：显式 provision pinned LLVM18
+  - Android/iOS：拆成 `host LLVM18 protected compile` + `target-native object-only final link`

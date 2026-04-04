@@ -1,0 +1,62 @@
+# 2026-04-04 sample-suite CI Delta-2.3 审核通过与任务分发
+
+## Review Scope
+- 审核口径固定为 `plan-only`
+- 只判断当前计划包是否已经足够机械化，可以放行编码实施
+- 不把“当前 CI 仍失败”或“当前尚未实施”当成计划 FAIL 理由
+
+## Canonical Plan Package
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3-plan.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3-track-a-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3-track-b-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3-track-c-task-card.txt`
+- `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-2-execution.txt`
+
+## Review Verdicts
+- Architecture Reviewer: `PASS`
+  - agent: `019d5939-4f93-7163-b18a-2e31a83e2851`
+  - 通过原因：
+    - 当前计划包本身已无新的架构层阻塞项
+    - compile-only 专用状态机函数已被写死
+    - Android/iOS 两段式契约已机械化到可直接下发
+- Security Reviewer: `PASS`
+  - agent: `019d5939-5a37-7ba0-a598-8ed1bee9bb72`
+  - 通过原因：
+    - Windows pinned LLVM18、Android/iOS object-only final link、`.ko` no-pie 保真都已写进计划
+    - 计划层没有新的安全/契约空白
+- Validation Reviewer: `PASS`
+  - agent: `019d5939-6503-7f63-ab7d-e1498ce03e27`
+  - 通过原因：
+    - Android/iOS 不再复用旧 link 状态机
+    - 双输入 link validator 与 compile-only validator 契约都已机械化
+
+## PM Decision
+- `Delta-2.3` 计划包已通过 `plan-only 3-agent PASS`
+- 允许进入编码实施阶段
+
+## File Ownership
+- Track A / Engineer-A
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 `build-windows` job
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Track B / Engineer-B
+  - `/workspace/core/tools/sample_suite/build_linux_android.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 Linux/Android validator 段
+- Track C / Engineer-C
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+    - 仅 macOS/iOS validator 段
+
+## Merge Order
+1. Track A
+2. Track B
+3. Track C
+4. PM 集成验证
+5. 提交 / push / 观察新 run
+
+## PM Rules
+- PM 不写以上 3 条工程轨的实现文件
+- PM 只做任务分发、回收、集成验证、提交推送、CI 跟踪
+- 任一 Engineer 不得越权修改他人 write set
+- 若某 worker 再次把“未实施/未验收”误报成计划层 FAIL，直接回收并重派

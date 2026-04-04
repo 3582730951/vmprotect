@@ -1,0 +1,126 @@
+# 2026-04-04 Delta-2.3 Track B 任务卡
+
+## Track
+- Android split protected-compile vs final-link
+
+## Owner
+- `Engineer-B`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_linux_android.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 Linux/Android validator 段
+
+## No-Touch
+- `/workspace/core/wrapper/eippf_cc.py`
+- Windows job
+- macOS/iOS validator 段
+
+## Exact Change
+1. 保留以下现有逻辑不动：
+   - pass plugin 用 host LLVM18 构建
+   - Linux user-mode / Linux `.ko` 全链路
+   - Android helper 编译
+   - Android `.ko` 的 `-no-pie` 规则
+2. 在 `build_linux_android.sh` 中新增：
+   - `ANDROID_SO_PROTECTED_O`
+   - `ANDROID_KO_PROTECTED_O`
+   - `ANDROID_SO_PROTECTED_COMPILE_SIDECAR`
+   - `ANDROID_KO_PROTECTED_COMPILE_SIDECAR`
+3. 删除当前“Android source + helper 一次性 wrapper compile+link”的两条路径，替换为两段式。
+4. 第一段 `protected compile`：
+   - 使用 `run_wrapper_and_record`
+   - compiler 固定为 `HOST_CLANGXX`
+   - `android_so`：
+     - `-x c <android_so.c> -c`
+     - `--target=aarch64-linux-android24`
+     - `--sysroot=${ANDROID_SYSROOT}`
+     - `-O2 -Wall -Wextra -fPIC`
+     - 输出 `ANDROID_SO_PROTECTED_O`
+   - `android_ko`：
+     - `-x c <android_module.c> -c`
+     - `--target=aarch64-linux-android24`
+     - `--sysroot=${ANDROID_SYSROOT}`
+     - `-O2`
+     - `-ffreestanding -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables`
+     - 输出 `ANDROID_KO_PROTECTED_O`
+5. 第二段 `final link`：
+   - 不再使用 wrapper
+   - 直接调用 `ANDROID_TARGET_CLANGXX`
+   - `android_so`：
+     - `--target=aarch64-linux-android24`
+     - `--sysroot=${ANDROID_SYSROOT}`
+     - `-shared -o ${ANDROID_SO_OUTPUT}`
+     - 输入顺序固定：`${ANDROID_SO_PROTECTED_O}` 然后 `${ANDROID_USER_HELPER_O}`
+   - `android_ko`：
+     - `--target=aarch64-linux-android24`
+     - `--sysroot=${ANDROID_SYSROOT}`
+     - `-nostdlib -no-pie -fuse-ld=lld -Wl,-r`
+     - `-o ${ANDROID_KO_OUTPUT}`
+     - 输入顺序固定：`${ANDROID_KO_PROTECTED_O}` 然后 `${ANDROID_KERNEL_HELPER_O}`
+6. report 升级：
+   - 新增：
+     - `android_so_protected_o`
+     - `android_ko_protected_o`
+     - `android_so_protected_compile_command`
+     - `android_ko_protected_compile_command`
+     - `android_so_link_driver_path`
+   - 修改：
+     - `android_so_link_inputs=${ANDROID_SO_PROTECTED_O_ABS};${ANDROID_USER_HELPER_O_ABS}`
+     - `android_ko_link_inputs=${ANDROID_KO_PROTECTED_O_ABS};${ANDROID_KERNEL_HELPER_O_ABS}`
+7. Linux/Android validator 修改：
+   - `required` 增加上述 5 个新键
+   - 保留现有 `enforce_link_language_token_state_machine()` 只给 Linux 现有一段式链路使用
+   - 新增一个 compile-only 专用状态机函数，固定签名：
+     - `enforce_compile_only_language_token_state_machine(command_text, command_key, source_path, output_path)`
+   - 新函数固定规则：
+     - 必须存在 `-c`
+     - 必须存在 `-x c`
+     - source token 必须跟在 `-x c` 之后
+     - 允许 `-o <protected>.o` 或 `-o<protected>.o`
+     - 不把 `-o` 的输出对象路径当成非法 object/archive token
+     - 不接受 `helper_path` 参数
+   - 保留 `check_single_input()` 给 `linux_elf_link_inputs`、`linux_so_link_inputs`、`linux_ko_link_inputs`
+   - 不再用 `check_single_input()` 校验 `android_so_link_inputs` 与 `android_ko_link_inputs`
+   - 新增一个 Android 专用双输入校验函数，固定校验：
+     - `android_so_link_inputs` / `android_ko_link_inputs` 恰好有 2 个条目
+     - 第 1 个条目固定是 `protected_o`
+     - 第 2 个条目固定是 `helper_o`
+     - 两个条目都必须是绝对路径、存在、位于 `sample_suite_inputs`
+   - `android_so_protected_o` / `android_ko_protected_o` 必须位于 `sample_suite_inputs`
+   - `android_so_protected_compile_command` / `android_ko_protected_compile_command` 必须位于 `commands`
+   - protected compile sidecar 必须证明：
+     - compiler path 是 `host_compiler_path`
+     - 带 source path
+     - 带 `-c`
+     - 带 `-x c`
+     - 带 target/sysroot
+     - 带输出 protected object path
+     - 对 `android_so_protected_compile_command` / `android_ko_protected_compile_command` 应用新的 `enforce_compile_only_language_token_state_machine()`，并把 `output_path` 明确绑定到对应 `protected_o`
+   - protected compile sidecar 禁止：
+     - helper object
+     - `-shared`
+     - `-Wl,-r`
+   - `android_so_link_command` / `android_ko_link_command` 必须证明：
+     - 不含 source path
+     - 不含 wrapper path
+     - 不含 plugin path
+     - 不含 `-fpass-plugin`
+     - 显式 object inputs 恰好 2 个，且顺序为 `protected_o` 然后 `helper_o`
+     - 不再调用 `enforce_link_language_token_state_machine()`
+   - `android_so_link_driver_path` 与 `android_ko_link_driver_path` 都必须等于 `android_target_compiler_path`
+   - 删除并替换现有 helper-first 硬编码断言：
+     - 不能再要求 `android_so_link_inputs.split(';')[0] == android_user_helper_o`
+     - 不能再要求 `android_ko_link_inputs.split(';')[0] == android_kernel_helper_o`
+     - 新断言改为：
+       - 第一个输入等于对应 `protected_o`
+       - 第二个输入等于对应 `helper_o`
+   - 现有 `.ko` no-pie token gate 继续保留在 `android_ko_link_command`
+   - 现有 no-pie 反向泄漏边界检查继续保留
+
+## Completion Standard
+- 新 run 不再出现 `clang-17` / `llvm::PassPlugin::Load(...)` 崩溃
+- Android SO/KO validator 能证明：
+  - protected compile 由 host LLVM18 执行
+  - final link 由 target-native driver 执行
+  - final link 已经没有 source/plugin 注入

@@ -1,0 +1,105 @@
+# 2026-04-04 Delta-2.3 Track C 任务卡
+
+## Track
+- iOS split protected-compile vs final-link
+
+## Owner
+- `Engineer-C`
+
+## Owned Files
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅 macOS/iOS validator 段
+
+## No-Touch
+- `/workspace/core/wrapper/eippf_cc.py`
+- Windows job
+- Linux/Android validator 段
+
+## Exact Change
+1. 保留现有：
+   - pass plugin 用 Homebrew LLVM18 构建
+   - helper 编译继续走 `IOS_TARGET_CLANGXX`
+   - final link driver 继续定义为 `IOS_TARGET_CLANG`
+2. 在 `build_macos_ios.sh` 中新增：
+   - `IOS_PROTECTED_O`
+   - `IOS_PROTECTED_COMPILE_COMMAND_PATH`
+3. 删除当前“source + helper 一次性 wrapper compile+link”路径，替换为两段式。
+4. 第一段 `protected compile`：
+   - 使用 wrapper
+   - compiler 固定为 `HOST_CLANGXX`
+   - 参数固定：
+     - `-target arm64-apple-ios17.0-simulator`
+     - `-isysroot "${IOS_SDK}"`
+     - `-O2`
+     - `-fvisibility=hidden`
+     - `-fPIC`
+     - `-x c`
+     - `"${SRC_FILE}"`
+     - `-c`
+     - `-o "${IOS_PROTECTED_O}"`
+5. 第二段 `final link`：
+   - 不使用 wrapper
+   - 直接调用 `IOS_TARGET_CLANG`
+   - 参数固定：
+     - `-target arm64-apple-ios17.0-simulator`
+     - `-isysroot "${IOS_SDK}"`
+     - `-o "${IOS_OUTPUT_BIN}"`
+     - 输入顺序固定：`${IOS_PROTECTED_O}` 然后 `${IOS_USER_HELPER_O}`
+6. report 升级：
+   - 新增：
+     - `ios_protected_o`
+     - `ios_protected_compile_command`
+   - 修改：
+     - `ios_link_inputs=${IOS_PROTECTED_O};${IOS_USER_HELPER_O}`
+7. macOS validator 修改：
+   - `required` 增加：
+     - `ios_protected_o`
+     - `ios_protected_compile_command`
+   - 保留现有 `enforce_link_language_token_state_machine()` 给旧的一段式链路；不要把它直接套到 `ios_protected_compile_command`
+   - 新增一个 compile-only 专用状态机函数，固定签名：
+     - `enforce_compile_only_language_token_state_machine(command_text, command_key, source_path, output_path)`
+   - 新函数固定规则：
+     - 必须存在 `-c`
+     - 必须存在 `-x c`
+     - source token 必须跟在 `-x c` 之后
+     - 允许 `-o <protected>.o` 或 `-o<protected>.o`
+     - 不把 `-o` 的输出对象路径当成非法 object/archive token
+     - 不接受 `helper_path` 参数
+   - 删除现有 `ios_link_inputs` 单输入 helper-only 契约，不能再要求：
+     - `len(entries) == 1`
+     - 唯一输入等于 `ios_user_helper_o`
+   - protected compile sidecar 必须证明：
+     - compiler path 是 `host_compiler_path`
+     - 带 source path
+     - 带 `-c`
+     - 带 `-x c`
+     - 带 target
+     - 带 isysroot
+     - 带输出 protected object path
+     - 对 `ios_protected_compile_command` 应用新的 `enforce_compile_only_language_token_state_machine()`，并把 `output_path` 明确绑定到 `ios_protected_o`
+   - protected compile sidecar 禁止：
+     - helper object
+     - wrapper 外的 target-native compiler path
+   - `ios_link_command` 必须证明：
+     - driver path 是 `ios_link_driver_path`
+     - 不含 source path
+     - 不含 wrapper path
+     - 不含 plugin path
+     - 不含 `-fpass-plugin`
+     - `ios_link_inputs` 恰好有 2 个条目
+     - 第 1 个条目固定是 `ios_protected_o`
+     - 第 2 个条目固定是 `ios_user_helper_o`
+     - 显式 object inputs 恰好 2 个，且顺序为 `ios_protected_o` 然后 `ios_user_helper_o`
+     - 不再调用 `enforce_link_language_token_state_machine()`
+   - helper provenance 继续保留：
+     - `ios_target_compiler_path` 绑定 `xcrun clang++`
+   - final link provenance 继续保留：
+     - `ios_link_driver_path` 绑定 `xcrun clang`
+
+## Completion Standard
+- 新 run 不再出现 Apple clang 17 frontend crash
+- validator 能证明：
+  - protected compile 由 host LLVM18 执行
+  - final link 只由 `xcrun clang` 做 object-only link
+  - helper=`clang++` / final link=`clang` 契约继续成立

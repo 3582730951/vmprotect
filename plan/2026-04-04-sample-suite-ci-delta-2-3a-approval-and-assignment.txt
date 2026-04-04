@@ -1,0 +1,53 @@
+# 2026-04-04 Delta-2.3a 审批与分配
+
+## Scope
+- 仅收口 `sample-suite-eval` validator 合约缺口
+- 不允许扩展到任何脚本、构建链、测试、样例源码或其它 workflow
+
+## Approved Plan
+- [2026-04-04-sample-suite-ci-delta-2-3a-plan.txt](/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-plan.txt)
+- [2026-04-04-sample-suite-ci-delta-2-3a-task-card.txt](/workspace/plan/2026-04-04-sample-suite-ci-delta-2-3a-task-card.txt)
+
+## Three-Agent Review
+- Architecture Reviewer / `PASS`
+  - 通过原因：修补范围被收敛到单文件单函数与两个排除集合；不会引入新的 contract 漂移。
+- Security Reviewer / `PASS`
+  - 通过原因：不放宽现有 gate，只修复复合路径误判和 iOS compile-only 邻接约束缺口。
+- Validation Reviewer / `PASS`
+  - 通过原因：完成标准是机器可判定的，且只依赖 YAML 解析和 diff 约束，不需要额外推断。
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assignment
+- PM / `main_agent`
+  - 职责：下发任务、收回 worker、执行静态集成检查、组织实现复审
+  - 禁止：直接修改 `.github/workflows/sample-suite-eval.yml`
+- Engineer-D / `worker`
+  - 允许文件：
+    - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 禁止文件：
+    - 任何 `core/tools/*`
+    - 任何 `core/tests/*`
+    - 任何其它 workflow / plan / script
+
+## Single-Writer Rule
+- `.github/workflows/sample-suite-eval.yml` 在 Delta-2.3a 周期内仅允许 `Engineer-D` 修改
+- PM 只做收口验证，不直接编辑该文件
+
+## Acceptance Gate
+1. diff 只包含 `/workspace/.github/workflows/sample-suite-eval.yml`
+2. 只允许 3 类改动：
+- `android_so_link_inputs` 排除
+- `android_ko_link_inputs` 排除
+- `ios_link_inputs` 排除
+3. iOS compile-only 状态机新增 `pending_source_after_x_c`
+4. 错误口径固定包含：
+- `source token must immediately follow -x c`
+- `missing immediate source token after -x c`
+5. 本地静态检查必须通过：
+- YAML parse
+- `git diff --check`
+
+## Next Step
+- 由 PM 启动单 worker 落地本任务卡
