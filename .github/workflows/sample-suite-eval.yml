@@ -833,11 +833,9 @@ jobs:
           import re
           import shlex
           import subprocess
-
           report = Path("sample_suite_inputs/toolchain_reports/macos_ios.txt")
           if not report.is_file():
               raise SystemExit(f"[FAIL] missing report: {report}")
-
           kv = {}
           for raw in report.read_text(encoding="ascii").splitlines():
               parts = raw.split("=", 1)
@@ -847,7 +845,6 @@ jobs:
               if key in kv:
                   raise SystemExit(f"[FAIL] duplicate key: {key}")
               kv[key] = value
-
           required = [
               "platform", "ios_target_source", "host_compiler_path", "host_compiler_version_first_line",
               "ios_target_compiler_path", "ios_target_compiler_version_first_line",
@@ -866,7 +863,6 @@ jobs:
               raise SystemExit("[FAIL] platform mismatch")
           if kv["ios_target_source"] != "xcrun":
               raise SystemExit("[FAIL] ios_target_source mismatch")
-
           for key, value in kv.items():
               if key in {"platform", "ios_target_source", "ios_target", "ios_link_inputs"} or key.endswith("_version_first_line"):
                   continue
@@ -874,7 +870,6 @@ jobs:
                   raise SystemExit(f"[FAIL] non-absolute path for {key}")
               if not Path(value).exists():
                   raise SystemExit(f"[FAIL] missing path for {key}")
-
           llvm_prefix = Path(os.environ["EIPPF_ALLOWED_LLVM_ROOT"]).resolve()
           output_root = (Path.cwd() / "sample_suite_inputs").resolve()
           commands_root = (output_root / "toolchain_reports" / "commands").resolve()
@@ -886,7 +881,6 @@ jobs:
           ios_source = repo_root / "core" / "tests" / "sample_suite" / "sources" / "ios" / "ios_macho_main.c"
           shared_include = repo_root / "core" / "include"
           runtime_include = repo_root / "core" / "runtime" / "include"
-
           def assert_under(path: Path, root: Path, label: str) -> None:
               resolved = path.resolve()
               root_resolved = root.resolve()
@@ -894,7 +888,6 @@ jobs:
                   resolved.relative_to(root_resolved)
               except ValueError as exc:
                   raise SystemExit(f"[FAIL] {label} escaped allowed root") from exc
-
           def has_forbidden_linker_controls(text: str) -> bool:
               tokens = shlex.split(text, posix=True)
               for index, token in enumerate(tokens):
@@ -913,7 +906,6 @@ jobs:
                   if token.startswith("-Xlinker=-T") or token.startswith("-Xlinker=--script"):
                       return True
               return False
-
           def explicit_object_archive_inputs(text: str) -> list[Path]:
               inputs: list[Path] = []
               for token in shlex.split(text, posix=True):
@@ -925,13 +917,40 @@ jobs:
                           path = path.resolve()
                       inputs.append(path)
               return inputs
-
           def command_payload_tokens(text: str) -> list[str]:
               tokens = shlex.split(text, posix=True)
               if "--" in tokens:
                   return tokens[tokens.index("--") + 1 :]
               return tokens
-
+          def extract_cmake_define_paths(text: str, define_key: str) -> list[Path]:
+              tokens = shlex.split(text, posix=True)
+              pattern = re.compile(rf"^-D{re.escape(define_key)}(?::[^=]+)?=(.+)$")
+              results: list[Path] = []
+              for token in tokens:
+                  match = pattern.match(token)
+                  if match is not None:
+                      results.append(Path(match.group(1)))
+              return results
+          def assert_cmake_define_matches_expected(
+              text: str,
+              define_key: str,
+              expected_path: Path,
+              fail_msg: str,
+          ) -> None:
+              candidates = extract_cmake_define_paths(text, define_key)
+              if len(candidates) != 1:
+                  raise SystemExit(fail_msg)
+              candidate = candidates[0]
+              if not candidate.is_absolute():
+                  raise SystemExit(fail_msg)
+              if not candidate.exists():
+                  raise SystemExit(fail_msg)
+              try:
+                  is_same_path = candidate.samefile(expected_path)
+              except (OSError, FileNotFoundError):
+                  is_same_path = candidate.resolve(strict=False) == expected_path.resolve(strict=False)
+              if not is_same_path:
+                  raise SystemExit(fail_msg)
           def enforce_link_language_token_state_machine(
               command_text: str,
               command_key: str,
@@ -945,7 +964,6 @@ jobs:
               seen_x_c = False
               seen_source_after_x_c = False
               seen_x_none = False
-
               index = 0
               while index < len(tokens):
                   token = tokens[index]
@@ -960,7 +978,6 @@ jobs:
                       index += 1
                   else:
                       index += 1
-
                   if language is not None:
                       if language == "c++":
                           raise SystemExit(f"[FAIL] forbidden language token -x c++ in {command_key}")
@@ -970,24 +987,19 @@ jobs:
                       if language == "none":
                           seen_x_none = True
                       continue
-
                   if token == source_token:
                       if not seen_x_c:
                           raise SystemExit(f"[FAIL] source token must follow -x c in {command_key}")
                       seen_source_after_x_c = True
-
                   is_object_or_archive = re.search(r"\.(?:o|obj|a|lib)$", token) is not None
                   if is_object_or_archive and explicit_language not in {None, "none"}:
                       raise SystemExit(f"[FAIL] object/archive token under -x {explicit_language} in {command_key}: {token}")
-
                   if token == helper_token and not seen_x_none:
                       raise SystemExit(f"[FAIL] helper input requires -x none before it in {command_key}")
-
               if not seen_x_c:
                   raise SystemExit(f"[FAIL] missing -x c in {command_key}")
               if not seen_source_after_x_c:
                   raise SystemExit(f"[FAIL] missing source token after -x c in {command_key}")
-
           def enforce_compile_only_language_token_state_machine(
               command_text: str,
               command_key: str,
@@ -1003,11 +1015,9 @@ jobs:
               pending_source_after_x_c = False
               seen_compile_only = False
               seen_output_after_o = False
-
               index = 0
               while index < len(tokens):
                   token = tokens[index]
-
                   if pending_source_after_x_c:
                       if token != source_token:
                           raise SystemExit(f"[FAIL] source token must immediately follow -x c in {command_key}")
@@ -1015,12 +1025,10 @@ jobs:
                       pending_source_after_x_c = False
                       index += 1
                       continue
-
                   if token == "-c":
                       seen_compile_only = True
                       index += 1
                       continue
-
                   language: str | None = None
                   if token == "-x":
                       if index + 1 >= len(tokens):
@@ -1056,7 +1064,6 @@ jobs:
                           index += 1
                           continue
                       index += 1
-
                   if language is not None:
                       if language == "c++":
                           raise SystemExit(f"[FAIL] forbidden language token -x c++ in {command_key}")
@@ -1065,12 +1072,10 @@ jobs:
                           seen_x_c = True
                           pending_source_after_x_c = True
                       continue
-
                   if token == source_token:
                       if not seen_x_c:
                           raise SystemExit(f"[FAIL] source token must follow -x c in {command_key}")
                       seen_source_after_x_c = True
-
                   is_object_or_archive = re.search(r"\.(?:o|obj|a|lib)$", token) is not None
                   if is_object_or_archive:
                       token_path = Path(token)
@@ -1082,7 +1087,6 @@ jobs:
                           continue
                       if explicit_language not in {None, "none"}:
                           raise SystemExit(f"[FAIL] object/archive token under -x {explicit_language} in {command_key}: {token}")
-
               if not seen_compile_only:
                   raise SystemExit(f"[FAIL] missing -c in {command_key}")
               if not seen_x_c:
@@ -1093,7 +1097,6 @@ jobs:
                   raise SystemExit(f"[FAIL] missing source token after -x c in {command_key}")
               if not seen_output_after_o:
                   raise SystemExit(f"[FAIL] missing -o output in {command_key}")
-
           xcrun_clangxx = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang++"], text=True).strip()).resolve()
           xcrun_clang = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--find", "clang"], text=True).strip()).resolve()
           ios_sdk = Path(subprocess.check_output(["xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"], text=True).strip()).resolve()
@@ -1131,17 +1134,23 @@ jobs:
           if not plugin_build_log.exists():
               raise SystemExit("[FAIL] missing path for plugin_build_log")
           assert_under(plugin_build_log, commands_root, "plugin_build_log")
-
           plugin_build_sidecar = Path(kv["plugin_build_command"])
           assert_under(plugin_build_sidecar, commands_root, "plugin_build_command")
           plugin_build_text = plugin_build_sidecar.read_text(encoding="ascii")
           if has_forbidden_linker_controls(plugin_build_text):
               raise SystemExit("[FAIL] sidecar is not fully expanded: plugin_build_command")
-          if str(Path(kv["host_compiler_path"]).resolve()) not in plugin_build_text:
-              raise SystemExit("[FAIL] plugin_build_command missing host compiler path")
-          if str((llvm_prefix / "lib" / "cmake" / "llvm").resolve()) not in plugin_build_text:
-              raise SystemExit("[FAIL] sidecar missing required token: plugin_build_command")
-
+          assert_cmake_define_matches_expected(
+              plugin_build_text,
+              "CMAKE_CXX_COMPILER",
+              Path(kv["host_compiler_path"]),
+              "[FAIL] plugin_build_command missing host compiler path",
+          )
+          assert_cmake_define_matches_expected(
+              plugin_build_text,
+              "LLVM_DIR",
+              Path(kv["llvm_dir"]),
+              "[FAIL] sidecar missing required token: plugin_build_command",
+          )
           plugin_link_sidecar = Path(kv["plugin_link_command"])
           if not plugin_link_sidecar.is_absolute():
               raise SystemExit("[FAIL] non-absolute path for plugin_link_command")
@@ -1157,7 +1166,6 @@ jobs:
               raise SystemExit("[FAIL] plugin_link_command leaked ninja progress prefix")
           if "-Wl,-dead_strip" in plugin_link_text:
               raise SystemExit("[FAIL] plugin_link_command leaked dead_strip")
-
           ios_helper_sidecar = Path(kv["ios_user_helper_compile_command"])
           assert_under(ios_helper_sidecar, commands_root, "ios_user_helper_compile_command")
           ios_helper_text = ios_helper_sidecar.read_text(encoding="ascii")
