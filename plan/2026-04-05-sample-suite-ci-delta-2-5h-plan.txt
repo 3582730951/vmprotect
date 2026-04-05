@@ -1,0 +1,220 @@
+# 2026-04-05 sample-suite CI Delta-2.5h 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5h 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只处理当前 macOS validator 的 compiler-path identity 误判 blocker。
+- 替代范围仅限：
+  - `.github/workflows/sample-suite-eval.yml`
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- Delta-2.5g 后，macOS job 已不再失败于三条 `missing isysroot`
+- 新 blocker 固定为：
+  - GitHub Actions `sample-suite-eval`
+  - macOS `Validate macOS iOS Toolchain Report`
+  - 失败信号：`[FAIL] ios_protected_compile_command missing host compiler path`
+
+## Task Charter
+- Objective：
+  - 让 macOS validator 对 `ios_user_helper_compile_command` / `ios_protected_compile_command` / `ios_link_command` 中的 compiler/driver path 做路径同一性判断，而不是 `resolve()` 后的脆弱字符串包含判断
+- Scope：
+  - `.github/workflows/sample-suite-eval.yml`
+- Non-Goals：
+  - 不改 `build_macos_ios.sh`
+  - 不改 Linux / Windows / Android validator
+  - 不改 `plugin_build_command`、`plugin_build_log`、`plugin_link_command`、`-isysroot` 已收口的 gate
+- Forbidden Shortcuts：
+  - 禁止把 identity 校验降级为 basename 或普通子串匹配
+  - 禁止接受非绝对路径或不存在路径
+  - 禁止新增 pass-open 或兼容分支
+  - 禁止放宽 Delta-2.5b 的 `plugin_link_command` normalized / no-dead-strip / plugin-path 契约
+
+## Root Cause Judgment
+- 根因固定为：
+  - macOS validator 当前仍对以下路径做 `resolve()` 后字符串包含判断：
+    - `ios_user_helper_compile_command` 的 target compiler path
+    - `ios_protected_compile_command` 的 host compiler path
+    - `ios_protected_compile_command` 上“不应使用 target compiler / link driver”的排斥判断
+    - `ios_link_command` 的 link driver path
+  - sidecar 是 `build_macos_ios.sh` 通过 `join_argv` 写出的原始参数文本
+  - 原始文本路径可能与 `resolve()` 结果不同，但实际指向同一文件
+  - 导致一组 path-identity 假失败依次暴露
+- 唯一推荐修复路径固定为：
+  - 只修改 `.github/workflows/sample-suite-eval.yml`
+  - 在 macOS validator 中解析 command driver 与 wrapper `--compiler` option
+  - 用路径同一性比较代替 `resolve()` 后的字符串包含
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 单文件 workflow 修复
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 validator 是否保持 fail-closed，且未放宽 Delta-2.5g / Delta-2.5f / Delta-2.5e / Delta-2.5b 契约
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / macOS compiler-driver Path Identity Sync
+- Owner：`Agent 2`
+- File：
+  - `.github/workflows/sample-suite-eval.yml`
+- Exact Change：
+  1. 只允许修改 macOS `Validate macOS iOS Toolchain Report` 这个 job 内嵌 Python 段；不得改同一 YAML 中 Linux / Windows / Android validator 段。
+  2. 在现有 helper 区（`assert_cmake_define_matches_expected` 后）新增：
+     - `paths_identical(left: Path, right: Path) -> bool`
+     - `assert_command_driver_path_matches_expected(command_text: str, command_key: str, expected_path: Path, fail_msg: str) -> Path`
+     - `assert_wrapper_option_path_matches_expected(command_text: str, command_key: str, option: str, expected_path: Path, fail_msg: str) -> Path`
+  3. `paths_identical(...)` 固定规则：
+     - 先尝试 `left.samefile(right)`
+     - 仅当抛出 `OSError` 或 `FileNotFoundError` 时，才 fallback 到 `left.resolve(strict=False) == right.resolve(strict=False)`
+     - 不允许 `except Exception`
+  4. `assert_command_driver_path_matches_expected(...)` 固定规则：
+     - 以 `command_payload_tokens(command_text)` 的第一个 token 作为 driver 路径
+     - 必须绝对路径，否则 `raise SystemExit(fail_msg)`
+     - 必须存在，否则 `raise SystemExit(fail_msg)`
+     - 必须与 `expected_path` 满足 `paths_identical(...)`
+     - 返回解析出的 driver `Path`
+  5. `assert_wrapper_option_path_matches_expected(...)` 固定规则：
+     - 只解析：
+       - `--compiler <path>`
+       - `--compiler=<path>`
+     - 候选数量必须恰好为 1，否则 `raise SystemExit(fail_msg)`
+     - 候选必须绝对路径，否则 `raise SystemExit(fail_msg)`
+     - 候选必须存在，否则 `raise SystemExit(fail_msg)`
+     - 候选必须与 `expected_path` 满足 `paths_identical(...)`
+     - 返回解析出的 option `Path`
+  6. 用上述 helper 替换 5 处脆弱判定，且失败文案保持原样：
+     - `ios_user_helper_compile_command missing target compiler path`
+     - `ios_protected_compile_command missing host compiler path`
+     - `ios_protected_compile_command must not use target helper compiler`
+     - `ios_protected_compile_command must not use final link driver`
+     - `ios_link_command missing link driver path`
+  7. `ios_protected_compile_command` 的两条“must not use ...”固定实现：
+     - 先用 `assert_wrapper_option_path_matches_expected(..., "--compiler", Path(kv["host_compiler_path"]), "[FAIL] ios_protected_compile_command missing host compiler path")` 拿到解析后的 `compiler_path`
+     - 再用 `paths_identical(compiler_path, Path(kv["ios_target_compiler_path"]))` 判定并保持 `[FAIL] ios_protected_compile_command must not use target helper compiler`
+     - 再用 `paths_identical(compiler_path, Path(kv["ios_link_driver_path"]))` 判定并保持 `[FAIL] ios_protected_compile_command must not use final link driver`
+  8. 保持现有：
+     - 三处 `assert_flag_path_matches_expected(... "-isysroot" ...)`
+     - `if Path(kv["ios_isysroot"]).resolve() != ios_sdk: raise ...`
+     - `assert_cmake_define_matches_expected(...)`
+     - `plugin_build_log` / `plugin_link_command` strict gate
+     - key-set gate
+     - explicit input order gate
+  9. 不改其它平台 validator
+  10. 不改 `build_macos_ios.sh`
+- Forbidden：
+  - 不新增 schema 兼容分支
+  - 不删除 Delta-2.5g / Delta-2.5f / Delta-2.5e 的既有 helper 和 gate
+  - 不把比较降级成 basename 或普通子串匹配
+  - 不触碰其它 workflow job 的验证逻辑
+
+## File Ownership
+- `.github/workflows/sample-suite-eval.yml` -> `Agent 2`
+- `plan/*delta-2-5h*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - macOS 5 处 compiler/driver 路径身份校验
+- 邻接路径：
+  - `ios_user_helper_compile_command`
+  - `ios_protected_compile_command`
+  - `ios_link_command`
+  - `host_compiler_path`
+  - `ios_target_compiler_path`
+  - `ios_link_driver_path`
+  - `ios_isysroot`
+- 必须保持不变：
+  - Linux / Windows / Android validator
+  - `build_macos_ios.sh`
+  - Delta-2.5g 的 `-isysroot` gates
+  - Delta-2.5f 的 `plugin_build_command` path-identity gate
+  - Delta-2.5e 的 `plugin_build_log` / `plugin_link_command` strict gate
+  - Delta-2.5b 的 `plugin_link_command` normalized / no-dead-strip / plugin-path 契约
+
+## Quality Gates
+### Static Gates
+- `Agent 2` 的提交 diff 只允许出现：
+  - `.github/workflows/sample-suite-eval.yml`
+- PM 自身维护的计划/审核/执行记录不计入 `Agent 2` 实现 diff 验收边界
+- `git diff --check`
+- 必须存在脚本化边界 gate，自动验证本次 diff 的每个 hunk 左右两侧完整区间都位于 macOS `Validate macOS iOS Toolchain Report` 内嵌 Python 段；边界上限固定为 `py_last = py_first + line_count - 1`
+  - 左边界失败信号固定为：`LEFT_DIFF_OUT_OF_SCOPE`
+  - 右边界失败信号固定为：`RIGHT_DIFF_OUT_OF_SCOPE`
+- `required` 列表必须有内容级静态校验，PASS 条件为“与基线完全一致”，不得只检查 `required = [` 和 `if set(kv) != set(required):`
+  - 内容不一致失败信号固定为：`REQUIRED_LIST_MISMATCH`
+
+### Validator Gates
+- 以下 5 条脆弱判定必须 0 命中：
+  - `str(Path(kv["ios_target_compiler_path"]).resolve()) not in ios_helper_text`
+  - `str(Path(kv["host_compiler_path"]).resolve()) not in protected_compile_text`
+  - `str(Path(kv["ios_target_compiler_path"]).resolve()) in protected_compile_text`
+  - `str(Path(kv["ios_link_driver_path"]).resolve()) in protected_compile_text`
+  - `str(Path(kv["ios_link_driver_path"]).resolve()) not in command_text`
+- validator 中必须存在：
+  - `paths_identical`
+  - `assert_command_driver_path_matches_expected`
+  - `assert_wrapper_option_path_matches_expected`
+- `except Exception` 必须 0 命中
+- 以下保留 gate 必须独立验证仍存在：
+  - `assert_flag_path_matches_expected`
+  - `assert_cmake_define_matches_expected`
+  - `assert_cmake_define_matches_expected(plugin_build_text, "CMAKE_CXX_COMPILER", Path(kv["host_compiler_path"]), "[FAIL] plugin_build_command missing host compiler path")`
+  - `assert_cmake_define_matches_expected(plugin_build_text, "LLVM_DIR", Path(kv["llvm_dir"]), "[FAIL] sidecar missing required token: plugin_build_command")`
+    - 精确静态 gate 失败信号固定为：
+      - `PLUGIN_BUILD_CMAKE_CXX_COMPILER_GATE_MISMATCH`
+      - `PLUGIN_BUILD_LLVM_DIR_GATE_MISMATCH`
+  - `assert_flag_path_matches_expected(ios_helper_text, "ios_user_helper_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_user_helper_compile_command missing isysroot")`
+  - `assert_flag_path_matches_expected(protected_compile_text, "ios_protected_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_protected_compile_command missing isysroot")`
+  - `assert_flag_path_matches_expected(command_text, "ios_link_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_link_command missing isysroot")`
+  - `plugin_link_command leaked dead_strip`
+  - `plugin_link_command leaked ninja progress prefix`
+  - `plugin_link_command missing plugin path`
+  - `plugin_build_log`
+  - `assert_under(plugin_build_log, commands_root, "plugin_build_log")`
+  - `assert_under(plugin_link_sidecar, commands_root, "plugin_link_command")`
+  - `explicit object/archive input order mismatch for ios_link_command`
+
+### Syntax Gate
+- 必须能从 workflow 中抽出该内嵌 Python 段并通过 `compile(..., "exec")`
+
+### CI Gates
+- `Validate macOS iOS Toolchain Report` 不得再因：
+  - `[FAIL] ios_user_helper_compile_command missing target compiler path`
+  - `[FAIL] ios_protected_compile_command missing host compiler path`
+  - `[FAIL] ios_link_command missing link driver path`
+  而失败
+- 旧修复项不得回归：
+  - `missing isysroot`
+  - `plugin_build_command missing host compiler path`
+- CI 复跑结果是观察项，不替代 PM 的阻塞静态验收
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否问题边界单一且单文件可修
+- `Agent 2` 审：
+  - 是否任务卡可机械执行
+  - 是否没有把推理留给实现者
+- `Agent 3` 审：
+  - 是否仍保持 fail-closed
+  - 是否未放宽 Delta-2.5g / Delta-2.5f / Delta-2.5e / Delta-2.5b 契约
+  - 是否未扩展到其它平台 validator
+
+## Merge Order
+1. 批准 Delta-2.5h
+2. `Agent 2` 修改 `.github/workflows/sample-suite-eval.yml`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 macOS `Validate macOS iOS Toolchain Report` 复跑
+
+## Open Risks
+- 若 macOS validator 在 compiler/driver path 之后继续暴露其它路径同一性误判，本轮会 fail-closed 并暴露为新 blocker；届时另开新 delta，不在本计划扩 scope
+
+## State Snapshot
+- macOS build 阶段已通过
+- 当前唯一 blocker 是 macOS validator 对 compiler/driver path 的 path-identity 误判

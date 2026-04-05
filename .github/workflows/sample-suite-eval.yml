@@ -989,6 +989,60 @@ jobs:
                   is_same_path = candidate.resolve(strict=False) == expected_path.resolve(strict=False)
               if not is_same_path:
                   raise SystemExit(fail_msg)
+          def paths_identical(left: Path, right: Path) -> bool:
+              try:
+                  return left.samefile(right)
+              except (OSError, FileNotFoundError):
+                  return left.resolve(strict=False) == right.resolve(strict=False)
+          def assert_command_driver_path_matches_expected(
+              command_text: str,
+              command_key: str,
+              expected_path: Path,
+              fail_msg: str,
+          ) -> Path:
+              tokens = command_payload_tokens(command_text)
+              if not tokens:
+                  raise SystemExit(fail_msg)
+              candidate = Path(tokens[0])
+              if not candidate.is_absolute():
+                  raise SystemExit(fail_msg)
+              if not candidate.exists():
+                  raise SystemExit(fail_msg)
+              if not paths_identical(candidate, expected_path):
+                  raise SystemExit(fail_msg)
+              return candidate
+          def assert_wrapper_option_path_matches_expected(
+              command_text: str,
+              command_key: str,
+              option: str,
+              expected_path: Path,
+              fail_msg: str,
+          ) -> Path:
+              tokens = command_payload_tokens(command_text)
+              candidates: list[Path] = []
+              index = 0
+              while index < len(tokens):
+                  token = tokens[index]
+                  if token == option:
+                      if index + 1 < len(tokens):
+                          candidates.append(Path(tokens[index + 1]))
+                          index += 2
+                          continue
+                      index += 1
+                      continue
+                  if token.startswith(f"{option}="):
+                      candidates.append(Path(token[len(option) + 1 :]))
+                  index += 1
+              if len(candidates) != 1:
+                  raise SystemExit(fail_msg)
+              candidate = candidates[0]
+              if not candidate.is_absolute():
+                  raise SystemExit(fail_msg)
+              if not candidate.exists():
+                  raise SystemExit(fail_msg)
+              if not paths_identical(candidate, expected_path):
+                  raise SystemExit(fail_msg)
+              return candidate
           def enforce_link_language_token_state_machine(
               command_text: str,
               command_key: str,
@@ -1211,8 +1265,12 @@ jobs:
               raise SystemExit("[FAIL] sidecar is not fully expanded: ios_user_helper_compile_command")
           if str(Path(kv["ios_user_helper_o"]).resolve()) not in ios_helper_text:
               raise SystemExit("[FAIL] sidecar missing required token: ios_user_helper_compile_command")
-          if str(Path(kv["ios_target_compiler_path"]).resolve()) not in ios_helper_text:
-              raise SystemExit("[FAIL] ios_user_helper_compile_command missing target compiler path")
+          assert_command_driver_path_matches_expected(
+              ios_helper_text,
+              "ios_user_helper_compile_command",
+              Path(kv["ios_target_compiler_path"]),
+              "[FAIL] ios_user_helper_compile_command missing target compiler path",
+          )
           if str(helper_source) not in ios_helper_text or str(shared_include) not in ios_helper_text or str(runtime_include) not in ios_helper_text:
               raise SystemExit("[FAIL] ios_user_helper_compile_command missing source/include roots")
           if "-target arm64-apple-ios17.0-simulator" not in ios_helper_text:
@@ -1227,11 +1285,16 @@ jobs:
           protected_compile_text = protected_compile_sidecar.read_text(encoding="ascii")
           if has_forbidden_linker_controls(protected_compile_text):
               raise SystemExit("[FAIL] ios_protected_compile_command is not fully expanded")
-          if str(Path(kv["host_compiler_path"]).resolve()) not in protected_compile_text:
-              raise SystemExit("[FAIL] ios_protected_compile_command missing host compiler path")
-          if str(Path(kv["ios_target_compiler_path"]).resolve()) in protected_compile_text:
+          compiler_path = assert_wrapper_option_path_matches_expected(
+              protected_compile_text,
+              "ios_protected_compile_command",
+              "--compiler",
+              Path(kv["host_compiler_path"]),
+              "[FAIL] ios_protected_compile_command missing host compiler path",
+          )
+          if paths_identical(compiler_path, Path(kv["ios_target_compiler_path"])):
               raise SystemExit("[FAIL] ios_protected_compile_command must not use target helper compiler")
-          if str(Path(kv["ios_link_driver_path"]).resolve()) in protected_compile_text:
+          if paths_identical(compiler_path, Path(kv["ios_link_driver_path"])):
               raise SystemExit("[FAIL] ios_protected_compile_command must not use final link driver")
           if str(wrapper_path) not in protected_compile_text:
               raise SystemExit("[FAIL] ios_protected_compile_command missing wrapper path")
@@ -1282,8 +1345,12 @@ jobs:
           command_text = command_path.read_text(encoding="ascii")
           if has_forbidden_linker_controls(command_text):
               raise SystemExit("[FAIL] ios_link_command is not fully expanded")
-          if str(Path(kv["ios_link_driver_path"]).resolve()) not in command_text:
-              raise SystemExit("[FAIL] ios_link_command missing link driver path")
+          assert_command_driver_path_matches_expected(
+              command_text,
+              "ios_link_command",
+              Path(kv["ios_link_driver_path"]),
+              "[FAIL] ios_link_command missing link driver path",
+          )
           if str(protected_entry.resolve()) not in command_text:
               raise SystemExit("[FAIL] ios_link_command missing protected input")
           if str(helper_entry.resolve()) not in command_text:

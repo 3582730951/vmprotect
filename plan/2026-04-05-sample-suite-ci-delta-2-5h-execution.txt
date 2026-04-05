@@ -1,0 +1,67 @@
+# 2026-04-05 sample-suite CI Delta-2.5h 执行记录
+
+## 状态
+- `IMPLEMENTED`
+- `READY_TO_PUSH`
+
+## 本轮范围
+- 生产改动：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 计划与审计记录：
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5h-plan.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5h-phase-1-task-card.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5h-approval-and-assignment.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5h-execution.txt`
+
+## 实施结果
+- macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段新增 3 个 helper：
+  - `paths_identical`
+  - `assert_command_driver_path_matches_expected`
+  - `assert_wrapper_option_path_matches_expected`
+- 5 条旧的脆弱 path-string 判断已被移除并替换为 path-identity gate：
+  - `ios_user_helper_compile_command missing target compiler path`
+  - `ios_protected_compile_command missing host compiler path`
+  - `ios_protected_compile_command must not use target helper compiler`
+  - `ios_protected_compile_command must not use final link driver`
+  - `ios_link_command missing link driver path`
+- 其余既有 strict gate 保持不变：
+  - Delta-2.5b 的 `plugin_link_command` normalized / no-dead-strip / plugin-path 契约
+  - Delta-2.5e 的 `plugin_build_log` / `plugin_link_command` gate
+  - Delta-2.5f 的两条 `assert_cmake_define_matches_expected(plugin_build_text, ...)`
+  - Delta-2.5g 的三条 `assert_flag_path_matches_expected(... "-isysroot" ...)`
+
+## PM 静态验收
+- `git diff --name-only -- .github/workflows/sample-suite-eval.yml`
+  - 结果：仅 `.github/workflows/sample-suite-eval.yml`
+- `git diff --check -- .github/workflows/sample-suite-eval.yml`
+  - 结果：空输出
+- diff hunk 左右边界脚本
+  - 结果：`OK`
+- `required` AST 内容级校验
+  - 结果：`OK`
+- Delta-2.5f 两条精确 gate 计数校验
+  - 结果：`OK`
+- 内嵌 Python `compile(..., "exec")`
+  - 结果：`OK`
+- 汇总 regex/static gate
+  - 结果：`OK`
+
+## 三角色实现复审
+- `Architect Reviewer`: `PASS`
+  - 结论：
+    - 仅改单文件单段
+    - 新增 helper 恰好 3 个
+    - 5 条旧判定全部替换
+- `Engineer Reviewer`: `PASS`
+  - 结论：
+    - Delta-2.5b/2.5e/2.5f/2.5g 保留契约未受损
+    - 新 helper 行为与任务卡一致
+    - 无额外噪音改动
+- `Security Reviewer`: `PASS`
+  - 结论：
+    - 绝对路径、存在性、`exact-one`、无 `except Exception` 仍保持
+    - scope 仍局限在 macOS validator
+    - 不存在 pass-open
+
+## 观察项
+- 本轮未本地执行 GitHub Actions；CI 结论以推送后的 `sample-suite-eval` macOS validator 复跑为准。
