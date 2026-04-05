@@ -1,0 +1,121 @@
+# 2026-04-05 sample-suite CI Delta-2.5j Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+
+## 目标
+- 把 Windows `add_llvm_pass_plugin(...)` target-type blocker 收敛到统一兼容层。
+- 继续生成真实 `eippf_protection_suite_pass.dll`。
+- 不改 workflow、脚本、tests、top-level CMake。
+
+## 机械步骤
+1. 新建文件：
+   - `/workspace/core/cmake/PassPluginCompat.cmake`
+2. 在该文件中定义固定 helper：
+   - `function(eippf_add_pass_plugin_target name)`
+   - `cmake_parse_arguments(ARG "" "OUTPUT_NAME" "SOURCES;COMPILE_DEFINITIONS" ${ARGN})`
+3. helper 内按以下顺序写，不允许换顺序：
+   - `string(TOUPPER ${name} name_upper)`
+   - `set(LLVM_${name_upper}_LINK_INTO_TOOLS OFF CACHE BOOL "Force EIPPF pass plugins to remain loadable modules." FORCE)`
+   - `if(WIN32)`
+   - Windows 分支里先判断：
+     - `if(TARGET LLVM)` 走 `target_link_libraries(${name} PRIVATE LLVM)`
+     - `elseif(COMMAND llvm_map_components_to_libnames)` 走：
+       - `llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs Core Passes Support Analysis TransformUtils ScalarOpts InstCombine ipo Instrumentation IRReader)`
+       - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+     - `else() message(FATAL_ERROR ...) endif()`
+   - Windows 分支创建 target：
+     - `add_library(${name} SHARED ${ARG_SOURCES})`
+     - `set_target_properties(${name} PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)`
+     - 若 `CMAKE_LIBRARY_OUTPUT_DIRECTORY` 非空，同步到：
+       - `RUNTIME_OUTPUT_DIRECTORY`
+       - `LIBRARY_OUTPUT_DIRECTORY`
+     - 若 `CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE` 非空，同步到：
+       - `RUNTIME_OUTPUT_DIRECTORY_RELEASE`
+       - `LIBRARY_OUTPUT_DIRECTORY_RELEASE`
+   - `else()` 非 Windows 分支：
+     - `add_llvm_pass_plugin(${name} ${ARG_SOURCES})`
+   - `endif()`
+   - 读取 target type：
+     - `get_target_property(eippf_target_type ${name} TYPE)`
+   - 若 target type 不是 `MODULE_LIBRARY` 或 `SHARED_LIBRARY`：
+     - `message(FATAL_ERROR "...non-compilable...")`
+   - 统一公共属性：
+     - `target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")`
+     - `target_include_directories(${name} SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})`
+     - `if(ARG_COMPILE_DEFINITIONS) target_compile_definitions(${name} PRIVATE ${ARG_COMPILE_DEFINITIONS}) endif()`
+     - `eippf_apply_common_compile_options(${name})`
+     - `if(ARG_OUTPUT_NAME) set_target_properties(${name} PROPERTIES OUTPUT_NAME "${ARG_OUTPUT_NAME}") endif()`
+4. 只修改 `/workspace/core/passes/CMakeLists.txt`
+5. 在 `include(AddLLVM)` 之后立刻加入：
+   - `include(PassPluginCompat)`
+6. 删除所有直接 `add_llvm_pass_plugin(...)` 调用。
+7. 用下面 8 个固定 helper 调用替换原有块，顺序不得变化：
+   - `eippf_add_pass_plugin_target(eippf_string_protection_pass SOURCES src/StringProtectionPass.cpp COMPILE_DEFINITIONS EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_selective_vm_pass SOURCES src/SelectiveVMPass.cpp COMPILE_DEFINITIONS EIPPF_SELECTIVE_VM_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_mba_obfuscation_pass SOURCES src/MBAObfuscationPass.cpp COMPILE_DEFINITIONS EIPPF_MBA_OBFUSCATION_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_iat_minimization_pass SOURCES src/IATMinimizationPass.cpp COMPILE_DEFINITIONS EIPPF_IAT_MINIMIZATION_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_jit_enclave_pass SOURCES src/JITEnclavePass.cpp COMPILE_DEFINITIONS EIPPF_JIT_ENCLAVE_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_protection_anchor_pass SOURCES src/ProtectionAnchorPass.cpp COMPILE_DEFINITIONS EIPPF_PROTECTION_ANCHOR_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_cff_obfuscation_pass SOURCES src/CFFObfuscationPass.cpp COMPILE_DEFINITIONS EIPPF_CFF_OBFUSCATION_STANDALONE_PLUGIN=1)`
+   - `eippf_add_pass_plugin_target(eippf_protection_suite_pass SOURCES src/ProtectionSuitePassPlugin.cpp src/StringProtectionPass.cpp src/ProtectionAnchorPass.cpp src/SelectiveVMPass.cpp src/JITEnclavePass.cpp src/CFFObfuscationPass.cpp OUTPUT_NAME eippf_protection_suite_pass)`
+8. 保留以下现有逻辑，不能改内容：
+   - `find_package(LLVM REQUIRED CONFIG)`
+   - `list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")`
+   - `APPLE` 的 `LLVM_NO_DEAD_STRIP` 包裹逻辑
+   - `set_target_properties(eippf_protection_suite_pass PROPERTIES PREFIX "")`
+   - `if(NOT EIPPF_PASS_PLUGIN) eippf_register_pass_plugin("eippf_protection_suite_pass") endif()`
+9. 不要顺手重排、不做格式化、不清理其它代码。
+
+## 禁止项
+- 禁止修改：
+  - `/workspace/core/CMakeLists.txt`
+  - 任何 `.cpp/.hpp/.py/.ps1/.yml`
+  - tests
+  - workflow
+  - sample-suite 构建脚本
+- 禁止恢复任何直接 `add_llvm_pass_plugin(...)` 到 `core/passes/CMakeLists.txt`
+- 禁止把任何 pass 改成 static link-into-tools
+- 禁止去掉 `--pass-plugin` 路径契约
+- 禁止删除 `APPLE` 的 `LLVM_NO_DEAD_STRIP`
+- 禁止修改 suite plugin 的 `OUTPUT_NAME`
+
+## 完成回报必须包含
+- `git diff --name-only`
+  - PASS 条件：只能包含
+    - `core/passes/CMakeLists.txt`
+    - `core/cmake/PassPluginCompat.cmake`
+- `git diff --check`
+  - PASS 条件：输出为空
+- `rg -n "add_llvm_pass_plugin\\(" /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：0 命中
+- `rg -n "include\\(PassPluginCompat\\)" /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：1 命中
+- `rg -n "eippf_add_pass_plugin_target\\(" /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：8 命中
+- `rg -n 'OUTPUT_NAME "eippf_protection_suite_pass"' /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：1 命中
+- `rg -n 'PREFIX ""' /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：1 命中
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/core/passes/CMakeLists.txt').read_text(encoding='utf-8')\nneedles = [\n    'set(eippf_protection_suite_prev_llvm_no_dead_strip \"${LLVM_NO_DEAD_STRIP}\")',\n    'set(LLVM_NO_DEAD_STRIP ON)',\n    'set(LLVM_NO_DEAD_STRIP \"${eippf_protection_suite_prev_llvm_no_dead_strip}\")',\n    'unset(eippf_protection_suite_prev_llvm_no_dead_strip)',\n]\nfor needle in needles:\n    if text.count(needle) != 1:\n        raise SystemExit('APPLE_NO_DEAD_STRIP_GATE_MISMATCH')\nprint('OK')\nPY`
+  - PASS 条件：输出 `OK`
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/core/passes/CMakeLists.txt').read_text(encoding='utf-8')\nexpected = [\n    'eippf_string_protection_pass',\n    'eippf_selective_vm_pass',\n    'eippf_mba_obfuscation_pass',\n    'eippf_iat_minimization_pass',\n    'eippf_jit_enclave_pass',\n    'eippf_protection_anchor_pass',\n    'eippf_cff_obfuscation_pass',\n    'eippf_protection_suite_pass',\n]\nfor name in expected:\n    if text.count(f'eippf_add_pass_plugin_target({name}') != 1:\n        raise SystemExit(f'HELPER_CALL_MISMATCH:{name}')\nprint('OK')\nPY`
+  - PASS 条件：输出 `OK`
+- `rg -n "WINDOWS_EXPORT_ALL_SYMBOLS ON" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：1 命中
+- `rg -n "target_link_libraries\\(\\$\\{name\\} PRIVATE LLVM\\)" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：1 命中
+- `rg -n "llvm_map_components_to_libnames\\(eippf_pass_plugin_llvm_libs Core Passes Support Analysis TransformUtils ScalarOpts InstCombine ipo Instrumentation IRReader\\)" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：1 命中
+- `rg -n "LLVM_\\$\\{name_upper\\}_LINK_INTO_TOOLS OFF CACHE BOOL" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：1 命中
+- `rg -n "CMAKE_RUNTIME_OUTPUT_DIRECTORY" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：至少 2 命中
+- `rg -n "message\\(FATAL_ERROR .*non-compilable" /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：至少 1 命中
+- 明确列出你修改的文件

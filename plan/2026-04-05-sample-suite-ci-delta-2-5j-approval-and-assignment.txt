@@ -1,0 +1,61 @@
+# 2026-04-05 sample-suite CI Delta-2.5j 批准与分配记录
+
+## 状态
+- `APPROVED`
+
+## 触发事实
+- `sample-suite-eval` run `23995324836` 已结束为 `failure`
+- `build-windows` job `69982318594` 失败于 `Build Windows Samples`
+- 最新失败证据与上一轮一致：
+  - `eippf_string_protection_pass ignored -- Loadable modules not supported on this platform.`
+  - `target_include_directories called with non-compilable target type`
+  - `target_compile_definitions called with non-compilable target type`
+  - `target_compile_features called with non-compilable target type`
+
+## 批准范围
+- 仅批准：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- 明确禁止：
+  - 修改 `/workspace/core/CMakeLists.txt`
+  - 修改任何 `.cpp/.hpp/.py/.ps1/.yml`
+  - 修改任何测试、workflow、wrapper、sample-suite 脚本
+
+## 三角色最终审核结论
+- `Architect Reviewer`: `PASS`
+  - 原因：
+    - Windows fallback 已固定为 `WIN32`，不再依赖 `LLVM_ENABLE_PLUGINS` 的定义状态
+    - 链接路径已固定为 `TARGET LLVM` 优先、组件映射次级、否则 `FATAL_ERROR`
+    - DLL 输出目录与真实 wrapper load gate 都已写入计划
+- `Engineer Reviewer`: `PASS`
+  - 原因：
+    - helper 签名、8 个调用点、执行顺序、文件边界、静态 gate 都已固定
+    - `core/CMakeLists.txt` 明确不改
+    - engineer 不需要再自行设计 API 或迁移顺序
+- `Security Reviewer`: `PASS`
+  - 原因：
+    - 保持 fail-closed
+    - 禁止静默降级到无 plugin / 无保护
+    - Windows fallback 仍要求真实 `eippf_protection_suite_pass.dll` 和真实 `--pass-plugin` 编译
+
+## 回收规则
+- 本记录落盘后，三位 reviewer 立即回收，不参与实现。
+
+## 实现分配
+- 新工程 owner：`Agent 2 (Engineer)` 新实例
+- 文件所有权：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- 严格禁止：
+  - 修改其它文件
+  - 扩 scope 到 workflow / sample-suite / wrapper / tests
+  - 修改 pass 源文件、顶层 CMake、Windows 构建脚本
+
+## PM 验收顺序
+1. `git diff --name-only`
+2. `git diff --check`
+3. 静态 gate
+4. 最小 Linux configure gate
+5. 三角色实现复审
+6. 提交推送
+7. 观察新的 `sample-suite-eval`

@@ -2,137 +2,77 @@ find_package(LLVM REQUIRED CONFIG)
 
 list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
 include(AddLLVM)
+include(PassPluginCompat)
 
 if(NOT COMMAND add_llvm_pass_plugin)
   message(FATAL_ERROR "LLVM CMake module does not provide add_llvm_pass_plugin.")
 endif()
 
-add_llvm_pass_plugin(eippf_string_protection_pass
-  src/StringProtectionPass.cpp
+eippf_add_pass_plugin_target(eippf_string_protection_pass
+  SOURCES
+    src/StringProtectionPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_string_protection_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_string_protection_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_string_protection_pass PRIVATE
-  EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_string_protection_pass)
-
-add_llvm_pass_plugin(eippf_selective_vm_pass
-  src/SelectiveVMPass.cpp
+eippf_add_pass_plugin_target(eippf_selective_vm_pass
+  SOURCES
+    src/SelectiveVMPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_SELECTIVE_VM_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_selective_vm_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_selective_vm_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_selective_vm_pass PRIVATE
-  EIPPF_SELECTIVE_VM_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_selective_vm_pass)
-
-add_llvm_pass_plugin(eippf_mba_obfuscation_pass
-  src/MBAObfuscationPass.cpp
+eippf_add_pass_plugin_target(eippf_mba_obfuscation_pass
+  SOURCES
+    src/MBAObfuscationPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_MBA_OBFUSCATION_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_mba_obfuscation_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_mba_obfuscation_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_mba_obfuscation_pass PRIVATE
-  EIPPF_MBA_OBFUSCATION_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_mba_obfuscation_pass)
-
-add_llvm_pass_plugin(eippf_iat_minimization_pass
-  src/IATMinimizationPass.cpp
+eippf_add_pass_plugin_target(eippf_iat_minimization_pass
+  SOURCES
+    src/IATMinimizationPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_IAT_MINIMIZATION_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_iat_minimization_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_iat_minimization_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_iat_minimization_pass PRIVATE
-  EIPPF_IAT_MINIMIZATION_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_iat_minimization_pass)
-
-add_llvm_pass_plugin(eippf_jit_enclave_pass
-  src/JITEnclavePass.cpp
+eippf_add_pass_plugin_target(eippf_jit_enclave_pass
+  SOURCES
+    src/JITEnclavePass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_JIT_ENCLAVE_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_jit_enclave_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_jit_enclave_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_jit_enclave_pass PRIVATE
-  EIPPF_JIT_ENCLAVE_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_jit_enclave_pass)
-
-add_llvm_pass_plugin(eippf_protection_anchor_pass
-  src/ProtectionAnchorPass.cpp
+eippf_add_pass_plugin_target(eippf_protection_anchor_pass
+  SOURCES
+    src/ProtectionAnchorPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_PROTECTION_ANCHOR_STANDALONE_PLUGIN=1
 )
 
-target_include_directories(eippf_protection_anchor_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+eippf_add_pass_plugin_target(eippf_cff_obfuscation_pass
+  SOURCES
+    src/CFFObfuscationPass.cpp
+  COMPILE_DEFINITIONS
+    EIPPF_CFF_OBFUSCATION_STANDALONE_PLUGIN=1
 )
-target_include_directories(eippf_protection_anchor_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_protection_anchor_pass PRIVATE
-  EIPPF_PROTECTION_ANCHOR_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_protection_anchor_pass)
-
-add_llvm_pass_plugin(eippf_cff_obfuscation_pass
-  src/CFFObfuscationPass.cpp
-)
-
-target_include_directories(eippf_cff_obfuscation_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_cff_obfuscation_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-target_compile_definitions(eippf_cff_obfuscation_pass PRIVATE
-  EIPPF_CFF_OBFUSCATION_STANDALONE_PLUGIN=1
-)
-eippf_apply_common_compile_options(eippf_cff_obfuscation_pass)
 
 if(APPLE)
   set(eippf_protection_suite_prev_llvm_no_dead_strip "${LLVM_NO_DEAD_STRIP}")
   set(LLVM_NO_DEAD_STRIP ON)
 endif()
 
-add_llvm_pass_plugin(eippf_protection_suite_pass
-  src/ProtectionSuitePassPlugin.cpp
-  src/StringProtectionPass.cpp
-  src/ProtectionAnchorPass.cpp
-  src/SelectiveVMPass.cpp
-  src/JITEnclavePass.cpp
-  src/CFFObfuscationPass.cpp
+eippf_add_pass_plugin_target(eippf_protection_suite_pass
+  SOURCES
+    src/ProtectionSuitePassPlugin.cpp
+    src/StringProtectionPass.cpp
+    src/ProtectionAnchorPass.cpp
+    src/SelectiveVMPass.cpp
+    src/JITEnclavePass.cpp
+    src/CFFObfuscationPass.cpp
+  OUTPUT_NAME
+    eippf_protection_suite_pass
 )
-
-target_include_directories(eippf_protection_suite_pass PRIVATE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include"
-)
-target_include_directories(eippf_protection_suite_pass SYSTEM PRIVATE
-  ${LLVM_INCLUDE_DIRS}
-)
-eippf_apply_common_compile_options(eippf_protection_suite_pass)
 set_target_properties(eippf_protection_suite_pass PROPERTIES
   OUTPUT_NAME "eippf_protection_suite_pass"
   PREFIX ""

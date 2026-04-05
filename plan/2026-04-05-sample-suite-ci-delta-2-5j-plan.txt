@@ -1,0 +1,348 @@
+# 2026-04-05 sample-suite CI Delta-2.5j 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5j 的 superseding plan 候选。
+- 只有在 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS` 后，本计划才可进入实现分配。
+- 若 run `23995324836` 的 `build-windows` 最终成功，本 delta 自动作废，不进入编码。
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 当前 `sample-suite-eval` run `23995324836` 中：
+  - `build-macos-ios` 已通过
+  - `build-linux-android` 已通过
+  - `build-windows` 仍卡在 `Build Windows Samples`
+- 已知上一轮 Windows 失败 run `23994978083` 的真实 blocker 不是 `LibXml2`，而是 `core/passes/CMakeLists.txt` 在 `add_llvm_pass_plugin(...)` 之后无条件执行 `target_*`，而当前 pinned Windows LLVM18 组合会把 pass plugin 路径降成“non-compilable target”，最终触发：
+  - `target_include_directories called with non-compilable target type`
+  - `target_compile_definitions called with non-compilable target type`
+  - `target_compile_features called with non-compilable target type`
+
+## Task Charter
+- Objective：
+  - 收敛 Windows pass plugin target-type 问题，继续生成并使用真实 `eippf_protection_suite_pass.dll`
+- Scope：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - 新增 `/workspace/core/cmake/PassPluginCompat.cmake`
+  - 仅在必要时修改 `/workspace/core/CMakeLists.txt`
+- Non-Goals：
+  - 不修改 `.github/workflows/sample-suite-eval.yml`
+  - 不修改 macOS/Linux/Android build 脚本
+  - 不通过关闭 pass plugin、关闭 validator、allow-failure、报告豁免来“过关”
+  - 不把 `LibXml2` 缺失当作本 delta 的主修复
+- Forbidden Shortcuts：
+  - 禁止在 Windows 路径禁用 `--pass-plugin`
+  - 禁止删除或弱化现有 Windows validator
+  - 禁止把 `eippf_protection_suite_pass` 改成静态 link-into-tools 形态
+  - 禁止允许 fallback 到“无保护编译”
+  - 禁止改 sample-suite 失败文案以假装 blocker 已关闭
+
+## Root Cause Judgment
+- 根因固定为：
+  1. 当前 pinned Windows LLVM18 组合下，`add_llvm_pass_plugin(...)` 的 `MODULE` 路径不可用。
+  2. `core/passes/CMakeLists.txt` 仍然无条件对这些 pass target 执行 `target_include_directories` / `target_compile_definitions` / `eippf_apply_common_compile_options`。
+  3. 结果是 configure 阶段在 pass plugin target-type 上 fail，而不是等到样例编译阶段才 fail。
+- 次级风险固定为：
+  1. 即便改成 Windows `SHARED` fallback，若不显式处理 DLL 导出与输出目录，仍可能在下一步卡在：
+     - `eippf_protection_suite_pass.dll` 未导出 `llvmGetPassPluginInfo`
+     - `eippf_protection_suite_pass.dll` 未落到 `sample_suite_inputs/pass_plugins`
+
+## Architecture Contract
+### A. 新增统一兼容层
+- 新增 `core/cmake/PassPluginCompat.cmake`
+- 只暴露一个 helper：
+  - `eippf_add_pass_plugin_target(<name> SOURCES <src...> [COMPILE_DEFINITIONS <def...>] [OUTPUT_NAME <value>])`
+
+### B. helper 的唯一行为
+- helper 内部必须按以下顺序执行：
+  1. 计算 `name_upper`
+  2. 强制 `LLVM_${name_upper}_LINK_INTO_TOOLS=OFF`
+  3. 判断是否进入 Windows fallback：
+     - 条件固定为：`WIN32`
+  4. 若不进入 fallback（即非 Windows）：
+     - 调用 `add_llvm_pass_plugin(${name} ...)`
+  5. 若进入 fallback（即 Windows）：
+     - 先尝试 `TARGET LLVM`
+     - 若 `TARGET LLVM` 不存在，则要求 `COMMAND llvm_map_components_to_libnames`
+     - 若两者都不存在，直接 `message(FATAL_ERROR ...)`
+     - 使用 `add_library(${name} SHARED ...)`
+     - 链接顺序固定为：
+       - 若 `TARGET LLVM` 存在：`target_link_libraries(${name} PRIVATE LLVM)`
+       - 否则：`llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs Core Passes Support Analysis TransformUtils ScalarOpts InstCombine ipo Instrumentation IRReader)`，再 `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+     - `set_target_properties(${name} PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)`
+  6. 不论哪条路径，都必须立刻读取 `TARGET TYPE`
+  7. 如果 target type 不是可编译目标，直接 `message(FATAL_ERROR ...)`
+  8. 再统一追加：
+     - include dirs
+     - compile definitions
+     - `eippf_apply_common_compile_options`
+     - output properties
+
+### C. helper 的 target-type gate
+- helper 内部允许的 target type 只有：
+  - `MODULE_LIBRARY`
+  - `SHARED_LIBRARY`
+- 以下类型一律视为 blocker：
+  - `INTERFACE_LIBRARY`
+  - `UTILITY`
+  - `OBJECT_LIBRARY`
+  - `STATIC_LIBRARY`
+  - 未定义
+
+### D. helper 的输出目录契约
+- Windows fallback 下必须把 DLL 输出强制对齐到 sample-suite 现有契约。
+- 规则固定为：
+  - 在 `WIN32` 路径中无条件检查 `CMAKE_LIBRARY_OUTPUT_DIRECTORY*`
+  - 若 `CMAKE_LIBRARY_OUTPUT_DIRECTORY` 非空，则同步设置：
+    - `RUNTIME_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"`
+    - `LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"`
+  - 若 `CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE` 非空，则同步设置：
+    - `RUNTIME_OUTPUT_DIRECTORY_RELEASE "${CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE}"`
+    - `LIBRARY_OUTPUT_DIRECTORY_RELEASE "${CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE}"`
+- 不修改 `build_windows.ps1` 的 configure 参数。
+
+### E. suite plugin 专属契约
+- `eippf_protection_suite_pass` 仍固定：
+  - `OUTPUT_NAME "eippf_protection_suite_pass"`
+  - `PREFIX ""`
+- `if(NOT EIPPF_PASS_PLUGIN)` 的注册逻辑保留。
+- 最终 Windows 仍必须让 `build_windows.ps1` 在：
+  - `sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll`
+  上找到真实插件产物。
+- 本 delta 的导出 gate 固定由现有 Windows 样例编译承担：
+  - `build_windows.ps1` 在 plugin 构建完成后会立刻通过 wrapper 使用 `--pass-plugin <...dll>` 编译 `windows_exe/windows_dll/windows_sys`
+  - 若 `llvmGetPassPluginInfo` 未被正确导出或插件无法被 Clang 加载，本 delta 必须在 `Build Windows Samples` 阶段 fail，而不是继续进入 validator
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审核、单写者分配、验收、提交、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施本 delta 批准范围内的 CMake 兼容层修复
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 fail-closed、禁止静默降级与保持 real-plugin 契约
+  - 本轮性能结论：`N/A`
+
+## Parallel Tracks
+### Phase 0 / 计划审核
+- Owner：`Agent 1`
+- 输出：
+  - 本计划文件
+  - 三角色审核结论
+- 阻塞：
+  - 任一 reviewer `BLOCK`
+
+### Phase 1 / 单写者实现
+- Owner：`Agent 2`
+- 文件所有权：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - 仅在必要时 `/workspace/core/CMakeLists.txt`
+- 输出：
+  - Windows pass plugin compat 层
+  - 无 direct `add_llvm_pass_plugin(...)` 的 `passes/CMakeLists.txt`
+
+### Phase 2 / PM 验收
+- Owner：`Agent 1`
+- 输出：
+  - 静态 gate 结果
+  - 最小 configure gate 结果
+  - CI 观察结论
+
+### Phase 3 / 实现复审
+- Owner：`Agent 3`
+- 输出：
+  - 通过 / 阻断意见
+
+## File Ownership
+- `/workspace/core/passes/CMakeLists.txt` -> `Agent 2`
+- `/workspace/core/cmake/PassPluginCompat.cmake` -> `Agent 2`
+- `/workspace/core/CMakeLists.txt` -> `Agent 2`（仅当 include 新模块确有必要）
+- `plan/*delta-2-5j*` -> `Agent 1`
+
+## Exact Change Contract
+### 1. `core/cmake/PassPluginCompat.cmake`
+- 必须新增 helper：
+  - `eippf_add_pass_plugin_target`
+- helper 签名固定为：
+  - `function(eippf_add_pass_plugin_target name)`
+  - `cmake_parse_arguments(ARG "" "OUTPUT_NAME" "SOURCES;COMPILE_DEFINITIONS" ${ARGN})`
+- helper 参数固定只允许覆盖现有 `passes/CMakeLists.txt` 需求：
+  - target 名
+  - source 列表
+  - 可选 compile definitions 列表
+  - 可选 output name
+- helper 内部必须显式包含：
+  - `set(LLVM_${name_upper}_LINK_INTO_TOOLS OFF CACHE BOOL ... FORCE)`
+  - `if(WIN32)`
+  - `add_library(${name} SHARED ...)`
+  - `WINDOWS_EXPORT_ALL_SYMBOLS ON`
+  - target-type 读取与 fail-closed
+  - `if(TARGET LLVM)` 主链接路径
+  - `elseif(COMMAND llvm_map_components_to_libnames)` 组件映射回退路径
+  - `else()` -> `message(FATAL_ERROR ...)`
+
+### 1.1 helper 的统一公共属性
+- helper 在 target 创建之后必须统一添加：
+  - `target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")`
+  - `target_include_directories(${name} SYSTEM PRIVATE ${LLVM_INCLUDE_DIRS})`
+  - `if(ARG_COMPILE_DEFINITIONS) target_compile_definitions(${name} PRIVATE ${ARG_COMPILE_DEFINITIONS})`
+  - `eippf_apply_common_compile_options(${name})`
+  - `if(ARG_OUTPUT_NAME) set_target_properties(${name} PROPERTIES OUTPUT_NAME "${ARG_OUTPUT_NAME}")`
+- helper 禁止自己推断每个 pass 的 compile definitions；这些定义必须由调用点显式传入。
+
+### 2. `core/passes/CMakeLists.txt`
+- 必须改为：
+  - `include(PassPluginCompat)`
+- 所有 pass plugin 统一走 `eippf_add_pass_plugin_target(...)`
+- 不允许再保留任何直接 `add_llvm_pass_plugin(...)` 调用。
+- 现有每个 pass 的 source 列表、compile definitions、suite `OUTPUT_NAME` 都必须保留，且迁移时不允许改名、不允许合并、不允许删除。
+- `APPLE` 的 `LLVM_NO_DEAD_STRIP` 逻辑必须原样保留。
+- 调用点必须固定写成下面 8 个 helper 调用，顺序不得变化：
+  1. `eippf_string_protection_pass`
+     - `SOURCES src/StringProtectionPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1`
+  2. `eippf_selective_vm_pass`
+     - `SOURCES src/SelectiveVMPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_SELECTIVE_VM_STANDALONE_PLUGIN=1`
+  3. `eippf_mba_obfuscation_pass`
+     - `SOURCES src/MBAObfuscationPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_MBA_OBFUSCATION_STANDALONE_PLUGIN=1`
+  4. `eippf_iat_minimization_pass`
+     - `SOURCES src/IATMinimizationPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_IAT_MINIMIZATION_STANDALONE_PLUGIN=1`
+  5. `eippf_jit_enclave_pass`
+     - `SOURCES src/JITEnclavePass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_JIT_ENCLAVE_STANDALONE_PLUGIN=1`
+  6. `eippf_protection_anchor_pass`
+     - `SOURCES src/ProtectionAnchorPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_PROTECTION_ANCHOR_STANDALONE_PLUGIN=1`
+  7. `eippf_cff_obfuscation_pass`
+     - `SOURCES src/CFFObfuscationPass.cpp`
+     - `COMPILE_DEFINITIONS EIPPF_CFF_OBFUSCATION_STANDALONE_PLUGIN=1`
+  8. `eippf_protection_suite_pass`
+     - `SOURCES src/ProtectionSuitePassPlugin.cpp src/StringProtectionPass.cpp src/ProtectionAnchorPass.cpp src/SelectiveVMPass.cpp src/JITEnclavePass.cpp src/CFFObfuscationPass.cpp`
+     - `OUTPUT_NAME eippf_protection_suite_pass`
+
+### 3. `core/CMakeLists.txt`
+- 本 delta 固定不修改。
+- 理由固定为：
+  - 顶层已经把 `core/cmake` 追加到 `CMAKE_MODULE_PATH`
+  - `passes/CMakeLists.txt` 可以直接 `include(PassPluginCompat)`
+  - 不允许工程 agent 自行扩展到顶层接线变更
+
+## Mechanical Implementation Sequence
+1. 新增 `/workspace/core/cmake/PassPluginCompat.cmake`
+2. 在该文件里完整实现 `eippf_add_pass_plugin_target(...)`
+3. 只修改 `/workspace/core/passes/CMakeLists.txt`
+4. 在 `passes/CMakeLists.txt` 顶部保留：
+   - `find_package(LLVM REQUIRED CONFIG)`
+   - `list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")`
+5. 在 `include(AddLLVM)` 之后立刻加入：
+   - `include(PassPluginCompat)`
+6. 按“8 个 helper 调用固定清单”逐个替换原来的 `add_llvm_pass_plugin + target_*` 块
+7. 保留 `APPLE` 的 `LLVM_NO_DEAD_STRIP` 包裹逻辑
+8. 保留 `if(NOT EIPPF_PASS_PLUGIN) eippf_register_pass_plugin("eippf_protection_suite_pass") endif()`
+9. 不改任何 `.cpp/.hpp/.py/.ps1/.yml`
+
+## Regression Perimeter
+- 直接影响：
+  - `core/passes/CMakeLists.txt` 的 pass plugin 创建路径
+  - `eippf_protection_suite_pass` 的 Windows 构建
+- 邻接路径：
+  - macOS `eippf_protection_suite_pass.dylib`
+  - Linux `eippf_protection_suite_pass.so`
+  - wrapper 的 `--pass-plugin`
+  - sample-suite 对 `plugin_path` 的路径契约
+- 必须保持不变：
+  - pass source 文件内容
+  - wrapper 行为
+  - validator 文案与 strict gate
+  - `build_windows.ps1` 的输入/输出契约
+  - `EIPPF_PASS_PLUGIN` 注册逻辑
+- 第二阶风险：
+  - Windows fallback 若缺少导出，wrapper 加载插件会在样例编译期失败
+  - Windows fallback 若输出目录错误，会在 `pass plugin build output missing` 处失败
+  - 直接用 `add_library(SHARED)` 若未补 target-type/real-plugin gate，会导致隐藏降级
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only`
+  - 只能包含：
+    - `core/passes/CMakeLists.txt`
+    - `core/cmake/PassPluginCompat.cmake`
+    - 可选 `core/CMakeLists.txt`
+- `git diff --check`
+  - 必须为空
+- `rg -n "add_llvm_pass_plugin\\(" /workspace/core/passes/CMakeLists.txt`
+  - 必须 `0` 命中
+- `rg -n "include\\(PassPluginCompat\\)" /workspace/core/passes/CMakeLists.txt`
+  - 必须 `1` 命中
+- `rg -n "eippf_add_pass_plugin_target\\(" /workspace/core/passes/CMakeLists.txt`
+  - 必须 `= 8` 命中
+- `rg -n 'OUTPUT_NAME "eippf_protection_suite_pass"' /workspace/core/passes/CMakeLists.txt`
+  - 必须 `= 1` 命中
+- `rg -n 'PREFIX ""' /workspace/core/passes/CMakeLists.txt`
+  - 必须 `= 1` 命中
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/core/passes/CMakeLists.txt').read_text(encoding='utf-8')\nneedles = [\n    'set(eippf_protection_suite_prev_llvm_no_dead_strip \"${LLVM_NO_DEAD_STRIP}\")',\n    'set(LLVM_NO_DEAD_STRIP ON)',\n    'set(LLVM_NO_DEAD_STRIP \"${eippf_protection_suite_prev_llvm_no_dead_strip}\")',\n    'unset(eippf_protection_suite_prev_llvm_no_dead_strip)',\n]\nfor needle in needles:\n    if text.count(needle) != 1:\n        raise SystemExit('APPLE_NO_DEAD_STRIP_GATE_MISMATCH')\nprint('OK')\nPY`
+  - 必须输出 `OK`
+- `rg -n "WINDOWS_EXPORT_ALL_SYMBOLS ON" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `1` 命中
+- `rg -n "target_link_libraries\\(\\$\\{name\\} PRIVATE LLVM\\)" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `= 1` 命中
+- `rg -n "llvm_map_components_to_libnames\\(eippf_pass_plugin_llvm_libs Core Passes Support Analysis TransformUtils ScalarOpts InstCombine ipo Instrumentation IRReader\\)" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `= 1` 命中
+- `rg -n "LLVM_\\$\\{name_upper\\}_LINK_INTO_TOOLS OFF CACHE BOOL" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `= 1` 命中
+- `rg -n "CMAKE_RUNTIME_OUTPUT_DIRECTORY" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `>= 2` 命中
+- `rg -n "message\\(FATAL_ERROR .*non-compilable" /workspace/core/cmake/PassPluginCompat.cmake`
+  - 必须 `>= 1` 命中
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/core/passes/CMakeLists.txt').read_text(encoding='utf-8')\nexpected = [\n    'eippf_string_protection_pass',\n    'eippf_selective_vm_pass',\n    'eippf_mba_obfuscation_pass',\n    'eippf_iat_minimization_pass',\n    'eippf_jit_enclave_pass',\n    'eippf_protection_anchor_pass',\n    'eippf_cff_obfuscation_pass',\n    'eippf_protection_suite_pass',\n]\nfor name in expected:\n    if text.count(f'eippf_add_pass_plugin_target({name}') != 1:\n        raise SystemExit(f'HELPER_CALL_MISMATCH:{name}')\nprint('OK')\nPY`
+  - 必须输出 `OK`
+
+### Configure Gates
+- Linux 本地最小 configure 必须通过：
+  - `cmake -S /workspace/core -B /tmp/eippf_delta25j_probe -G Ninja -DLLVM_DIR=/usr/lib/llvm-14/lib/cmake/llvm -DEIPPF_BUILD_TESTS=OFF -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF -DEIPPF_BUILD_SCRIPT_GUARD=OFF -DEIPPF_BUILD_IP_WEAVER=OFF -DEIPPF_BUILD_IP_WEAVER_IR=OFF -DEIPPF_BUILD_TOOLING=OFF`
+- configure 输出不得出现：
+  - `non-compilable target type`
+  - `LLVM CMake module does not provide add_llvm_pass_plugin`
+- 该 gate 只用于证明：
+  - 本 delta 没把通用 CMake 结构写坏
+  - 非 Windows 路径仍可解析 `add_llvm_pass_plugin`
+- Windows 核心分支的证明固定只来自 CI 的 `build-windows`
+
+### CI Gates
+- `sample-suite-eval` 的 `build-windows` 必须：
+  - 通过 `Build Windows Samples`
+  - 进入并通过 `Validate Windows Toolchain Report`
+- 仍必须满足：
+  - `plugin_path` 以 `eippf_protection_suite_pass.dll` 结尾
+  - Windows sidecar 中继续存在 `--pass-plugin <...eippf_protection_suite_pass.dll>`
+- 若新的失败是：
+  - `pass plugin build output missing`
+  - `clang failed to load pass plugin`
+  - `plugin_path mismatch`
+  则视为本 delta 未完成，继续 fail-closed 进入下一 delta
+
+## Merge Order
+1. 三角色审核本计划
+2. 回收 reviewer
+3. 下发单写者任务卡
+4. PM 跑静态 gate + 最小 configure
+5. 三角色实现复审
+6. 提交并推送
+7. 观察 `sample-suite-eval`
+
+## Open Risks
+- 若当前 Windows pinned LLVM18 同时缺少 `TARGET LLVM` 与 `llvm_map_components_to_libnames`，fallback 会在 helper 内 fail-closed，并以明确 `FATAL_ERROR` 进入下一 delta
+- 若 `WINDOWS_EXPORT_ALL_SYMBOLS` 仍不足以导出 `llvmGetPassPluginInfo`，会在 wrapper 首次加载 pass plugin 时 fail-closed，并进入下一 delta 显式导出符号契约
+- 若 run `23995324836` 最终已经通过 Windows，本 delta 自动失效，不进入实现
+
+## State Snapshot
+- 当前 run `23995324836` 仍在执行，`build-windows` 卡在 `Build Windows Samples`
+- 上一轮 Windows 已确认失败于 pass plugin target-type
+- `delta-2.5i` 已推送并解决 macOS host compiler path 边界误判
+- 本 delta 只针对 Windows pass plugin target-type 收敛，不扩到 validator 文案或 sample-suite 报告逻辑
