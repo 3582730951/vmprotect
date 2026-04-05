@@ -1,0 +1,154 @@
+# 2026-04-04 sample-suite CI Delta-2.5b 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5b 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只替代 `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-5a-plan.txt` 的 `Phase 1`。
+- 替代范围仅限：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 本轮 macOS plugin link-line 提取误判收口
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- `Delta-2.5b` 只处理一个新 blocker：
+  - `build-macos-ios` 的 pass plugin 实际已完成链接，但 `build_macos_ios.sh` 在解析 `PLUGIN_BUILD_LOG_PATH` 时把带 `[n/m]` 前缀的真实 Ninja verbose link line 误判成 `0` 条
+- 该 delta 不修改 Delta-2.5 的 `Phase 1` / `Phase 2`，也不修改 Delta-2.5a 的 Bash 3 兼容路径，只 supersede 其 `Phase 1` 中的 link-line 提取细节。
+
+## Task Charter
+- Objective：
+  - 让 `build-macos-ios` 不再因 `expected exactly one pass plugin link command line, got 0` 失败
+  - 保持 “唯一候选 + fail-closed + dead_strip gate” 语义不变
+- Scope：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Non-Goals：
+  - 不改 workflow
+  - 不改 `core/passes/CMakeLists.txt`
+  - 不改 `build_windows.ps1`
+  - 不改 Linux / Android / iOS sample source
+  - 不补新的测试文件
+  - 不扩展到其它脚本
+- Forbidden Shortcuts：
+  - 禁止删除 exact-one gate
+  - 禁止把 `0` 条或 `>1` 条候选降级成 warning
+  - 禁止移除 `-Wl,-dead_strip` 检查
+  - 禁止把 `PLUGIN_LINK_COMMAND_PATH` 写成原始 `[n/m]` 日志行
+  - 禁止重新引入 `mapfile` / `readarray`
+
+## Root Cause Judgment
+- 根因固定为：
+  - 当前 `awk` 提取逻辑一边匹配 `plugin_path`，一边排除了形如 `^[[:space:]]*\[[0-9]+/[0-9]+\]` 的 Ninja 进度前缀
+  - 真实 verbose link line 恰好带该前缀，因此被错误过滤
+- 唯一推荐修复路径固定为：
+  - 原始候选筛选只保留 `index($0, plugin_path)`
+  - 继续沿用 Delta-2.5a 已通过的 `mktemp + while IFS= read -r` Bash 3 兼容结构
+  - 先对原始候选数做 exact-one 判定
+  - 只有候选数恰好为 `1` 时，才对唯一候选执行前缀归一化
+  - `PLUGIN_LINK_COMMAND_PATH` 固定写入“剥离 `[n/m]` 前缀后的规范化命令行”
+  - 若归一化结果为空或不再包含 `PASS_PLUGIN_PATH`，立即 fail-closed
+  - `-Wl,-dead_strip` 检查继续对规范化后的 sidecar 生效
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、验收门、审批、CI 观察与回滚判定
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 单文件改动
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 fail-closed、sidecar 真值、security regression 与性能预算
+  - 本轮运行时性能结论默认：`N/A`
+
+## Phase 1 / macOS Link-Line Normalization Closure
+- Owner：`Agent 2`
+- File：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Exact Change：
+  1. 保留 `plugin_link_candidates_path="$(mktemp)"`
+  2. 把 `awk` 条件从“包含 `plugin_path` 且不带 `[n/m]` 前缀”改成“只要包含 `plugin_path` 就输出”
+  3. 继续把非空原始候选行收集到 `plugin_link_lines`
+  4. 若 `plugin_link_lines` 数量不等于 `1`，继续沿用现有 fail message 并退出
+  5. 新增一个归一化变量，对唯一候选执行前缀剥离：
+     - `^[[:space:]]*\[[0-9]+/[0-9]+\][[:space:]]*`
+  6. 归一化后立即做两项校验：
+     - 非空
+     - 仍包含 `PASS_PLUGIN_PATH`
+  7. 只有校验通过时，才将归一化结果写入 `PLUGIN_LINK_COMMAND_PATH`
+  8. 保留 `grep -F -- '-Wl,-dead_strip'` 检查，不改检查语义和失败语义
+- Forbidden：
+  - 不改 `plugin_build_cmd`
+  - 不改 `PIPESTATUS[0]`
+  - 不改 `PLUGIN_BUILD_LOG_PATH` contract
+  - 不改其它平台分支
+  - 不动其它文件
+
+## File Ownership
+- `core/tools/sample_suite/build_macos_ios.sh` -> `Agent 2`
+- `plan/*delta-2-5b*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - `PLUGIN_BUILD_LOG_PATH -> plugin_link_lines -> PLUGIN_LINK_COMMAND_PATH`
+- 邻接路径：
+  - `grep -F -- '-Wl,-dead_strip'`
+  - pass plugin 构建 sidecar 产物
+- 必须保持不变：
+  - workflow
+  - `core/passes/CMakeLists.txt`
+  - `build_windows.ps1`
+  - iOS helper 编译
+  - final iOS link
+  - Linux / Android lane
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only` 只允许出现：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 以及本轮计划/审核/执行记录
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+- `! rg -n '\\b(mapfile|readarray)\\b' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `rg -n 'expected exactly one pass plugin link command line' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+### Artifact Gates
+- `PLUGIN_BUILD_LOG_PATH` 继续保存原始 verbose 日志
+- `PLUGIN_LINK_COMMAND_PATH` 只在恰好 1 条候选时生成且非空
+- `PLUGIN_LINK_COMMAND_PATH` 必须：
+  - 包含 `eippf_protection_suite_pass.dylib`
+  - 不包含 `[7/7]` 等 Ninja 进度前缀
+  - 不包含 `-Wl,-dead_strip`
+
+### CI Gates
+- `build-macos-ios` 不得再因 `expected exactly one pass plugin link command line, got 0` 失败
+- 本 delta 的 blocker 判定不依赖 `build-windows` 状态
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否仍符合固定 3 角色与 Phase 结构
+  - 是否只 supersede Delta-2.5a 的单一细节
+- `Agent 2` 审：
+  - 工程实现是否为唯一机械路径
+  - 是否先 exact-one 再归一化
+- `Agent 3` 审：
+  - fail-closed 是否保持
+  - sidecar 语义是否更严格而非漂移
+  - `security regression` 是否为无
+  - `<10% overhead` 是否显式为 `N/A`
+
+## Merge Order
+1. 批准 Delta-2.5b
+2. `Agent 2` 只修改 `build_macos_ios.sh`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 `build-macos-ios` 复跑
+
+## Open Risks
+- 修掉 `[n/m]` 误判后，macOS 可能继续暴露更深层 Darwin / codesign / sample 级 blocker；若发生，另开新 delta，不在本计划内扩 scope
+
+## State Snapshot
+- `build-linux-android` 已成功
+- `build-macos-ios` 当前失败点已定位为 link-line 提取误判
+- `build-windows` 状态不作为本 delta blocker

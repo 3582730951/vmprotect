@@ -1,0 +1,41 @@
+# 2026-04-04 sample-suite CI Delta-2.5b Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## 目标
+- 修复 macOS pass plugin link-line 提取误判：
+  - 接受真实存在且带 `[n/m]` 前缀的 verbose Ninja link line
+  - 继续对 `0` 条和 `>1` 条候选 fail-closed
+  - `PLUGIN_LINK_COMMAND_PATH` 固定写规范化后的命令行，不保留 `[n/m]` 前缀
+
+## 机械步骤
+1. 保留现有 `plugin_link_candidates_path="$(mktemp)"`
+2. 把 `awk` 条件改成只要 `index($0, plugin_path)` 就输出
+3. 继续用 `while IFS= read -r` 读取候选，保留非空原始行
+4. 若原始候选数量不等于 `1`，继续复用现有 fail message 并退出
+5. 对唯一候选做前缀归一化，剥离：
+   - `^[[:space:]]*\[[0-9]+/[0-9]+\][[:space:]]*`
+6. 归一化后做两项校验：
+   - 非空
+   - 仍包含 `${PASS_PLUGIN_PATH}`
+7. 只有校验通过时，才写 `PLUGIN_LINK_COMMAND_PATH`
+8. 保留 `grep -F -- '-Wl,-dead_strip'` gate，不改失败语义
+
+## 禁止项
+- 禁止修改 `plugin_build_cmd`
+- 禁止修改 `PIPESTATUS[0]`
+- 禁止修改 `PLUGIN_BUILD_LOG_PATH` 产物语义
+- 禁止修改任何其它文件
+- 禁止重新引入 `mapfile` / `readarray`
+- 禁止把 `[n/m]` 原始前缀写回 `PLUGIN_LINK_COMMAND_PATH`
+
+## 完成回报必须包含
+- `git diff --name-only`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+- `rg -n 'plugin_link_lines|PLUGIN_LINK_COMMAND_PATH|dead_strip' /workspace/core/tools/sample_suite/build_macos_ios.sh`

@@ -172,7 +172,7 @@ fi
 
 plugin_link_candidates_path="$(mktemp)"
 awk -v plugin_path="${PASS_PLUGIN_PATH}" '
-  index($0, plugin_path) && $0 !~ /^[[:space:]]*\[[0-9]+\/[0-9]+\]/ { print }
+  index($0, plugin_path) { print }
 ' "${PLUGIN_BUILD_LOG_PATH}" > "${plugin_link_candidates_path}"
 plugin_link_lines=()
 while IFS= read -r line; do
@@ -184,7 +184,14 @@ rm -f "${plugin_link_candidates_path}"
 if [[ ${#plugin_link_lines[@]} -ne 1 ]]; then
   fail "expected exactly one pass plugin link command line, got ${#plugin_link_lines[@]}: ${PLUGIN_BUILD_LOG_PATH}"
 fi
-printf '%s\n' "${plugin_link_lines[0]}" > "${PLUGIN_LINK_COMMAND_PATH}"
+plugin_link_line_normalized="$(printf '%s\n' "${plugin_link_lines[0]}" | sed -E 's/^[[:space:]]*\[[0-9]+\/[0-9]+\][[:space:]]*//')"
+if [[ -z "${plugin_link_line_normalized}" ]]; then
+  fail "normalized pass plugin link command line is empty: ${PLUGIN_BUILD_LOG_PATH}"
+fi
+if [[ "${plugin_link_line_normalized}" != *"${PASS_PLUGIN_PATH}"* ]]; then
+  fail "normalized pass plugin link command line does not contain plugin path: ${PLUGIN_BUILD_LOG_PATH}"
+fi
+printf '%s\n' "${plugin_link_line_normalized}" > "${PLUGIN_LINK_COMMAND_PATH}"
 if grep -F -- "-Wl,-dead_strip" "${PLUGIN_LINK_COMMAND_PATH}" >/dev/null; then
   fail "pass plugin link command contains forbidden -Wl,-dead_strip: ${PLUGIN_LINK_COMMAND_PATH}"
 fi

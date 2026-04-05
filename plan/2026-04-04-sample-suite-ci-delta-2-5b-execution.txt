@@ -1,0 +1,67 @@
+# 2026-04-04 sample-suite CI Delta-2.5b 执行记录
+
+## 范围
+- 本轮只实现并验证：
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- 未触碰其它生产文件。
+
+## 实施结果
+- `awk` 候选提取条件已从：
+  - “包含 `plugin_path` 且不带 `[n/m]` 前缀”
+  - 改为“只要包含 `plugin_path` 就输出”
+- 原始候选采集仍使用 Bash 3 兼容的：
+  - `mktemp + while IFS= read -r`
+- `exact-one` gate 仍保留在归一化之前
+- 新增：
+  - `plugin_link_line_normalized`
+  - 用于剥离 `^[[:space:]]*\[[0-9]+/[0-9]+\][[:space:]]*`
+- 新增两道 fail-closed 校验：
+  - 归一化结果非空
+  - 归一化结果仍包含 `PASS_PLUGIN_PATH`
+- `PLUGIN_LINK_COMMAND_PATH` 现在写入规范化后的命令行
+- `grep -F -- '-Wl,-dead_strip'` gate 保持不变
+
+## PM 静态核验
+- `git -C /workspace diff --name-only`
+  - 结果：仅 `core/tools/sample_suite/build_macos_ios.sh`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：`EXIT:0`
+- `git -C /workspace diff --check`
+  - 结果：`EXIT:0`
+
+## PM 最小烟测
+- 单条带 `[7/7]` 前缀的真实日志形态：
+  - 结果：`COUNT=1`
+  - `HAS_PREFIX=no`
+  - `HAS_PLUGIN=yes`
+- 零候选：
+  - 结果：`COUNT=0`
+- 双候选：
+  - 结果：`COUNT=2`
+
+## 三角色实现复审
+- `Agent 1 (Planner / PM)`：`PASS`
+  - 原因：
+    - 范围仍为单文件
+    - 先 exact-one 再归一化 的顺序正确
+    - sidecar 写入规范化命令而非原始 `[n/m]` 行
+    - Bash 3 兼容路径保持
+- `Agent 2 (Engineer Reviewer)`：`PASS`
+  - 原文摘录：
+    - 变更范围满足单文件约束
+    - 仍使用 Bash 3 兼容的 `while IFS= read -r` 路径
+    - 逻辑顺序正确，先 exact-one 判定，再做前缀归一化
+    - `PLUGIN_LINK_COMMAND_PATH` 写入的是 `plugin_link_line_normalized`
+    - 烟测结果与脚本逻辑一致
+- `Agent 3 (Security Reviewer)`：`PASS`
+  - 原文摘录：
+    - `exact-one` gate 仍然存在
+    - `-Wl,-dead_strip` 检查仍然保留
+    - 归一化后“非空”和“仍包含 `PASS_PLUGIN_PATH`”两道 fail-closed 校验已存在
+    - `PLUGIN_LINK_COMMAND_PATH` 写入的是去掉 `[n/m]` 前缀后的规范化命令
+    - 未重新引入 `mapfile/readarray`，也没有 scope 漂移
+
+## 进入下一步
+- 允许提交并推送 `Delta-2.5b`
+- 推送后观察 `sample-suite-eval` 的 `build-macos-ios`
+- 若 CI 继续暴露新的更深层 blocker，另开新 delta，不回滚本轮已闭合的 link-line 提取修复
