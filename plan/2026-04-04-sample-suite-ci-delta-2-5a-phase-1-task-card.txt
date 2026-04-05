@@ -1,0 +1,43 @@
+# Delta-2.5a Phase 1 任务卡
+
+## Owner
+- `Agent 2`
+
+## Role Traceability
+- `Agent 1 (Planner)`：冻结范围与验收门，不写实现
+- `Agent 2 (Engineer)`：执行本卡全部改动
+- `Agent 3 (Security Reviewer)`：审计本卡的 fail-closed、artifact 真值、`security regression` 与 `<10% overhead`
+- 本卡运行时性能结论默认预期：`N/A`
+
+## File
+- `core/tools/sample_suite/build_macos_ios.sh`
+
+## Goal
+- 用 Bash 3 兼容方式替换 `mapfile`，但不改变唯一 link line 提取和 fail-closed 语义。
+
+## Exact Edit
+1. 只替换 `mapfile -t plugin_link_lines < <( awk ... )` 这一段。
+2. 使用 `mktemp` 生成候选文件。
+3. 仍用现有 `awk` 过滤条件把候选行写到该文件。
+4. `plugin_link_lines=()` 后，用 `while IFS= read -r line; do ...; done < "${plugin_link_candidates_path}"` 收集。
+5. 只把非空行加入数组。
+6. 收集完成后删除临时文件。
+7. 数组长度不是 `1` 时，沿用现有 `expected exactly one...` 失败路径。
+8. 只有数组长度恰好为 `1` 时，才写 `PLUGIN_LINK_COMMAND_PATH`。
+
+## Forbidden
+- 不改 `plugin_build_cmd`
+- 不改 `PIPESTATUS[0]`
+- 不改 `PLUGIN_BUILD_LOG_PATH`
+- 不改 `PLUGIN_LINK_COMMAND_PATH`
+- 不改 `ios_protected_compile_command`
+- 不改 `LLVM_DIR`
+- 不注入 `LLVM_NO_DEAD_STRIP`
+- 不使用 `mapfile` / `readarray`
+- 不使用 `plugin_link_lines=( $(awk ...) )`
+
+## Done When
+- `! rg -n '\\b(mapfile|readarray)\\b' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh` 通过
+- `expected exactly one pass plugin link command line` 失败语义仍保留
+- `plugin_link_command` sidecar 的存在条件仍然是“恰好一条 link line”

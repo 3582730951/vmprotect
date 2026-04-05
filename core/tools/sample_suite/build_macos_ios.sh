@@ -170,11 +170,17 @@ if [[ ${plugin_build_status} -ne 0 ]]; then
   fail "pass plugin build failed with code ${plugin_build_status}"
 fi
 
-mapfile -t plugin_link_lines < <(
-  awk -v plugin_path="${PASS_PLUGIN_PATH}" '
-    index($0, plugin_path) && $0 !~ /^[[:space:]]*\[[0-9]+\/[0-9]+\]/ { print }
-  ' "${PLUGIN_BUILD_LOG_PATH}"
-)
+plugin_link_candidates_path="$(mktemp)"
+awk -v plugin_path="${PASS_PLUGIN_PATH}" '
+  index($0, plugin_path) && $0 !~ /^[[:space:]]*\[[0-9]+\/[0-9]+\]/ { print }
+' "${PLUGIN_BUILD_LOG_PATH}" > "${plugin_link_candidates_path}"
+plugin_link_lines=()
+while IFS= read -r line; do
+  if [[ -n "${line}" ]]; then
+    plugin_link_lines+=("${line}")
+  fi
+done < "${plugin_link_candidates_path}"
+rm -f "${plugin_link_candidates_path}"
 if [[ ${#plugin_link_lines[@]} -ne 1 ]]; then
   fail "expected exactly one pass plugin link command line, got ${#plugin_link_lines[@]}: ${PLUGIN_BUILD_LOG_PATH}"
 fi

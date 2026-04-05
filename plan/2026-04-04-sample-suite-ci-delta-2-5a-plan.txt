@@ -1,0 +1,152 @@
+# 2026-04-04 sample-suite CI Delta-2.5a 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5a 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只替代 `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-5-plan.txt` 的 `Phase 3`。
+- 替代范围仅限：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 本轮 macOS bash 兼容性收口
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- `Delta-2.5a` 只处理一个新 blocker：
+  - macOS `/bin/bash` 对 `mapfile` 不兼容，导致 `build-macos-ios` 以 `exit 127` 失败
+- 该 delta 不修改 Delta-2.5 的 `Phase 1` 和 `Phase 2`，只 supersede 其 `Phase 3`。
+
+## Task Charter
+- Objective：
+  - 让 `build-macos-ios` 不再因 `mapfile` 缺失失败
+  - 保持 “唯一 link line 提取 + fail-closed” 语义不变
+- Scope：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Non-Goals：
+  - 不改 workflow
+  - 不改 `core/passes/CMakeLists.txt`
+  - 不改 `core/tools/sample_suite/build_windows.ps1`
+  - 不做新的 Darwin linker 根修
+  - 不扩展到 Linux/Android / sample source / wrapper / LLVM toolchain
+- Forbidden Shortcuts：
+  - 禁止要求 GitHub runner 升级 bash
+  - 禁止改 shebang
+  - 禁止改 runner shell
+  - 禁止用 `plugin_link_lines=( $(awk ...) )` 这类会破坏空格/转义的写法
+
+## Root Cause Judgment
+- 根因固定为：
+  - GitHub macOS runner 使用 `/bin/bash`
+  - 默认 Bash 3.2 不支持 `mapfile`
+  - 当前脚本在 `build_macos_ios.sh` 的 `mapfile -t plugin_link_lines < <(...)` 处触发 `exit 127`
+- 唯一推荐修复路径固定为：
+  - 用 `mktemp + awk + while IFS= read -r line; do ...; done` 的 Bash 3 兼容模式替换 `mapfile`
+  - 保留同一份 `PLUGIN_BUILD_LOG_PATH`
+  - 保留相同的 `awk` 过滤条件
+  - 保留相同的 “恰好 1 行才继续，否则 fail” 语义
+  - 保留相同的 `-Wl,-dead_strip` 检查和 sidecar 写入语义
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、验收门、审批与 CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 Phase 1 单文件改动
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 fail-closed、artifact 真值、security regression 与 `<10% overhead`
+  - 本轮运行时性能结论默认：`N/A`
+
+## Phase 1 / macOS Bash-3 Compatibility Closure
+- Owner：`Agent 2`
+- File：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Exact Change：
+  1. 仅替换 `mapfile -t plugin_link_lines < <( awk ... )` 这一段
+  2. 新建临时文件：
+     - `plugin_link_candidates_path="$(mktemp)"`
+  3. 仍用现有 `awk` 过滤条件把候选 link line 写入临时文件
+  4. `plugin_link_lines=()` 后，使用：
+     - `while IFS= read -r line; do ...; done < "${plugin_link_candidates_path}"`
+  5. 只把非空行加入数组
+  6. 读完后删除临时文件
+  7. 若数组长度不是 `1`，继续沿用现有 `expected exactly one...` fail 路径
+  8. 只有数组长度恰好为 `1` 时，才写 `PLUGIN_LINK_COMMAND_PATH`
+- Forbidden：
+  - 不改 `plugin_build_cmd`
+  - 不改 `PIPESTATUS[0]`
+  - 不改 `PLUGIN_BUILD_LOG_PATH` / `PLUGIN_LINK_COMMAND_PATH` contract
+  - 不改 `ios_protected_compile_command`
+  - 不在脚本里注入 `LLVM_NO_DEAD_STRIP`
+
+## File Ownership
+- `core/tools/sample_suite/build_macos_ios.sh` -> `Agent 2`
+- `plan/*delta-2-5a*` -> `Agent 1`
+- 安全/性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - `plugin_link_lines` 的采集方式
+- 邻接路径：
+  - `PLUGIN_BUILD_LOG_PATH`
+  - `PLUGIN_LINK_COMMAND_PATH`
+  - 后续 `grep -F -- '-Wl,-dead_strip'`
+- 必须保持不变：
+  - workflow
+  - `core/passes/CMakeLists.txt`
+  - `build_windows.ps1`
+  - iOS helper 编译
+  - final iOS link
+  - Linux/Android lane
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only` 只允许出现：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 以及本轮计划/执行记录
+- `! rg -n '\\b(mapfile|readarray)\\b' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `rg -n 'expected exactly one pass plugin link command line' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+### Script Gates
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+
+### Artifact Gates
+- `sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_build.log.txt` 仍生成
+- `sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_link_command.txt` 只在恰好一条 link line 时存在且非空
+- `plugin_link_command` sidecar 仍必须满足：
+  - 包含 `eippf_protection_suite_pass.dylib`
+  - 不含 `-Wl,-dead_strip`
+
+### CI Gates
+- `build-macos-ios` 不得再因 `mapfile` / `readarray` / `exit 127` 失败
+- 本 delta 的 blocker 判定不依赖 `build-windows` 状态
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否只 supersede Delta-2.5 的 `Phase 3`
+  - 是否仍符合固定 3 角色与 Phase 结构
+- `Agent 2` 审：
+  - 工程实现是否不需要额外设计
+  - `mktemp + awk + while read` 是否写成唯一机械化路径
+- `Agent 3` 审：
+  - fail-closed 是否保持
+  - sidecar 语义是否未漂移
+  - `security regression` 是否为无
+  - `<10% overhead` 是否显式为 `N/A`
+
+## Merge Order
+1. 批准 Delta-2.5a
+2. `Agent 2` 只修改 `build_macos_ios.sh`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 `build-macos-ios` 复跑
+
+## Open Risks
+- 修掉 `mapfile` 后，macOS 可能继续暴露更深层 Darwin linker 问题；若发生，另开新 delta，不在本计划内扩 scope
+
+## State Snapshot
+- `build-linux-android` 已成功
+- `build-macos-ios` 已确认因 `mapfile` 失败
+- `build-windows` 当前仍在进行中，本 delta 不把它纳入 blocker

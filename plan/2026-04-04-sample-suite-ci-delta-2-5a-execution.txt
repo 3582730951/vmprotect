@@ -1,0 +1,41 @@
+# 2026-04-04 sample-suite CI Delta-2.5a 执行记录
+
+## Scope
+- `core/tools/sample_suite/build_macos_ios.sh`
+
+## Delivered Change
+- 仅将 `mapfile -t plugin_link_lines < <( awk ... )` 替换为：
+  - `mktemp`
+  - 原样 `awk` 过滤
+  - `while IFS= read -r` 收集
+  - 删除临时文件
+- `expected exactly one pass plugin link command line` 的失败语义保留
+- `PLUGIN_LINK_COMMAND_PATH` 的写入门槛保留为“恰好 1 行”
+
+## PM Static Validation
+- `git diff --name-only`
+  - 结果：仅 `core/tools/sample_suite/build_macos_ios.sh`
+- `! rg -n '\\b(mapfile|readarray)\\b' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：通过
+- `rg -n 'expected exactly one pass plugin link command line' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：通过
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：通过
+- `git diff --check`
+  - 结果：通过
+
+## 3-Role Implementation Review
+- `Agent 1 (Planner)`：`PASS`
+- `Agent 2 (Engineer)`：`PASS`
+- `Agent 3 (Security Reviewer)`：`PASS`
+
+## Security / Performance Audit
+- `security regression`
+  - 结论：未见新增回归
+- `performance budget (<10% overhead)`
+  - 结论：`N/A`
+  - 原因：本轮只处理 Bash 兼容性，不触达运行时路径
+
+## Next Step
+- 提交并推送
+- 观察 `build-macos-ios` 复跑
