@@ -1,0 +1,101 @@
+# 2026-04-05 sample-suite CI Delta-2.5n Phase 1 Task Card
+
+Owner:
+- 单写者 Engineer
+
+只允许修改:
+- `/workspace/core/cmake/PassPluginCompat.cmake`
+
+禁止修改:
+- `/workspace/core/passes/CMakeLists.txt`
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+- 任何 `.cpp/.hpp`
+
+目标:
+- 保留 Windows imported target graph 语义
+- 从 graph 中清理 forbidden DIA edges
+- 不改变最终 `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+
+必须做的改动:
+1. 在 `PassPluginCompat.cmake` 顶部新增 5 个内部 helper：
+   - `_eippf_windows_normalize_string`
+   - `_eippf_windows_is_forbidden_dia_item`
+   - `_eippf_windows_collect_target_graph`
+   - `_eippf_windows_filter_forbidden_interface_list`
+   - `_eippf_windows_sanitize_target_graph`
+
+2. `_eippf_windows_collect_target_graph` 必须按以下固定规则实现：
+   - 使用 BFS
+   - 根集合是 `llvm_map_components_to_libnames(...)` 的结果
+   - 维护 `queue` 和 `visited`
+   - 出队前去重
+   - `visited` 命中直接跳过
+   - 节点访问上限固定 `2048`
+   - 超上限立即 `FATAL_ERROR`
+
+3. ALIAS / 非 imported / 缺失 property 处理必须固定：
+   - `ALIAS` 先解 `ALIASED_TARGET`
+   - 真实 target 名作为去重键
+   - 非 imported target 不写 property，只读接口继续扫描
+   - property 缺失、`NOTFOUND`、空值直接跳过
+
+4. generator expression 处理必须固定：
+   - 不求值
+   - 不改写结构
+   - 先扫原始文本 forbidden 关键字
+   - 只允许从以下单参数 wrapper 提取递归 target：
+     - `$<LINK_ONLY:...>`
+     - `$<BUILD_INTERFACE:...>`
+     - `$<INSTALL_INTERFACE:...>`
+   - 其他 genex 不展开，只保留原文扫描
+
+5. forbidden 规则必须固定成单点函数：
+   - 大小写不敏感匹配：
+     - `diaguids.lib`
+     - `dia sdk`
+     - `debuginfopdb`
+     - `llvmdebuginfo`
+
+6. `_eippf_windows_sanitize_target_graph` 必须按以下 property 顺序处理：
+   - `INTERFACE_LINK_LIBRARIES`
+   - `IMPORTED_LINK_INTERFACE_LIBRARIES`
+   - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELEASE`
+   - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELWITHDEBINFO`
+   - `IMPORTED_LINK_INTERFACE_LIBRARIES_MINSIZEREL`
+   - `IMPORTED_LINK_INTERFACE_LIBRARIES_DEBUG`
+
+7. 每个 property 的固定流程：
+   - 读取
+   - 分词
+   - 删除 forbidden item
+   - 仅在有变化时写回
+   - 记录 removed 项
+
+8. Windows 主分支改法必须固定：
+   - 保留当前 direct-item denylist
+   - 在 `llvm_map_components_to_libnames(...)` 之后调用 graph sanitize
+   - sanitize 完成后再跑一次只读 closure audit
+   - 若 closure 仍命中 forbidden item，立即 `FATAL_ERROR`
+   - 最终保留：
+     - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+
+9. 不允许新增任何“失败也算成功”的口径：
+   - `unresolved external symbol`
+   - `LNK2019`
+   - `LNK2001`
+   - `undefined reference`
+   都必须视为失败
+
+提交前自检:
+- `git diff --name-only` 只能有 1 个实现文件
+- `git diff --check` 必须通过
+- `rg -n 'target_link_libraries\\(\\$\\{name\\} PRIVATE \\$\\{eippf_pass_plugin_llvm_libs\\}\\)' /workspace/core/cmake/PassPluginCompat.cmake` 必须仍命中
+- 新 helper 名称和 6 个 property 名称必须都能静态命中
+
+回报格式:
+- 只回复：
+  - 修改了哪些函数
+  - 是否严格只改 1 个文件
+  - 自检命令结果
+  - 剩余风险

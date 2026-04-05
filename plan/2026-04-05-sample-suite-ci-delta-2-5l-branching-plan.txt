@@ -1,0 +1,173 @@
+# 2026-04-05 sample-suite CI Delta-2.5l 分支处置计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 当前 `head=79ea9a0` 的 `sample-suite-eval` run `23996885207` 中：
+  - `build-linux-android` 成功
+  - `build-macos-ios` 成功
+  - `build-windows` job `69986368454` 停在 `Build Windows Samples`
+- 旧 `diaguids.lib` blocker 已被代码与 CI 事实共同证明不再是当前已知失败信号。
+- 在 Windows job 给出最终 `success` / `failure`，或达到明确超时门之前，不允许猜测根因，不允许修改生产代码。
+
+Task Charter:
+- Objective:
+  - 把当前 Windows 未收敛执行态转成可执行的三分支处置流程，确保下一步要么安全收口，要么基于硬证据开启最小 delta 修复。
+- Scope:
+  - `plan/`
+  - run `23996885207`
+  - job `69986368454`
+- Non-Goals:
+  - 不在未拿到最终 job 结果前修改 `core/` 代码
+  - 不用猜测式根因分析驱动编码
+  - 不把 `in_progress` 误报成“已修复”
+- Constraints:
+  - 先保留证据，再做分支判断
+  - 若进入 `failure` 分支，必须按失败指纹切成机械化 task card
+  - 若进入 `timeout` 分支，第一轮 delta 只能增强可观测性，不得修改保护逻辑
+- Acceptance Criteria:
+  - `success` / `failure` / `timeout` 三种分支都有固定 gate
+  - 每种分支下 PM 都知道要保留哪些证据、哪些文件可改、哪些修法禁止
+  - 后续若开 delta，可直接转成单写者任务卡
+- Forbidden Shortcuts:
+  - 禁止放宽 validator
+  - 禁止跳过 Windows lane
+  - 禁止绕过 `--pass-plugin`
+  - 禁止恢复 `target_link_libraries(... PRIVATE LLVM)`
+  - 禁止通过安装 DIA SDK“喂活”不该存在的依赖
+
+Current State Snapshot:
+- 当前 run:
+  - `sample-suite-eval` / `23996885207`
+- 当前 job:
+  - `build-windows` / `69986368454`
+- 当前步骤状态:
+  - `Set up job`: success
+  - `Checkout`: success
+  - `Setup MSVC Environment`: success
+  - `Configure Pinned LLVM Contract`: success
+  - `Build Windows Samples`: in_progress
+  - `Validate Windows Toolchain Report`: pending
+  - `Upload Windows Samples`: pending
+- 已确认关闭的风险:
+  - Windows pass plugin 已不再走 `TARGET LLVM` / `PRIVATE LLVM` 兜底链接路径
+  - `WINDOWS_LLVM_COMPONENTS -> llvm_map_components_to_libnames(...)` 已进入主路径
+  - `diaguids.lib` / `dia sdk` 已有 fail-closed denylist
+  - pinned LLVM tarball + SHA256 校验仍在
+
+Agent Roster:
+- Agent 1 / PM / `main_agent`
+  - 负责：证据冻结、分支判断、任务卡切分、最终验收
+- Agent 2 / Architect Reviewer / `gpt-5.4`
+  - 负责：分支切分、最小文件边界、禁止事项
+- Agent 3 / Security Reviewer / `gpt-5.4`
+  - 负责：审禁止的假修复与红线
+- Agent 4 / Validation Reviewer / `gpt-5.2`
+  - 负责：审分支证据、执行记录与不可宣称解决的条件
+
+Three-Agent Review:
+- Architect Reviewer: `PASS`
+  - 结论：当前是“未收敛执行态”，不是“失败态”；必须以 `success/failure/timeout` 三路固定切分。
+- Security Reviewer: `PASS`
+  - 结论：禁止通过恢复单体 LLVM 链接、绕过 pass plugin、跳过 Validate、或安装 DIA SDK 来换 CI 绿。
+- Validation Reviewer: `PASS`
+  - 结论：在 run 仍 `in_progress` 前不能宣称问题已解决；每个分支必须保留 run/job JSON、日志与 artifact 证据。
+
+Branch Decision Contract:
+1. `success`
+   - PM 行为：
+     - 不改代码
+     - 下载 Windows artifact
+     - 固化 run/job JSON、`windows.txt`、commands sidecar、artifact hash
+     - 更新执行记录并关闭 `delta-2.5k`
+   - 必保留证据：
+     - `gh run view 23996885207 --json status,conclusion,headSha,jobs,url`
+     - `build-windows` step 5/6/7 全 success 的原始 JSON
+     - `sample-suite-windows` artifact
+     - `sample_suite_inputs/toolchain_reports/windows.txt`
+     - `sample_suite_inputs/toolchain_reports/commands/*`
+     - `Validate Windows Toolchain Report` 全日志且无 `[FAIL]`
+   - 禁止：
+     - 因 Windows 通过就声称整个终局目标已额外前进；只允许关闭当前 delta
+
+2. `failure`
+   - 进入条件：
+     - run `conclusion=failure` 或 `build-windows` job `conclusion=failure`
+   - PM 先收集失败指纹，再开新 delta，不得反过来。
+   - 失败指纹固定 4 项：
+     - 第一条 `[FAIL]`
+     - 失败步骤名
+     - 对应 sidecar 路径
+     - 第一条编译器/链接器 fatal 行
+   - 失败映射：
+     - `F1`
+       - 指纹：`cmake configure/build for pass plugin`，且属于 LLVM 组件/链接面
+       - 可改文件：
+         - `/workspace/core/cmake/PassPluginCompat.cmake`
+         - `/workspace/core/passes/CMakeLists.txt`
+     - `F2`
+       - 指纹：`cmake configure/build for pass plugin`，但属于命令拼装、路径、参数问题
+       - 可改文件：
+         - `/workspace/core/tools/sample_suite/build_windows.ps1`
+     - `F3`
+       - 指纹：`helper user compile` 或 `helper kernel compile`
+       - 可改文件：
+         - `/workspace/core/tools/sample_suite/build_windows.ps1`
+     - `F4`
+       - 指纹：`windows exe link` / `windows dll link` / `windows sys link`
+       - 可改文件：
+         - `/workspace/core/tools/sample_suite/build_windows.ps1`
+     - `F5`
+       - 指纹：`Validate Windows Toolchain Report`
+       - 可改文件：
+         - `/workspace/.github/workflows/sample-suite-eval.yml`
+         - `/workspace/core/tools/sample_suite/build_windows.ps1`
+   - 必保留证据：
+     - `gh run view 23996885207 --json status,conclusion,headSha,jobs,url`
+     - `gh run view 23996885207 --job 69986368454 --log`
+     - 失败步骤名与失败前最后一个 success 步骤
+     - 若无 artifact，则在执行记录中明确“失败于 step X，artifact 未生成”
+   - 禁止：
+     - 在未拿到失败指纹前直接编码
+     - 任意跨越 `F1~F5` 文件边界
+
+3. `timeout`
+   - 进入条件：
+     - `Build Windows Samples` 持续 `in_progress > 45 分钟`
+   - 第一轮 delta 性质：
+     - `执行时序异常 delta`
+   - 第一轮目标：
+     - 增加阶段耗时与心跳证据
+     - 让下一次超时能定位到具体子阶段
+   - 第一轮可改文件：
+     - `/workspace/core/tools/sample_suite/build_windows.ps1`
+     - `/workspace/.github/workflows/sample-suite-eval.yml`
+   - 第一轮禁止：
+     - 任何 `core/cmake/PassPluginCompat.cmake`
+     - 任何 `core/passes/CMakeLists.txt`
+     - 任何保护逻辑降级
+   - 必保留证据：
+     - 至少两次间隔快照，证明 step 不推进
+     - 超时阈值与达到阈值的时间戳
+     - 其他 job 成功的证据
+
+Quality Gates:
+- Gate 1:
+  - run 未完成前，不允许宣称问题已解决
+- Gate 2:
+  - 只有 `Build Windows Samples` 通过但 `Validate Windows Toolchain Report` 未执行或未通过，不算修复
+- Gate 3:
+  - 没有 `windows.txt` key-set 完整性证据，不算修复
+- Gate 4:
+  - 仅本地 Linux/macOS 通过，不算 Windows 修复
+- Gate 5:
+  - 任意新 delta 只能触碰对应分支允许的最小文件边界
+
+Open Risks:
+- 当前无法获得 in-progress Windows job 的流式日志正文，只能从 job step 状态判断未收敛。
+- 若 Windows job 最终失败但未上传 artifact，下一轮只能依赖日志和 sidecar 失败点。
+- 当前未达到 `timeout` 门，因此还不能将问题定性为“长耗时异常”。

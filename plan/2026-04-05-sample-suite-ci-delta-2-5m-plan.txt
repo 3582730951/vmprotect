@@ -1,0 +1,212 @@
+# 2026-04-05 sample-suite CI Delta-2.5m 计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 关闭 `sample-suite-eval` run `23996885207` 的 Windows `build-windows` job `69986368454` 中，`Build Windows Samples` 仍然把 `diaguids.lib` 带入 `eippf_protection_suite_pass.dll` 链接面的 blocker。
+- 本轮只修 Windows pass plugin 的 imported target graph 依赖泄漏，不改 workflow、validator、sample contract、runtime、wrapper、pass 源码。
+
+Task Charter:
+- Objective:
+  - 让 Windows pass plugin 只链接 pinned LLVM root 下的显式 LLVM import/static 库文件，不再把 imported target graph 里的 VS2019 DIA SDK 绝对路径带进 Ninja 依赖。
+  - 保持真实 `eippf_protection_suite_pass.dll` 产物。
+  - 保持 `build_windows.ps1`、`sample-suite-eval.yml`、`Validate Windows Toolchain Report` 契约完全不变。
+- Scope:
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- Non-Goals:
+  - 不修改 `/workspace/core/passes/CMakeLists.txt`
+  - 不修改 `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 不修改 `/.github/workflows/sample-suite-eval.yml`
+  - 不修改任何 `.cpp/.hpp`
+  - 不补环境、不安装、不伪造 `diaguids.lib`
+- Constraints:
+  - 必须保留 `WINDOWS_LLVM_COMPONENTS -> llvm_map_components_to_libnames(...)`
+  - 必须继续使用真实 pass plugin DLL，不允许回退为无 plugin 编译
+  - 必须 fail-closed；不允许 silent fallback
+  - 必须保持 Windows lane 仍会执行 `Validate Windows Toolchain Report`
+- Acceptance Criteria:
+  - 新 run 的 `Build Windows Samples` 通过
+  - 新 run 的 `Validate Windows Toolchain Report` 通过
+  - 日志中不再出现：
+    - `diaguids.lib`
+    - `DIA SDK`
+    - `missing and no known rule to make it`
+  - Windows sidecar 仍包含：
+    - `--pass-plugin <...eippf_protection_suite_pass.dll>`
+  - 产物仍为真实 `sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll`
+- Forbidden Shortcuts:
+  - 禁止恢复 `target_link_libraries(${name} PRIVATE LLVM)`
+  - 禁止放宽 `WINDOWS_LLVM_COMPONENTS`
+  - 禁止在 workflow / `build_windows.ps1` 中 hack `LIB` / `LIBPATH` 去喂 `diaguids.lib`
+  - 禁止跳过 Windows lane 或 `Validate Windows Toolchain Report`
+  - 禁止把失败改成 warning 或 continue-on-error
+  - 禁止绕过 `--pass-plugin`
+
+Failure Fingerprint:
+- run:
+  - `23996885207`
+- job:
+  - `69986368454`
+- failed step:
+  - `Build Windows Samples`
+- first fatal line:
+  - `ninja: error: 'C:/Program Files (x86)/Microsoft Visual Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib', needed by 'D:/a/vmprotect/vmprotect/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll', missing and no known rule to make it`
+- first `[FAIL]`:
+  - `[FAIL] cmake build for pass plugin failed with code 1`
+- sidecar path:
+  - `sample_suite_inputs/toolchain_reports/commands/windows.plugin_build.txt`
+
+Root Cause Statement:
+- `delta-2.5k` 已经移除了直接 `TARGET LLVM` / `PRIVATE LLVM` 单体链接，也增加了 direct item denylist。
+- 但这次失败证明：
+  - `diaguids.lib` 并不是从 `llvm_map_components_to_libnames(...)` 的 direct item 文本表面进入，而是从 CMake imported target graph 的更深层 `INTERFACE_LINK_LIBRARIES` / imported location 依赖中被生成器带入 Ninja。
+- 因此本轮不能再停留在“检查 direct items”，必须切到：
+  - direct LLVM component target -> raw import/static library materialization
+  - graph audit
+  - only-under-allowed-root link closure
+
+Architecture Contract Summary:
+- Windows helper 继续使用：
+  - `llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs ...)`
+- 但最终 `target_link_libraries(${name} PRIVATE ...)` 不再直接吃 imported target 名。
+- 新 helper 必须把 direct LLVM items 物化为实际库文件路径，要求：
+  - 目标必须在 allowed LLVM root 下
+  - 优先读取：
+    - `IMPORTED_IMPLIB_<CONFIG>`
+    - 再退到 `IMPORTED_LOCATION_<CONFIG>`
+    - 再退到无配置版本
+- 允许的最终 link item：
+  - allowed LLVM root 下的文件路径
+  - 或极小范围的 Windows system lib literal
+- 禁止的最终 link item：
+  - 任何包含 `diaguids.lib`
+  - 任何路径含 `DIA SDK` / `dia sdk`
+  - 任何不在 allowed LLVM root 下的第三方绝对库路径
+
+Exact Change Contract:
+- 只改：
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- 必须新增 4 个内部 helper：
+  1. `_eippf_windows_normalize_path`
+     - 输入任意路径字符串
+     - 输出统一斜杠、lowercase 的规范化文本
+  2. `_eippf_windows_is_forbidden_link_item`
+     - 检查：
+       - `diaguids.lib`
+       - `dia sdk`
+       - `c:/program files (x86)/microsoft visual studio/2019/professional/dia sdk`
+  3. `_eippf_windows_imported_target_to_library_file`
+     - 输入一个 imported target
+     - 按 config 读取 `IMPORTED_IMPLIB_*` / `IMPORTED_LOCATION_*`
+     - 找不到则 `FATAL_ERROR`
+  4. `_eippf_windows_materialize_llvm_link_items`
+     - 输入 `llvm_map_components_to_libnames(...)` 得到的 direct items
+     - 若 item 是 target：
+       - 先做 forbidden audit
+       - 再转成实际库文件路径
+     - 若 item 是绝对路径：
+       - 必须位于 allowed LLVM root 下
+     - 若 item 是 bare `.lib`：
+       - 只允许明确 system lib allowlist
+       - 否则 `FATAL_ERROR`
+     - 输出最终的 `eippf_pass_plugin_link_files`
+
+- Windows 分支固定改法：
+  - direct items 先保留到 `eippf_pass_plugin_llvm_libs`
+  - 新增 `eippf_pass_plugin_link_files`
+  - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_link_files})`
+  - 不再直接把 `eippf_pass_plugin_llvm_libs` 喂给 `target_link_libraries`
+
+- 必须保留：
+  - `WINDOWS_LLVM_COMPONENTS` hard gate
+  - `llvm_map_components_to_libnames(...)`
+  - `add_library(${name} SHARED ...)`
+  - `PREFIX ""`
+  - `WINDOWS_EXPORT_ALL_SYMBOLS ON`
+  - 输出目录同步
+  - target-type fail-closed
+
+System Lib Allowlist:
+- 只允许 bare literal 命中以下集合时继续：
+  - `advapi32.lib`
+  - `bcrypt.lib`
+  - `kernel32.lib`
+  - `ntdll.lib`
+  - `ole32.lib`
+  - `psapi.lib`
+  - `shell32.lib`
+  - `user32.lib`
+  - `uuid.lib`
+  - `version.lib`
+  - `ws2_32.lib`
+- 任何其他 bare `.lib` 一律 `FATAL_ERROR`
+
+Mechanical Implementation Sequence:
+- 1. 打开 `/workspace/core/cmake/PassPluginCompat.cmake`
+- 2. 不改 helper 外部签名
+- 3. 在文件顶部新增 4 个内部 helper
+- 4. Windows 分支保留 `llvm_map_components_to_libnames(...)`
+- 5. direct items 先逐项跑 forbidden audit
+- 6. 再物化为最终 library file 列表
+- 7. 只把物化后的列表传给 `target_link_libraries`
+- 8. 删除旧的“对 direct item 只做文本 denylist 后直接链接”的路径
+- 9. 不改任何其他文件
+
+Regression Perimeter:
+- Directly Changed Logic:
+  - Windows pass plugin link item materialization
+- Adjacent Paths:
+  - all 8 pass plugin targets through shared helper
+  - sample-suite Windows plugin build
+- Unchanged Guarantees:
+  - non-Windows path
+  - `build_windows.ps1` contract
+  - sample-suite validator contract
+  - pass sources / output name / registration path
+- Second-Order Risks:
+  - 只物化 direct target 可能暴露新的 unresolved LLVM symbol 缺口
+  - allowed root / bare system lib allowlist 过窄可能导致新的 link miss
+- Risk Handling:
+  - 若新失败变为 unresolved symbol，而不再出现 `diaguids.lib` / DIA path，则视为本轮已成功关闭 DIA blocker；下一 delta 再做显式 closure 调整
+
+Agent Roster:
+- Agent 1 / Planner / `main_agent`
+  - 负责：计划、审核编排、任务卡、PM 验收、提交推送、CI 观察
+- Agent 2 / Architect / `gpt-5.4`
+  - 负责：审 imported-target-graph 解法是否最小且可落地
+- Agent 3 / Engineer Reviewer / `gpt-5.4`
+  - 负责：审任务是否机械化、单文件可执行
+- Agent 4 / Security Reviewer / `gpt-5.2`
+  - 负责：审 fail-closed、root allowlist、禁止捷径
+- Agent 5 / Engineer / later single-writer
+  - 负责：只按任务卡改单文件
+
+File Ownership:
+- Planning artifacts:
+  - `Agent 1`
+- Implementation:
+  - `/workspace/core/cmake/PassPluginCompat.cmake` -> single-writer Engineer only
+- Reviewers:
+  - 不改代码
+
+Quality Gates:
+- Gate A:
+  - 只允许改一个实现文件
+- Gate B:
+  - `git diff --check` 通过
+- Gate C:
+  - `rg -n 'target_link_libraries\\(\\$\\{name\\} PRIVATE \\$\\{eippf_pass_plugin_llvm_libs\\}\\)'` 为 0 命中
+- Gate D:
+  - 新 helper 中必须存在 bare system lib allowlist 与 forbidden DIA path gate
+- Gate E:
+  - 新 CI run 的 Windows 日志不再出现 `diaguids.lib`
+- Gate F:
+  - `Validate Windows Toolchain Report` 必须执行且通过
+
+Open Risks:
+- 当前没有 Windows hosted runner 的本地复制环境，根因验证主要依赖 CI。
+- 若 LLVM exported graph 在允许 root 下仍依赖 forbidden PDB/DIA target，本轮可能先把失败前移到 configure/generate；这仍优于继续把外部 DIA path 带进 Ninja。

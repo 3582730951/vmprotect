@@ -1,0 +1,84 @@
+# 2026-04-05 sample-suite CI Delta-2.5n 执行记录
+
+状态:
+- `IMPLEMENTED`
+
+触发 blocker:
+- run:
+  - `23996885207`
+- job:
+  - `69986368454`
+- failed step:
+  - `Build Windows Samples`
+- first fatal line:
+  - `ninja: error: 'C:/Program Files (x86)/Microsoft Visual Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib', needed by 'D:/a/vmprotect/vmprotect/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll', missing and no known rule to make it`
+- first `[FAIL]`:
+  - `[FAIL] cmake build for pass plugin failed with code 1`
+
+已批准计划:
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5n-plan.txt`
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5n-approval-and-assignment.txt`
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5n-phase-1-task-card.txt`
+
+实现 owner:
+- 单写者 Engineer
+
+实现结果:
+- 修改：
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- 未修改：
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 任何 `.cpp/.hpp`
+
+落地内容:
+- 新增 5 个内部 helper：
+  - `_eippf_windows_normalize_string`
+  - `_eippf_windows_is_forbidden_dia_item`
+  - `_eippf_windows_collect_target_graph`
+  - `_eippf_windows_filter_forbidden_interface_list`
+  - `_eippf_windows_sanitize_target_graph`
+- Windows 路径新增：
+  - BFS `queue/visited`
+  - `2048` 节点上限
+  - `ALIAS` 解引用
+  - fixed property 顺序 sanitize
+  - post-sanitize closure audit
+- 保留：
+  - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+  - `WINDOWS_LLVM_COMPONENTS`
+  - `llvm_map_components_to_libnames(...)`
+  - Windows SHARED fallback
+  - output directory 同步
+
+PM 独立验收:
+## 静态 gate
+- `git -C /workspace diff --name-only`
+  - 结果：仅 `core/cmake/PassPluginCompat.cmake`
+- `git -C /workspace diff --check`
+  - 结果：通过
+- helper / property / final link form 静态命中
+  - 结果：通过
+
+## 本地 configure/build gate
+- 命令：
+  - `cmake -S /workspace/core -B /tmp/eippf_delta25n_probe -G Ninja -DLLVM_DIR=/usr/lib/llvm-14/lib/cmake/llvm -DEIPPF_BUILD_TESTS=OFF -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF -DEIPPF_BUILD_SCRIPT_GUARD=OFF -DEIPPF_BUILD_IP_WEAVER=OFF -DEIPPF_BUILD_IP_WEAVER_IR=OFF -DEIPPF_BUILD_TOOLING=OFF`
+  - `cmake --build /tmp/eippf_delta25n_probe --target eippf_protection_suite_pass -j 4`
+- 结果：
+  - configure：`PASS`
+  - build：`PASS`
+
+三角色实现复审:
+- Architecture Reviewer: `PASS`
+- Engineer Reviewer: `PASS`
+- Security Reviewer: `PASS`
+
+当前剩余风险:
+- 本地无法复现 Windows hosted runner 的 LLVM exported graph；最终闭环仍依赖远端 Windows CI。
+- 若新 run 把错误从 `diaguids.lib` 转成 `LNK2019/LNK2001/unresolved`，本轮仍视为失败，需要下一 delta。
+
+待执行:
+- 提交
+- 推送
+- 观察新的 `sample-suite-eval`

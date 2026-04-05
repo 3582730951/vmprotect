@@ -1,0 +1,34 @@
+# 2026-04-05 sample-suite CI Delta-2.5n 审核与分配
+
+状态:
+- `APPROVED_FOR_IMPLEMENTATION`
+
+对应计划:
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5n-plan.txt`
+
+三角色审核:
+- Architect Reviewer: `PASS`
+  - 保留 imported target graph 语义
+  - 单文件边界成立
+  - BFS / genex / property / completion gate 已机械化
+- Engineer Reviewer: `PASS`
+  - 单写者无需自行发明算法
+  - completion gate 唯一
+  - 回滚与归因口径清晰
+- Security Reviewer: `PASS`
+  - fail-closed 保持
+  - 未引入 workflow/validator/pass-plugin 假绿路径
+  - 禁止捷径充分
+
+PM 分配:
+- 单写者 Engineer:
+  - 仅拥有 `/workspace/core/cmake/PassPluginCompat.cmake`
+- PM:
+  - 不写生产代码
+  - 只负责任务卡、独立验收、提交推送、CI 观察
+
+No-Touch 清单:
+- `/workspace/core/passes/CMakeLists.txt`
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/.github/workflows/sample-suite-eval.yml`
+- 所有 `.cpp/.hpp`

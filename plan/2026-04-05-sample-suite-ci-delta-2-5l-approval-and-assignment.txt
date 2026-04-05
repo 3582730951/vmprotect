@@ -1,0 +1,34 @@
+# 2026-04-05 sample-suite CI Delta-2.5l 审核与分配
+
+状态:
+- `APPROVED_FOR_BRANCH_CONTROL`
+- `NOT_APPROVED_FOR_IMPLEMENTATION_YET`
+
+对应计划:
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5l-branching-plan.txt`
+
+三角色审核:
+- Architect Reviewer: `PASS`
+  - 当前是未收敛执行态，必须按 `success/failure/timeout` 三分支推进
+- Security Reviewer: `PASS`
+  - 禁止恢复单体 LLVM 链接、禁用 denylist、绕过 pass plugin、弱化 Validate
+- Validation Reviewer: `PASS`
+  - run 未完成前不能宣称解决；分支证据要求已固定
+
+当前 PM 决策:
+- 在 `build-windows` job `69986368454` 给出最终 `success/failure`，或达到 `45 分钟 timeout` 前：
+  - 只允许更新 `plan/`
+  - 不允许分发工程实现任务
+
+后续分配规则:
+- `success`
+  - 不分配工程 agent
+  - 只由 PM 做证据冻结与执行记录更新
+- `failure`
+  - PM 按 `F1~F5` 指纹分配单写者工程 agent
+  - 工程 agent 只按最小文件边界修改
+- `timeout`
+  - PM 只分配“可观测性 delta”
+  - 工程 agent 只允许改：
+    - `/workspace/core/tools/sample_suite/build_windows.ps1`
+    - `/workspace/.github/workflows/sample-suite-eval.yml`

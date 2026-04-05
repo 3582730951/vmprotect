@@ -1,0 +1,255 @@
+# 2026-04-05 sample-suite CI Delta-2.5n 计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Summary:
+- 关闭 `sample-suite-eval` run `23996885207` 的 Windows `build-windows` job `69986368454` 中，`Build Windows Samples` 仍然把 `diaguids.lib` / VS2019 DIA SDK 绝对路径带进 `eippf_protection_suite_pass.dll` 链接图的 blocker。
+- 本轮 fix 保持 CMake imported target graph 语义，不再采用“裸库路径物化”方案。
+
+Task Charter:
+- Objective:
+  - 在 Windows pass plugin helper 内递归审计并清理 imported target graph 中的 forbidden DIA edges，使 Ninja 不再收到 `diaguids.lib` 依赖。
+  - 保持真实 `eippf_protection_suite_pass.dll` 产物。
+  - 保持 `build_windows.ps1`、`sample-suite-eval.yml`、`Validate Windows Toolchain Report` 契约完全不变。
+- Scope:
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- Non-Goals:
+  - 不修改 `/workspace/core/passes/CMakeLists.txt`
+  - 不修改 `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 不修改 `/.github/workflows/sample-suite-eval.yml`
+  - 不修改任何 `.cpp/.hpp`
+  - 不安装、补拷贝、伪造 `diaguids.lib`
+- Constraints:
+  - 必须保留 `WINDOWS_LLVM_COMPONENTS -> llvm_map_components_to_libnames(...)`
+  - 最终 `target_link_libraries(${name} PRIVATE ...)` 仍链接 imported targets，不降级为裸库路径模型
+  - 必须 fail-closed；若 forbidden edge 仍存在则 `FATAL_ERROR`
+  - 必须保持 Windows lane 仍会执行 `Validate Windows Toolchain Report`
+- Acceptance Criteria:
+  - 新 run 的 `Build Windows Samples` 通过
+  - 新 run 的 `Validate Windows Toolchain Report` 通过
+  - 新 run 日志不再出现：
+    - `diaguids.lib`
+    - `DIA SDK`
+    - `missing and no known rule to make it`
+  - Windows sidecar 仍包含：
+    - `--pass-plugin <...eippf_protection_suite_pass.dll>`
+  - 产物仍为真实 `sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll`
+- Forbidden Shortcuts:
+  - 禁止恢复 `target_link_libraries(${name} PRIVATE LLVM)`
+  - 禁止绕过 `--pass-plugin`
+  - 禁止修改 workflow、validator、`build_windows.ps1`
+  - 禁止把失败改成 warning 或 continue-on-error
+  - 禁止通过环境 hack `LIB` / `LIBPATH` 去喂 `diaguids.lib`
+
+Failure Fingerprint:
+- run:
+  - `23996885207`
+- job:
+  - `69986368454`
+- failed step:
+  - `Build Windows Samples`
+- first fatal line:
+  - `ninja: error: 'C:/Program Files (x86)/Microsoft Visual Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib', needed by 'D:/a/vmprotect/vmprotect/sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll', missing and no known rule to make it`
+- first `[FAIL]`:
+  - `[FAIL] cmake build for pass plugin failed with code 1`
+- sidecar path:
+  - `sample_suite_inputs/toolchain_reports/commands/windows.plugin_build.txt`
+
+Root Cause Statement:
+- `delta-2.5k` 只对 `llvm_map_components_to_libnames(...)` 的 direct items 做 denylist。
+- 当前失败证明：
+  - `diaguids.lib` 不是 direct item 文本命中，而是从 imported target graph 的更深层 `INTERFACE_LINK_LIBRARIES` / `IMPORTED_LINK_INTERFACE_LIBRARIES_*` 中被生成器传播到 Ninja。
+- 因此本轮 fix 必须：
+  - 保留 direct imported targets
+  - 递归遍历它们的传递依赖图
+  - 定位并剪除 forbidden DIA edges
+  - 再次审计 closure，确保 forbidden edge 不再存在
+
+Architecture Contract Summary:
+- Windows helper 继续使用：
+  - `llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs ...)`
+- 最终 `target_link_libraries(${name} PRIVATE ...)` 继续使用 imported targets：
+  - `${eippf_pass_plugin_llvm_libs}`
+- 新增的职责不是“替换链接模型”，而是：
+  - graph audit
+  - graph sanitization
+  - post-sanitization verification
+- 只清理 forbidden DIA-related edges，不碰正常 LLVM target graph 其余语义。
+
+Exact Change Contract:
+- 只改：
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+- 必须新增 5 个内部 helper：
+  1. `_eippf_windows_normalize_string`
+     - 统一斜杠并 lowercase，供字符串匹配
+  2. `_eippf_windows_is_forbidden_dia_item`
+     - 对任意 link item / path / target name 判断是否命中：
+       - `diaguids.lib`
+       - `dia sdk`
+       - `debuginfopdb`
+       - `llvmdebuginfo`
+  3. `_eippf_windows_collect_target_graph`
+     - 从 direct imported targets 递归收集可达 target graph
+     - 只追踪 target 名与 link-interface 列表，不改链接模型
+  4. `_eippf_windows_filter_forbidden_interface_list`
+     - 输入一个 property list
+     - 删除命中 forbidden DIA 条目的元素
+     - 输出 filtered list 与 removed list
+  5. `_eippf_windows_sanitize_target_graph`
+     - 对 graph 中每个 imported target 处理以下 property：
+       - `INTERFACE_LINK_LIBRARIES`
+       - `IMPORTED_LINK_INTERFACE_LIBRARIES`
+       - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELEASE`
+       - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELWITHDEBINFO`
+       - `IMPORTED_LINK_INTERFACE_LIBRARIES_MINSIZEREL`
+       - `IMPORTED_LINK_INTERFACE_LIBRARIES_DEBUG`
+     - 对每个 property：
+       - 调用 filter helper
+     - 若删掉 forbidden item，则 `set_property(TARGET ... PROPERTY ... <filtered>)`
+      - 记录被删条目
+     - 若未删到任何条目且最终 closure 仍含 forbidden item，则 `FATAL_ERROR`
+
+- 遍历算法固定为：
+  - `BFS`
+  - 根集合固定为 `llvm_map_components_to_libnames(...)` 结果
+  - 维护：
+    - `queue`
+    - `visited`
+  - 出队前先去重
+  - `visited` 命中即跳过
+  - 单轮最大访问节点数固定为 `2048`
+  - 超过上限立即 `FATAL_ERROR`
+
+- ALIAS / 非 imported / 缺失 property 处理固定为：
+  - `ALIAS` target：
+    - 先解析 `ALIASED_TARGET`
+    - 解析后的真实 target 名作为去重键
+  - 非 imported target：
+    - 不改 property
+    - 只读取其接口并继续 forbidden 扫描
+  - property 缺失、`NOTFOUND` 或空值：
+    - 直接跳过
+    - 不报错
+    - 不写回
+
+- generator expression 处理固定为：
+  - 不做求值
+  - 不改写结构
+  - 先对原始字符串做 forbidden 关键字扫描
+  - 只允许从以下单参数 wrapper 中提取递归 target：
+    - `$<LINK_ONLY:...>`
+    - `$<BUILD_INTERFACE:...>`
+    - `$<INSTALL_INTERFACE:...>`
+  - 其他 genex：
+    - 一律不展开
+    - 只保留原始文本 forbidden 扫描结果
+
+- property 读写顺序固定为：
+  - `INTERFACE_LINK_LIBRARIES`
+  - `IMPORTED_LINK_INTERFACE_LIBRARIES`
+  - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELEASE`
+  - `IMPORTED_LINK_INTERFACE_LIBRARIES_RELWITHDEBINFO`
+  - `IMPORTED_LINK_INTERFACE_LIBRARIES_MINSIZEREL`
+  - `IMPORTED_LINK_INTERFACE_LIBRARIES_DEBUG`
+  - 每个 property 都执行：
+    - 读取
+    - 分词
+    - 过滤 forbidden
+    - 仅在有变化时写回
+    - 记录 removed 项
+
+- Windows 分支固定改法：
+  - 保留 `llvm_map_components_to_libnames(...)`
+  - direct items 先做 direct-text denylist
+  - 再调用 `_eippf_windows_sanitize_target_graph("${name}" "${eippf_pass_plugin_llvm_libs}")`
+  - sanitization 完成后，再递归检查 closure
+  - 若 closure 仍含 forbidden DIA item，`FATAL_ERROR`
+  - 最终仍执行：
+    - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+
+- 必须保留：
+  - `WINDOWS_LLVM_COMPONENTS` hard gate
+  - `llvm_map_components_to_libnames(...)`
+  - `add_library(${name} SHARED ...)`
+  - `PREFIX ""`
+  - `WINDOWS_EXPORT_ALL_SYMBOLS ON`
+  - 输出目录同步
+  - target-type fail-closed
+
+Mechanical Implementation Sequence:
+- 1. 打开 `/workspace/core/cmake/PassPluginCompat.cmake`
+- 2. 不改 helper 外部签名
+- 3. 在文件顶部新增 5 个内部 helper
+- 4. 保留当前 direct-item denylist
+- 5. 在 Windows 分支加入 BFS graph collect
+- 6. 对每个目标按固定 property 顺序执行 sanitize
+- 7. sanitize 后用同一 BFS 再跑一遍只读 closure audit
+- 8. 若 closure 仍含 forbidden item，`FATAL_ERROR`
+- 9. 不改最终 `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+- 10. 不改任何其他文件
+
+Regression Perimeter:
+- Directly Changed Logic:
+  - Windows imported target graph sanitization
+- Adjacent Paths:
+  - all 8 pass plugin targets through shared helper
+  - sample-suite Windows plugin build
+- Unchanged Guarantees:
+  - non-Windows path
+  - `build_windows.ps1` contract
+  - sample-suite validator contract
+  - pass source / output name / registration path
+- Second-Order Risks:
+  - 如果 LLVM target graph 中存在真正必需的 DIA edge，sanitization 后可能转成 unresolved symbol
+  - graph 遍历若遗漏 property，可能出现“清理了表面，Ninja 仍收到了旧依赖”
+- Risk Handling:
+  - 若新失败变为 unresolved symbol，本轮仍判定 `FAIL`
+  - 若 forbidden edge 未被识别，helper 必须 fail-closed，不允许继续静默构建
+
+Agent Roster:
+- Agent 1 / Planner / `main_agent`
+  - 负责：计划、审核编排、任务卡、PM 验收、提交推送、CI 观察
+- Agent 2 / Architect Reviewer / `gpt-5.4`
+  - 负责：审 graph sanitization 是否保留 target graph 语义
+- Agent 3 / Engineer Reviewer / `gpt-5.4`
+  - 负责：审任务是否机械化、单文件可执行
+- Agent 4 / Security Reviewer / `gpt-5.2`
+  - 负责：审 fail-closed、禁止捷径、验收 gate
+- Agent 5 / Engineer / later single-writer
+  - 负责：只按任务卡改单文件
+
+File Ownership:
+- Planning artifacts:
+  - `Agent 1`
+- Implementation:
+  - `/workspace/core/cmake/PassPluginCompat.cmake` -> single-writer Engineer only
+- Reviewers:
+  - 不改代码
+
+Quality Gates:
+- Gate A:
+  - 只允许改一个实现文件
+- Gate B:
+  - `git diff --check` 通过
+- Gate C:
+  - 新 helper 名称与 property 名称全部可静态命中
+- Gate D:
+  - 保留 `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+- Gate E:
+  - 新 CI run 的 Windows 日志不再出现 `diaguids.lib`
+- Gate F:
+  - `Validate Windows Toolchain Report` 必须执行且通过
+- Gate G:
+  - 新 CI run 日志不得出现：
+    - `unresolved external symbol`
+    - `LNK2019`
+    - `LNK2001`
+    - `undefined reference`
+
+Open Risks:
+- 当前没有 Windows hosted runner 的本地复制环境，根因修正主要依赖 CI。
+- 若 forbidden item 不是通过 interface properties 暴露，而是更深层 generator behavior，本轮可能把失败前移到 configure/build 更明确的位置；这仍优于继续把外部 DIA path 带进 Ninja。
