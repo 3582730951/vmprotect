@@ -1,0 +1,44 @@
+# 2026-04-04 sample-suite CI Delta-2.5c 审批与分配
+
+## 审批结论
+- `Agent 1 (Planner / PM)`：`PASS`
+  - 原因：
+    - 范围严格锁定在 `core/tools/sample_suite/build_macos_ios.sh`
+    - 修复路径唯一，且只针对 `ios_protected_compile_cmd`
+    - `-fno-jump-tables` 的插入位置已冻结
+    - Delta-2.5b 的 gate 保留要求明确
+- `Agent 2 (Engineer Reviewer)`：`PASS`
+  - 原文摘录：
+    - 改动范围严格锁定在单文件 `core/tools/sample_suite/build_macos_ios.sh`
+    - 修复路径唯一，已明确为只在 `ios_protected_compile_cmd` 增加 `-fno-jump-tables`
+    - 明确禁止修改 `ios_helper_cmd`、`ios_link_cmd` 和既有 `PLUGIN_LINK_COMMAND_PATH` gate
+    - `-fno-jump-tables` 的插入位置被写死
+    - 任务卡是机械步骤 + 明确禁止项
+- `Agent 3 (Security Reviewer)`：`PASS`
+  - 原文摘录：
+    - 计划明确保留了 Delta-2.5b 的 `exact-one`、`normalized plugin_link_command` 和 `dead_strip` gate
+    - 修复路径没有关闭保护 pass，只是在 `ios_protected_compile_cmd` 上定点加入 `-fno-jump-tables`
+    - `ios_helper_cmd` 和 `ios_link_cmd` 都被明确列为禁止改动对象
+    - 改动范围锁死在单文件 `build_macos_ios.sh`
+    - 计划明确禁止扩散到 `core/passes/CMakeLists.txt` 或任何 pass 源码
+
+## 批准结果
+- `Delta-2.5c` 计划已批准，可以进入实现阶段。
+
+## 分配
+- `Agent 2 (Engineer)` 实施：
+  - 文件：`/workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 任务卡：`/workspace/plan/2026-04-04-sample-suite-ci-delta-2-5c-phase-1-task-card.txt`
+  - 禁止修改任何其它生产文件
+- `Agent 1 (Planner / PM)`：
+  - 实施后只做静态核验、复审组织、提交推送、CI 观察
+- `Agent 3 (Security Reviewer)`：
+  - 实施完成后只审既有 gate 是否保留、保护链是否降级、scope 是否漂移
+
+## 实施前核验
+- 当前唯一 blocker 固定为：
+  - `build-macos-ios` 中 iOS protected compile 的 `LBB1_1` relocation 失败
+- 当前不纳入 blocker：
+  - `build-windows` 状态
+  - Linux / Android lane
+  - pass plugin link-line 提取逻辑

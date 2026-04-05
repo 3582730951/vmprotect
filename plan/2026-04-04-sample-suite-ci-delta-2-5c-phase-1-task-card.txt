@@ -1,0 +1,34 @@
+# 2026-04-04 sample-suite CI Delta-2.5c Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## 目标
+- 对 iOS protected compile 路径定点关闭 jump table lowering，消除 `unsupported relocation of local symbol 'LBB1_1'` 失败
+
+## 机械步骤
+1. 定位 `ios_protected_compile_cmd=( ... )`
+2. 保留现有 wrapper 调用、sidecar 写入和参数顺序
+3. 在 `-O0` 后面插入一项：
+   - `-fno-jump-tables`
+4. 不修改 `ios_helper_cmd`
+5. 不修改 `ios_link_cmd`
+6. 不修改 `PLUGIN_LINK_COMMAND_PATH` 相关任何逻辑
+7. 不新增其它 flag，不顺手改其它脚本
+
+## 禁止项
+- 禁止改 `core/passes/CMakeLists.txt`
+- 禁止改 pass 源码
+- 禁止关闭保护 pass
+- 禁止回滚 Delta-2.5b
+- 禁止动现有 exact-one / normalized plugin_link_command / dead_strip gate
+
+## 完成回报必须包含
+- `git diff --name-only`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+- `rg -n 'ios_protected_compile_cmd|-fno-jump-tables|ios_helper_cmd|ios_link_cmd' /workspace/core/tools/sample_suite/build_macos_ios.sh`

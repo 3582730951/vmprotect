@@ -1,0 +1,55 @@
+# 2026-04-04 sample-suite CI Delta-2.5c 执行记录
+
+## 范围
+- 本轮只实现并验证：
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- 未触碰其它生产文件。
+
+## 实施结果
+- 仅在 `ios_protected_compile_cmd` 中新增：
+  - `-fno-jump-tables`
+- 插入位置固定为：
+  - `-O0` 之后
+  - `-fvisibility=hidden` 之前
+- 未改动：
+  - `ios_helper_cmd`
+  - `ios_link_cmd`
+  - `PLUGIN_LINK_COMMAND_PATH` 相关 logic
+  - Delta-2.5b 的 exact-one / normalized plugin_link_command / dead_strip gate
+
+## PM 静态核验
+- `git -C /workspace diff --name-only`
+  - 结果：仅 `core/tools/sample_suite/build_macos_ios.sh`
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：`EXIT:0`
+- `git -C /workspace diff --check`
+  - 结果：`EXIT:0`
+- `sed -n '228,252p' /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：确认 `-fno-jump-tables` 已位于 `ios_protected_compile_cmd` 的 `-O0` 之后、`-fvisibility=hidden` 之前
+
+## 三角色实现复审
+- `Agent 1 (Planner / PM)`：`PASS`
+  - 原因：
+    - 仍为单文件改动
+    - `-fno-jump-tables` 只落在 `ios_protected_compile_cmd`
+    - `ios_helper_cmd` / `ios_link_cmd` 未动
+    - Delta-2.5b gate 未回退
+- `Agent 2 (Engineer Reviewer)`：`PASS`
+  - 原文摘录：
+    - `git diff --name-only` 仅包含 `core/tools/sample_suite/build_macos_ios.sh`
+    - 实际 diff 只显示在 `ios_protected_compile_cmd` 中新增一行 `-fno-jump-tables`
+    - 插入位置正确
+    - `ios_helper_cmd` 与 `ios_link_cmd` 未被修改
+    - `bash -n` 与 `git diff --check` 均通过
+- `Agent 3 (Security Reviewer)`：`PASS`
+  - 原文摘录：
+    - Delta-2.5b 的 `exact-one`、`normalized plugin_link_command` 和 `dead_strip` gate 未被改动
+    - 修复只是在 `ios_protected_compile_cmd` 上定点加入 `-fno-jump-tables`
+    - `ios_helper_cmd` 与 `ios_link_cmd` 保持原样
+    - 当前仍是单文件改动
+    - 没有扩散到 `core/passes/CMakeLists.txt` 或任何 pass 源码
+
+## 进入下一步
+- 允许提交并推送 `Delta-2.5c`
+- 推送后观察 `sample-suite-eval` 的 `build-macos-ios`
+- 若 iOS lane 继续暴露新的更深层 blocker，另开新 delta，不回滚本轮定点收口

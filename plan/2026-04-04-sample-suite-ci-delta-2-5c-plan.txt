@@ -1,0 +1,148 @@
+# 2026-04-04 sample-suite CI Delta-2.5c 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5c 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只处理 `Delta-2.5b` 之后暴露出的新 macOS/iOS blocker。
+- 替代范围仅限：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 本轮 iOS protected compile 的 jump-table 定点收口
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- `Delta-2.5b` 已修掉旧 blocker：
+  - `build-macos-ios` 不再因 `expected exactly one pass plugin link command line, got 0` 失败
+- 新 blocker 出现在 run `23991084809` 的 macOS job `69970842803`：
+  - `Build iOS Mach-O Sample` 失败
+  - 已确认 pass plugin bundle 链接成功
+  - 随后报错：`unsupported relocation of local symbol 'LBB1_1'. Must have non-local symbol earlier in section.`
+
+## Task Charter
+- Objective：
+  - 让 iOS protected compile 路径不再因 `LBB1_1` 本地符号 relocation 报错失败
+- Scope：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Non-Goals：
+  - 不改 workflow
+  - 不改 `core/passes/CMakeLists.txt`
+  - 不改 pass 源码
+  - 不改 `ios_helper_cmd`
+  - 不改 `ios_link_cmd`
+  - 不改 `plugin_build_cmd`
+  - 不扩展到 Windows / Linux / Android
+- Forbidden Shortcuts：
+  - 禁止把根因写成 pass plugin bundle link 失败
+  - 禁止关闭整条保护 pass 链
+  - 禁止回滚 Delta-2.5b
+  - 禁止移除 exact-one / normalized plugin_link_command / dead_strip gate
+
+## Root Cause Judgment
+- 根因固定为：
+  - 问题位于 `build_macos_ios.sh` 的 `ios_protected_compile_cmd` 路径，而不是 pass plugin bundle link
+  - `SelectiveVMPass`、`CFFObfuscationPass` 会生成 `SwitchInst`
+  - 在 `arm64-apple-ios` 目标下，当前 protected compile 路径把这些 switch lowering 成 jump tables，进而生成对本地 basic-block 符号（如 `LBB1_1`）的 relocation，触发当前 Mach-O/AArch64 路径不接受的错误
+- 唯一推荐修复路径固定为：
+  - 只改 `ios_protected_compile_cmd`
+  - 在该命令数组中显式加入 `-fno-jump-tables`
+  - 插入位置固定为：
+    - `-O0` 之后
+    - `-fvisibility=hidden` 之前
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 单文件改动
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 fail-closed、scope 漂移、保护链未降级
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / iOS Protected Compile Jump-Table Closure
+- Owner：`Agent 2`
+- File：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+- Exact Change：
+  1. 定位 `ios_protected_compile_cmd=( ... )`
+  2. 保留现有参数顺序、sidecar 写入和 wrapper 调用逻辑
+  3. 在 `-O0` 后面插入：
+     - `-fno-jump-tables`
+  4. 不修改：
+     - `ios_helper_cmd`
+     - `ios_link_cmd`
+     - `PLUGIN_LINK_COMMAND_PATH` 相关逻辑
+  5. 不新增其它 flag，不顺手改别的脚本
+- Forbidden：
+  - 不扩展到 `core/passes/CMakeLists.txt`
+  - 不改 pass 源码
+  - 不关闭保护 pass
+  - 不改现有 fail-closed gate
+
+## File Ownership
+- `core/tools/sample_suite/build_macos_ios.sh` -> `Agent 2`
+- `plan/*delta-2-5c*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - `ios_protected_compile_cmd`
+- 邻接路径：
+  - `IOS_PROTECTED_COMPILE_COMMAND_PATH`
+  - `ios_helper_cmd`
+  - `ios_link_cmd`
+  - `PLUGIN_LINK_COMMAND_PATH` 的 normalized / dead_strip gate
+- 必须保持不变：
+  - Delta-2.5b 的 link-line 提取修复
+  - `ios_helper_cmd`
+  - `ios_link_cmd`
+  - Linux / Android / Windows lane
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only` 只允许出现：
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 以及本轮计划/审核/执行记录
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+
+### Command Contract Gates
+- `ios_protected_compile_command` sidecar 中必须出现：
+  - `-fno-jump-tables`
+- `ios_helper_compile_command` sidecar 中不得新增：
+  - `-fno-jump-tables`
+- `ios_link_command` sidecar 中不得新增：
+  - `-fno-jump-tables`
+
+### CI Gates
+- `build-macos-ios` 不得再因 `unsupported relocation of local symbol 'LBB1_1'` 失败
+- Delta-2.5b 的 `PLUGIN_LINK_COMMAND_PATH` normalized / dead_strip gate 仍保留
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否仍是单文件、单命令数组、单 flag 修复
+- `Agent 2` 审：
+  - 是否只改 `ios_protected_compile_cmd`
+  - `-fno-jump-tables` 插入位置是否固定
+- `Agent 3` 审：
+  - 是否未关闭保护 pass
+  - 是否未动已有 fail-closed gate
+  - 是否 scope 未漂移
+
+## Merge Order
+1. 批准 Delta-2.5c
+2. `Agent 2` 只修改 `build_macos_ios.sh`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 `build-macos-ios` 复跑
+
+## Open Risks
+- 若 `LBB1_1` 不是由 switch jump-table lowering 触发，本轮修复可能无法清掉 blocker；若复现，另开新 delta，不在本计划扩 scope
+
+## State Snapshot
+- `build-linux-android` 当前未见新的 blocker 证据
+- `build-windows` 当前不作为本 delta blocker
+- 当前唯一新 blocker 是 iOS protected compile 的 `LBB1_1` relocation 失败

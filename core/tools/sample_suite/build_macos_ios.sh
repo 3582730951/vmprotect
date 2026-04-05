@@ -237,6 +237,7 @@ ios_protected_compile_cmd=(
   -target arm64-apple-ios17.0-simulator
   -isysroot "${IOS_SDK}"
   -O0
+  -fno-jump-tables
   -fvisibility=hidden
   -fPIC
   -x c
