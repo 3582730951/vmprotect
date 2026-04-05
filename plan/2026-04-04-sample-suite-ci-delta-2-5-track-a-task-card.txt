@@ -1,0 +1,35 @@
+# Delta-2.5 Phase 1 任务卡
+
+## Owner
+- `Agent 2`
+
+## Role Traceability
+- `Agent 1 (Planner)`：冻结本卡范围与验收门，不写实现
+- `Agent 2 (Engineer)`：执行本卡全部改动
+- `Agent 3 (Security Reviewer)`：审计本卡的 security regression 与 `<10% overhead` 影响
+- 本卡运行时性能结论默认预期：`N/A`
+
+## File
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+
+## Goal
+- 只修复 PowerShell 解析错误，不改任何运行行为。
+
+## Exact Edit
+1. 打开 `Resolve-RequiredPath`。
+2. 仅定位这一行：
+   - `throw "[FAIL] missing required path for $Label: $Trimmed"`
+3. 只把它改成：
+   - `throw "[FAIL] missing required path for ${Label}: $Trimmed"`
+
+## Forbidden
+- 不改任何其它行
+- 不改函数结构
+- 不改变量名
+- 不改 `Ensure-PinnedLlvm18Toolchain`
+- 不改 sidecar 输出
+
+## Done When
+- `git diff --name-only` 只出现这一个文件
+- `rg -n -F '$Label:' /workspace/core/tools/sample_suite/build_windows.ps1` 无命中
+- 文件中其它 `$script:` / `$env:` 作用域变量保持不变

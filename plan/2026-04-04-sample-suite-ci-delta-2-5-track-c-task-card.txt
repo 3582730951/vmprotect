@@ -1,0 +1,44 @@
+# Delta-2.5 Phase 3 任务卡
+
+## Owner
+- `Agent 2`
+
+## Role Traceability
+- `Agent 1 (Planner)`：冻结本卡范围与验收门，不写实现
+- `Agent 2 (Engineer)`：执行本卡全部改动
+- `Agent 3 (Security Reviewer)`：审计本卡的 security regression 与 `<10% overhead` 影响
+- 本卡运行时性能结论默认预期：`N/A`
+
+## File
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## Goal
+- 让 reviewer 能独立拿到真实的 Darwin plugin 链接命令，而不是只看到外层 `cmake --build`。
+
+## Exact Edit
+1. 仅把 plugin build command 改为 verbose 形式。
+2. `macos_ios.plugin_build.txt` 仍写两行：
+   - 第一行 configure command
+   - 第二行 verbose build command
+3. 新增 build log sidecar，保存 plugin verbose build 原始输出。
+4. 从原始输出中提取真实 `eippf_protection_suite_pass.dylib` 链接命令，写入新的 link-command sidecar。
+5. 若未提取到真实链接命令，直接 fail。
+6. 若提取到的真实链接命令包含 `-Wl,-dead_strip`，直接 fail。
+7. 在 macOS report 中新增：
+   - `plugin_link_command=<absolute path>`
+   - `plugin_build_log=<absolute path>`
+
+## Forbidden
+- 不改 `ios_protected_compile_command`
+- 不改 `-O0`
+- 不改 sample source
+- 不改 `LLVM_DIR`
+- 不在脚本里注入 `LLVM_NO_DEAD_STRIP`
+
+## Done When
+- report 里能定位到 `plugin_link_command`
+- report 里能定位到 `plugin_build_log`
+- reviewer 直接读取该 sidecar 就能验证：
+  - 真实 link command 存在
+  - 包含 `eippf_protection_suite_pass.dylib`
+  - 不含 `-Wl,-dead_strip`

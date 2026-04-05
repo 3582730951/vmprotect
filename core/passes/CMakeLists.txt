@@ -112,6 +112,11 @@ target_compile_definitions(eippf_cff_obfuscation_pass PRIVATE
 )
 eippf_apply_common_compile_options(eippf_cff_obfuscation_pass)
 
+if(APPLE)
+  set(eippf_protection_suite_prev_llvm_no_dead_strip "${LLVM_NO_DEAD_STRIP}")
+  set(LLVM_NO_DEAD_STRIP ON)
+endif()
+
 add_llvm_pass_plugin(eippf_protection_suite_pass
   src/ProtectionSuitePassPlugin.cpp
   src/StringProtectionPass.cpp
@@ -132,6 +137,11 @@ set_target_properties(eippf_protection_suite_pass PROPERTIES
   OUTPUT_NAME "eippf_protection_suite_pass"
   PREFIX ""
 )
+
+if(APPLE)
+  set(LLVM_NO_DEAD_STRIP "${eippf_protection_suite_prev_llvm_no_dead_strip}")
+  unset(eippf_protection_suite_prev_llvm_no_dead_strip)
+endif()
 
 if(NOT EIPPF_PASS_PLUGIN)
   eippf_register_pass_plugin("eippf_protection_suite_pass")

@@ -43,6 +43,8 @@ IOS_PROTECTED_O="${RUNTIME_LIB_DIR}/ios_macho.protected.o"
 IOS_OUTPUT_BIN="${IOS_DIR}/sample_ios_macho"
 REPORT_PATH="${REPORT_DIR}/macos_ios.txt"
 PLUGIN_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.plugin_build.txt"
+PLUGIN_BUILD_LOG_PATH="${COMMANDS_DIR}/macos_ios.plugin_build.log.txt"
+PLUGIN_LINK_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.plugin_link_command.txt"
 IOS_HELPER_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_user_helper_compile.txt"
 IOS_PROTECTED_COMPILE_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_protected_compile.txt"
 IOS_LINK_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_link.txt"
@@ -149,6 +151,7 @@ plugin_build_cmd=(
   --build "${RUNTIME_BUILD_DIR}"
   -j
   --target eippf_protection_suite_pass
+  -v
 )
 
 {
@@ -159,7 +162,26 @@ plugin_build_cmd=(
 } > "${PLUGIN_COMMAND_PATH}"
 
 "${plugin_configure_cmd[@]}"
-"${plugin_build_cmd[@]}"
+set +e
+"${plugin_build_cmd[@]}" 2>&1 | tee "${PLUGIN_BUILD_LOG_PATH}"
+plugin_build_status=${PIPESTATUS[0]}
+set -e
+if [[ ${plugin_build_status} -ne 0 ]]; then
+  fail "pass plugin build failed with code ${plugin_build_status}"
+fi
+
+mapfile -t plugin_link_lines < <(
+  awk -v plugin_path="${PASS_PLUGIN_PATH}" '
+    index($0, plugin_path) && $0 !~ /^[[:space:]]*\[[0-9]+\/[0-9]+\]/ { print }
+  ' "${PLUGIN_BUILD_LOG_PATH}"
+)
+if [[ ${#plugin_link_lines[@]} -ne 1 ]]; then
+  fail "expected exactly one pass plugin link command line, got ${#plugin_link_lines[@]}: ${PLUGIN_BUILD_LOG_PATH}"
+fi
+printf '%s\n' "${plugin_link_lines[0]}" > "${PLUGIN_LINK_COMMAND_PATH}"
+if grep -F -- "-Wl,-dead_strip" "${PLUGIN_LINK_COMMAND_PATH}" >/dev/null; then
+  fail "pass plugin link command contains forbidden -Wl,-dead_strip: ${PLUGIN_LINK_COMMAND_PATH}"
+fi
 
 if [[ ! -f "${PASS_PLUGIN_PATH}" ]]; then
   fail "pass plugin build output missing: ${PASS_PLUGIN_PATH}"
@@ -247,6 +269,8 @@ IOS_LINK_INPUTS="${IOS_PROTECTED_O};${IOS_USER_HELPER_O}"
   printf 'ios_user_helper_o=%s\n' "${IOS_USER_HELPER_O}"
   printf 'ios_protected_o=%s\n' "${IOS_PROTECTED_O}"
   printf 'plugin_build_command=%s\n' "${PLUGIN_COMMAND_PATH}"
+  printf 'plugin_build_log=%s\n' "${PLUGIN_BUILD_LOG_PATH}"
+  printf 'plugin_link_command=%s\n' "${PLUGIN_LINK_COMMAND_PATH}"
   printf 'ios_user_helper_compile_command=%s\n' "${IOS_HELPER_COMMAND_PATH}"
   printf 'ios_protected_compile_command=%s\n' "${IOS_PROTECTED_COMPILE_COMMAND_PATH}"
   printf 'ios_link_inputs=%s\n' "${IOS_LINK_INPUTS}"

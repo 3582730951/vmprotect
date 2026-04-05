@@ -1,0 +1,37 @@
+# Delta-2.5 Phase 2 任务卡
+
+## Owner
+- `Agent 2`
+
+## Role Traceability
+- `Agent 1 (Planner)`：冻结本卡范围与验收门，不写实现
+- `Agent 2 (Engineer)`：执行本卡全部改动
+- `Agent 3 (Security Reviewer)`：审计本卡的 security regression 与 `<10% overhead` 影响
+- 本卡运行时性能结论默认预期：`N/A`
+
+## File
+- `/workspace/core/passes/CMakeLists.txt`
+
+## Goal
+- 只让 `eippf_protection_suite_pass` 在 Darwin 下不继承 LLVM `AddLLVM` 的默认 `-Wl,-dead_strip`。
+
+## Exact Edit
+1. 只围绕 `add_llvm_pass_plugin(eippf_protection_suite_pass ...)` 这一段修改。
+2. 在该调用前：
+   - 仅在 `APPLE` 条件下保存当前 `LLVM_NO_DEAD_STRIP`
+   - 仅在 `APPLE` 条件下设置 `LLVM_NO_DEAD_STRIP ON`
+3. 在 `eippf_protection_suite_pass` 的 target 定义和属性设置完成后：
+   - 仅在 `APPLE` 条件下恢复之前保存的值
+   - 清理临时变量
+
+## Forbidden
+- 不改其它 pass target
+- 不改 `CompilerOptions.cmake`
+- 不改 `eippf_apply_common_compile_options`
+- 不改 `OUTPUT_NAME`
+- 不改 `PREFIX`
+- 不加 file-wide / global Darwin 特判
+
+## Done When
+- `git diff -- /workspace/core/passes/CMakeLists.txt` 中只出现 `eippf_protection_suite_pass` 邻近修改
+- 没有其它 pass target 名字出现在该 diff

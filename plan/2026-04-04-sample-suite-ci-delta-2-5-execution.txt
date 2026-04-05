@@ -1,0 +1,51 @@
+# 2026-04-04 sample-suite CI Delta-2.5 执行记录
+
+## Scope
+- `/workspace/core/tools/sample_suite/build_windows.ps1`
+- `/workspace/core/passes/CMakeLists.txt`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+
+## Delivered Changes
+### Phase 1
+- `build_windows.ps1`
+  - 将 `"$Label: $Trimmed"` 收敛为 `"${Label}: $Trimmed"`
+
+### Phase 2
+- `core/passes/CMakeLists.txt`
+  - 仅围绕 `eippf_protection_suite_pass` 增加 Darwin-only `LLVM_NO_DEAD_STRIP` save/set/restore
+
+### Phase 3
+- `build_macos_ios.sh`
+  - plugin build 命令改为 verbose
+  - 新增 `plugin_build_log` sidecar
+  - 新增 `plugin_link_command` sidecar
+  - 若 link-command 提取失败或仍含 `-Wl,-dead_strip` 则 fail-closed
+  - report 新增 `plugin_build_log` 和 `plugin_link_command`
+
+## PM Static Validation
+- `git diff --name-only`
+  - 结果：仅 3 个实现文件
+- `rg -n -F '$Label:' /workspace/core/tools/sample_suite/build_windows.ps1`
+  - 结果：无命中
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+  - 结果：通过
+- `git diff --check`
+  - 结果：通过
+- `git diff --unified=0 -- core/passes/CMakeLists.txt`
+  - 结果：仅 `eippf_protection_suite_pass` 邻近 save/set/restore 改动
+
+## 3-Role Implementation Review
+- `Agent 1 (Planner)`：`PASS`
+- `Agent 2 (Engineer)`：`PASS`
+- `Agent 3 (Security Reviewer)`：`PASS`
+
+## Security / Performance Audit
+- `security regression`
+  - 结论：未发现新增回归
+- `performance budget (<10% overhead)`
+  - 结论：`N/A`
+  - 原因：本轮只动构建脚本和 Darwin pass plugin 链接策略，不动运行时路径
+
+## Next Step
+- 提交并推送
+- 观察 `sample-suite-eval`

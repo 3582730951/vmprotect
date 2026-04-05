@@ -28,7 +28,7 @@ function Resolve-RequiredPath {
     }
     $Trimmed = $InputPath.Trim().Trim('"')
     if (-not (Test-Path -LiteralPath $Trimmed)) {
-        throw "[FAIL] missing required path for $Label: $Trimmed"
+        throw "[FAIL] missing required path for ${Label}: $Trimmed"
     }
     return (Resolve-Path -LiteralPath $Trimmed).Path
 }

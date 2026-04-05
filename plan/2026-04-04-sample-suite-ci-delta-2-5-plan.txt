@@ -1,0 +1,202 @@
+# 2026-04-04 sample-suite CI Delta-2.5 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色在配套 approval 记录中全部 `PASS`，本计划即作为已批准的 superseding plan，在 Delta-2.5 执行范围内替代 `/workspace/plan/2026-2-26.txt`。
+- 替代范围仅限本计划的 3 个 in-scope 文件与本轮 CI 收口，不扩展到其它 phase。
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 只关闭 sample-suite CI 的两个当前 blocker：
+  1. Windows `build_windows.ps1` 的 PowerShell 解析错误
+  2. macOS `eippf_protection_suite_pass.dylib` 的 Darwin 链接失败
+- 本轮不扩展其它问题，不动 Linux/Android 已通过轨道。
+
+## Task Charter
+- Objective：
+  - 恢复 `sample-suite-eval` 的 `build-windows` 与 `build-macos-ios`
+  - 让 `protect-and-evaluate` 不再因 upstream blocker 被跳过
+- Scope：
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Non-Goals：
+  - 不改 `/workspace/core/cmake/CompilerOptions.cmake`
+  - 不改 `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 不改 host clang18 / LLVM_DIR / xcrun / sample source / wrapper 接口
+  - 不把修复扩大到其它 pass plugin 或其它 CI lane
+- Forbidden Shortcuts：
+  - 禁止把 macOS 修复降级成脚本侧 `-DLLVM_NO_DEAD_STRIP=ON` consumer workaround
+  - 禁止全局改 Darwin linker flags
+  - 禁止改 `eippf_protection_suite_pass` 的 target 类型、输出名、前缀
+  - 禁止顺手修改 Windows tarball / SHA / 解包逻辑
+
+## Root Cause Judgment
+### Windows
+- 根因固定为 `/workspace/core/tools/sample_suite/build_windows.ps1` 中双引号插值字符串的变量边界未定界：
+  - `"$Label: $Trimmed"` 会把 `$Label:` 解释为变量引用前缀
+  - 属于 parser 级语法错误，不是运行时路径判定错误
+- 最小修复固定为：
+  - `${Label}:`
+
+### macOS
+- 根因固定为 Darwin 下 `add_llvm_pass_plugin(...)` 定义的 `MODULE` 目标继承了 LLVM `AddLLVM.cmake` 默认的 `-Wl,-dead_strip`
+- LLVM 上游源码已明确写明：
+  - `ld64's implementation of -dead_strip breaks tools that use plugins.`
+- 当前错误 `unsupported relocation of local symbol 'LBB1_1'` 发生在 `eippf_protection_suite_pass.dylib` 链接阶段，与该 Darwin plugin link 路径一致
+- 唯一推荐修复路径固定为：
+  - 只对 `eippf_protection_suite_pass` 这个 target 做 Darwin-only、target-local 的 `LLVM_NO_DEAD_STRIP` save/set/restore
+  - `build_macos_ios.sh` 只负责记录真实 link sidecar，不承载根修
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：计划冻结、架构边界、merge 顺序、验收与 CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：按 Phase 1/2/3 实施全部允许改动
+- `Agent 3 (Security Reviewer)`
+  - 负责：安全审查 + 验证审查；不改实现文件
+  - 固定审计口径：
+    - `security regression`
+    - `performance budget (<10% overhead)`
+  - 本轮说明：
+    - 运行时性能影响预期为 `N/A`，因为 Delta-2.5 只动构建脚本和 pass plugin 链接策略，不动受保护程序运行路径
+
+## Phases
+### Phase 1 / Windows Parser Closure
+- Owner：`Agent 2`
+- File：
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+- Output：
+  - 单行 parser 级语法修复
+- Exact Change：
+  - 仅把 `throw "[FAIL] missing required path for $Label: $Trimmed"`
+  - 改成 `throw "[FAIL] missing required path for ${Label}: $Trimmed"`
+
+### Phase 2 / Darwin Plugin Link Closure
+- Owner：`Agent 2`
+- File：
+  - `/workspace/core/passes/CMakeLists.txt`
+- Output：
+  - `eippf_protection_suite_pass` 在 Darwin 下不再继承 `-Wl,-dead_strip`
+- Exact Change：
+  - 仅围绕 `add_llvm_pass_plugin(eippf_protection_suite_pass ...)` 这一段
+  - 在该调用前：
+    - 仅在 `APPLE` 条件下保存当前 `LLVM_NO_DEAD_STRIP`
+    - 仅在 `APPLE` 条件下设置 `LLVM_NO_DEAD_STRIP ON`
+  - 在 `eippf_protection_suite_pass` 的 target 定义和属性设置完成后：
+    - 仅在 `APPLE` 条件下恢复之前保存的值
+    - 清理临时变量
+
+### Phase 3 / macOS Link Sidecar Closure
+- Owner：`Agent 2`
+- File：
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh`
+- Output：
+  - `plugin_build_command` verbose 化
+  - build log sidecar
+  - 实际 link-command sidecar
+  - report 中可定位该 sidecar
+- Exact Change：
+  - plugin build 命令保持 target 不变，只改为 verbose
+  - 新增 build log sidecar 保存 verbose build 原始输出
+  - 从原始输出提取真实 `eippf_protection_suite_pass.dylib` 链接命令
+  - 若提取失败、为空、或仍含 `-Wl,-dead_strip`，直接 fail-closed
+  - 在 macOS report 中写入 link-command sidecar 路径
+
+## File Ownership
+- `/workspace/core/tools/sample_suite/build_windows.ps1` -> `Agent 2`
+- `/workspace/core/passes/CMakeLists.txt` -> `Agent 2`
+- `/workspace/core/tools/sample_suite/build_macos_ios.sh` -> `Agent 2`
+- `/workspace/plan/*delta-2-5*` -> `PM`
+
+## Dependencies
+- `Phase 1` 独立，可先完成
+- `Phase 2` 完成后再执行 `Phase 3`
+  - 理由：`Phase 3` 的 sidecar 需要基于真实根修后的 link line 做独立验收
+- 实现完成后统一由 PM 做静态核验，再进 3 角色复审
+
+## Regression Perimeter
+- 直接影响：
+  - Windows required-path 报错字符串插值
+  - `eippf_protection_suite_pass` 的 Darwin link flags
+  - macOS sample-suite plugin build sidecar/report 产物
+- 必须保持不变：
+  - `build_macos_ios.sh` 中 `ios_protected_compile_command` 的 `-O0`
+  - object-only final link 合约
+  - `LLVM_DIR` / host clang18 / xcrun contract
+  - Linux/Android lane
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only` 只允许出现：
+  - `core/tools/sample_suite/build_windows.ps1`
+  - `core/passes/CMakeLists.txt`
+  - `core/tools/sample_suite/build_macos_ios.sh`
+  - 以及本轮计划/执行记录
+- Windows：
+  - `rg -n -F '$Label:' /workspace/core/tools/sample_suite/build_windows.ps1` 必须无命中
+- macOS：
+  - `/workspace/core/passes/CMakeLists.txt` 的 diff 不得出现其它 pass target 名称
+  - `/workspace/core/tools/sample_suite/build_macos_ios.sh` 必须产出实际 link-command sidecar
+
+### Script / Config Gates
+- `bash -n /workspace/core/tools/sample_suite/build_macos_ios.sh`
+- `git diff --check`
+
+### Artifact Gates
+- macOS sidecar/报告固定文件名：
+  - report：`sample_suite_inputs/toolchain_reports/macos_ios.txt`
+  - build command sidecar：`sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_build.txt`
+  - build log sidecar：`sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_build.log.txt`
+  - link command sidecar：`sample_suite_inputs/toolchain_reports/commands/macos_ios.plugin_link_command.txt`
+- macOS report 中必须新增：
+  - `plugin_build_log=<absolute path>`
+  - `plugin_link_command=<absolute path>`
+- `plugin_link_command` sidecar 中必须包含：
+  - `eippf_protection_suite_pass.dylib`
+- `plugin_link_command` sidecar 中必须不包含：
+  - `-Wl,-dead_strip`
+- reviewer 独立定位命令固定为：
+  - `report=sample_suite_inputs/toolchain_reports/macos_ios.txt`
+  - `link_sidecar=$(awk -F= '$1==\"plugin_link_command\"{print $2}' \"$report\")`
+  - `test -f \"$link_sidecar\"`
+  - `grep -F 'eippf_protection_suite_pass.dylib' \"$link_sidecar\"`
+  - `! grep -F -- '-Wl,-dead_strip' \"$link_sidecar\"`
+
+### CI Gates
+- `sample-suite-eval` 的 `build-windows` 通过
+- `sample-suite-eval` 的 `build-macos-ios` 通过
+- `protect-and-evaluate` 不再被 upstream skip
+
+## Reviewer Audit Notes
+- `Agent 1` 必须审核：
+  - 计划是否显式替代 `/workspace/plan/2026-2-26.txt`
+  - 计划与任务卡是否显式体现固定 3 角色 traceability
+- `Agent 2` 必须审核：
+  - Phase 1/2/3 是否可执行，是否存在工程师自行补设计的空白
+- `Agent 3` 必须审核：
+  - 是否存在 security regression
+  - `<10% overhead` 是否受影响；本轮若判定 `N/A`，必须显式写 `N/A`
+
+## Merge Order
+1. `Phase 1` / Windows 单点修复
+2. `Phase 2` / Darwin target-local 根修
+3. `Phase 3` / macOS link sidecar
+4. PM 静态核验
+5. 3 角色实现复审
+6. 提交并推送
+7. 观察下一轮 `sample-suite-eval`
+
+## Open Risks
+- 若 `-dead_strip` 不是唯一根因，`Phase 3` 生成的真实 link sidecar 会把下一轮问题暴露出来，但 Delta-2.5 不预设第二根因。
+- `Phase 2` 只修 `eippf_protection_suite_pass`；未来新增 Darwin plugin target 时仍可能需要单独审视。
+
+## State Snapshot
+- Linux/Android 轨已通过，无需触碰
+- 当前只剩 Windows parser 与 macOS plugin link 两个 blocker
+- Delta-2.5 仍处于计划审查阶段，尚未下发编码
