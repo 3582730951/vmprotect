@@ -377,6 +377,35 @@ llvm::Instruction* choose_decrypt_insertion_point(llvm::BasicBlock* decrypt_bloc
   return default_ip;
 }
 
+llvm::Instruction* get_entry_post_alloca_insertion_point(llvm::Function& function) {
+  llvm::BasicBlock& entry = function.getEntryBlock();
+  llvm::BasicBlock::iterator first_insertion_it = entry.getFirstInsertionPt();
+  if (first_insertion_it == entry.end()) {
+    llvm::report_fatal_error("entry block does not have a valid insertion point.");
+  }
+
+  llvm::Instruction* last_alloca = nullptr;
+  for (llvm::Instruction& instruction : entry) {
+    if (llvm::isa<llvm::AllocaInst>(instruction)) {
+      last_alloca = &instruction;
+    }
+  }
+  if (last_alloca == nullptr) {
+    return &*first_insertion_it;
+  }
+
+  llvm::Instruction* next_after_alloca = last_alloca->getNextNode();
+  if (next_after_alloca != nullptr) {
+    return next_after_alloca;
+  }
+
+  llvm::Instruction* terminator = entry.getTerminator();
+  if (terminator == nullptr) {
+    llvm::report_fatal_error("entry block does not have a terminator.");
+  }
+  return terminator;
+}
+
 llvm::FunctionCallee get_malloc_callee(llvm::Module& module) {
   llvm::LLVMContext& ctx = module.getContext();
   llvm::Type* i8_ptr_ty = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(ctx));
@@ -725,6 +754,12 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
 
       llvm::BasicBlock* decrypt_block = compute_decrypt_block(function, dt, uses);
       llvm::Instruction* decrypt_ip = choose_decrypt_insertion_point(decrypt_block, uses);
+      if (decrypt_block == &function.getEntryBlock()) {
+        llvm::Instruction* entry_safe_ip = get_entry_post_alloca_insertion_point(function);
+        if (decrypt_ip->comesBefore(entry_safe_ip)) {
+          decrypt_ip = entry_safe_ip;
+        }
+      }
       llvm::IRBuilder<> decrypt_builder(decrypt_ip);
 
       if (state.use_heap) {

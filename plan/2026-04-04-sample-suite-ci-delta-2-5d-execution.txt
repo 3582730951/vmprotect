@@ -1,0 +1,66 @@
+# 2026-04-04 sample-suite CI Delta-2.5d 执行记录
+
+## 范围
+- 本轮只实现并验证：
+  - `/workspace/core/passes/src/StringProtectionPass.cpp`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+- 未触碰其它生产文件。
+
+## 实施结果
+- 在 `StringProtectionPass.cpp` 新增：
+  - `get_entry_post_alloca_insertion_point(llvm::Function&)`
+- 在主转换循环中保留原有流程，只增加一条 entry-block 钳制规则：
+  - 若 `decrypt_block == &function.getEntryBlock()` 且 `decrypt_ip` 早于安全插入点，则提升到安全插入点
+- 未修改：
+  - string encryption 语义
+  - decode helper / wipe helper 语义
+  - 其它 pass
+- 在 `string_protection_pass_test.cpp` 新增：
+  - `verify_module_ok(...)`
+  - `EntryDominanceFixture`
+  - `build_entry_dominance_fixture(...)`
+  - `test_entry_block_dominance_regression()`
+
+## PM 本地核验
+- `git -C /workspace diff --name-only`
+  - 结果：
+    - `core/passes/src/StringProtectionPass.cpp`
+    - `core/tests/passes/string_protection_pass_test.cpp`
+- `git -C /workspace diff --check`
+  - 结果：`EXIT:0`
+- `cmake -S /workspace/core -B /workspace/build_pm_delta25d -G Ninja`
+  - 结果：`PASS`
+- `cmake --build /workspace/build_pm_delta25d -j --target string_protection_pass_test eippf_protection_suite_pass`
+  - 结果：`PASS`
+- `ctest --test-dir /workspace/build_pm_delta25d --output-on-failure -R '^string_protection_pass_test$'`
+  - 结果：`PASS`
+- 使用当前构建出的 `eippf_protection_suite_pass.so` 重新生成 sample-suite iOS IR 后：
+  - `opt -verify <tmp.ll> -disable-output`
+  - 结果：`PASS`
+
+## 三角色实现复审
+- `Agent 1 (Planner / PM)`：`PASS`
+  - 原因：
+    - 只动两文件
+    - entry-block 安全插入点 helper 已新增
+    - `decrypt_ip` 只在 entry block 情况被钳制
+    - verifier regression 与外部 `opt -verify` 都已通过
+- `Agent 2 (Engineer Reviewer)`：`PASS`
+  - 原文摘录：
+    - 当前改动边界正确，仅包含两个文件
+    - 已新增 entry-block 安全插入点 helper
+    - `decrypt_ip` 的钳制仅在 entry block 情况触发
+    - 已新增 `verify_module_ok(...)` 与 `test_entry_block_dominance_regression()`
+    - 本地构建、`ctest`、`opt -verify` 都通过
+- `Agent 3 (Security Reviewer)`：`PASS`
+  - 原文摘录：
+    - 修复已从生产代码根因入手，没有回到脚本或编译 flag 规避
+    - `string protection pass` 未被关闭或降级
+    - `verifyModule` 与 `opt -verify` 硬门成立
+    - 现有 string rewrite、decode helper、wipe helper 语义被保留
+    - 当前改动范围只落在两文件
+
+## 进入下一步
+- 允许提交并推送 `Delta-2.5d`
+- 推送后观察 `build-macos-ios`
+- 若 macOS lane 继续暴露新的 blocker，另开新 delta，不回滚本轮 production fix

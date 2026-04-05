@@ -1,0 +1,39 @@
+# 2026-04-04 sample-suite CI Delta-2.5d Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/core/passes/src/StringProtectionPass.cpp`
+  - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+
+## 目标
+- 修复 `StringProtectionPass` 的 entry-block dominance 缺陷
+- 增加 verifier regression，防止再次生成 broken IR
+
+## 机械步骤
+1. 在 `StringProtectionPass.cpp` 新增 helper，返回 entry block 中“所有 alloca 之后”的安全插入点
+2. 若 `decrypt_block == &function.getEntryBlock()`，把最终 `decrypt_ip` 钳制到该安全插入点之后
+3. 保持 `emit_runtime_decode`、`materialize_replacement_operand` 继续使用同一个受控 builder
+4. 不改 string encryption / decode helper / wipe helper 语义
+5. 在 `string_protection_pass_test.cpp` 新增一个带 entry allocas 的 regression fixture
+6. 在该 regression 中显式调用 `verifyModule`
+7. 保留现有 rewrite/helper/wipe 断言，不得删除
+
+## 禁止项
+- 禁止改其它 pass
+- 禁止改 workflow
+- 禁止改 `build_macos_ios.sh`
+- 禁止用编译 flag 规避
+- 禁止关闭 string protection pass
+- 禁止把 verifier 失败降级成 warning
+
+## 完成回报必须包含
+- `git diff --name-only`
+- `git diff --check`
+- `cmake -S /workspace/core -B /workspace/build_pm_delta25d -G Ninja`
+- `cmake --build /workspace/build_pm_delta25d -j --target string_protection_pass_test`
+- `ctest --test-dir /workspace/build_pm_delta25d --output-on-failure -R '^string_protection_pass_test$'`
+- `opt -verify <tmp.ll> -disable-output`
+- 明确列出你改的文件路径

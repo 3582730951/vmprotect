@@ -11,7 +11,9 @@
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace {
 
@@ -27,6 +29,12 @@ bool expect(bool condition, const char* message) {
 }
 
 struct ModuleFixture final {
+  std::unique_ptr<llvm::Module> module;
+  llvm::GlobalVariable* string_global = nullptr;
+  llvm::Function* use_function = nullptr;
+};
+
+struct EntryDominanceFixture final {
   std::unique_ptr<llvm::Module> module;
   llvm::GlobalVariable* string_global = nullptr;
   llvm::Function* use_function = nullptr;
@@ -67,11 +75,65 @@ ModuleFixture build_fixture(llvm::LLVMContext& context, const std::string& liter
   return fixture;
 }
 
+EntryDominanceFixture build_entry_dominance_fixture(llvm::LLVMContext& context,
+                                                    const std::string& literal) {
+  EntryDominanceFixture fixture{};
+  fixture.module = std::make_unique<llvm::Module>("string_protection_entry_dominance_fixture", context);
+
+  auto* i8_ty = llvm::Type::getInt8Ty(context);
+  auto* i32_ty = llvm::Type::getInt32Ty(context);
+  auto* i64_ty = llvm::Type::getInt64Ty(context);
+
+  llvm::Constant* string_initializer = llvm::ConstantDataArray::getString(context, literal, true);
+  fixture.string_global = new llvm::GlobalVariable(*fixture.module, string_initializer->getType(), true,
+                                                   llvm::GlobalValue::PrivateLinkage,
+                                                   string_initializer, ".entry.str");
+  fixture.string_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  fixture.string_global->setAlignment(llvm::Align(1));
+
+  auto* function_ty = llvm::FunctionType::get(i32_ty, false);
+  fixture.use_function = llvm::Function::Create(function_ty, llvm::GlobalValue::ExternalLinkage,
+                                                "entry_dominance_user", fixture.module.get());
+  llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fixture.use_function);
+  llvm::IRBuilder<> builder(entry);
+
+  llvm::AllocaInst* index_slot = builder.CreateAlloca(i32_ty, nullptr, "idx.slot");
+  index_slot->setAlignment(llvm::Align(4));
+  builder.CreateStore(builder.getInt32(9), index_slot);
+  llvm::Value* index_i32 = builder.CreateLoad(i32_ty, index_slot, "idx.load");
+  llvm::Value* index_i64 = builder.CreateSExt(index_i32, i64_ty, "idx.ext");
+
+  llvm::Value* base_ptr = builder.CreateInBoundsGEP(
+      string_initializer->getType(), fixture.string_global,
+      {builder.getInt64(0), builder.getInt64(0)}, "str.base");
+  llvm::Value* char_ptr = builder.CreateInBoundsGEP(i8_ty, base_ptr, index_i64, "str.char.ptr");
+  llvm::Value* char_value = builder.CreateLoad(i8_ty, char_ptr, "str.char.load");
+  llvm::Value* char_i32 = builder.CreateSExt(char_value, i32_ty, "str.char.i32");
+  builder.CreateRet(char_i32);
+
+  return fixture;
+}
+
 bool run_pass(llvm::Module& module) {
   eippf::passes::StringProtectionPass pass;
   llvm::ModuleAnalysisManager analysis_manager;
   const llvm::PreservedAnalyses preserved = pass.run(module, analysis_manager);
   return !preserved.areAllPreserved();
+}
+
+bool verify_module_ok(const llvm::Module& module, const char* context) {
+  std::string verifier_message;
+  llvm::raw_string_ostream verifier_stream(verifier_message);
+  const bool broken = llvm::verifyModule(module, &verifier_stream);
+  verifier_stream.flush();
+  if (!broken) {
+    return true;
+  }
+  std::cerr << "[FAIL] verifier failed in " << context << '\n';
+  if (!verifier_message.empty()) {
+    std::cerr << verifier_message;
+  }
+  return false;
 }
 
 bool has_callee(const llvm::Function& function, llvm::StringRef name) {
@@ -220,6 +282,26 @@ bool test_rewrite_avoids_long_lived_plaintext_semantics() {
                 "rewritten function should wipe decoded buffer before exit");
 }
 
+bool test_entry_block_dominance_regression() {
+  llvm::LLVMContext context;
+  EntryDominanceFixture fixture =
+      build_entry_dominance_fixture(context, "entry_block_dominance_literal");
+  if (!expect(run_pass(*fixture.module),
+              "entry-block dominance fixture should be rewritten by string protection pass")) {
+    return false;
+  }
+  if (!expect(verify_module_ok(*fixture.module, "entry_block_dominance_regression"),
+              "rewritten entry-block dominance fixture must pass verifier")) {
+    return false;
+  }
+  if (!expect(has_callee(*fixture.use_function, "eippf_string_token_decode"),
+              "entry-block dominance fixture should inject decode helper call")) {
+    return false;
+  }
+  return expect(has_callee(*fixture.use_function, "eippf_string_token_wipe"),
+                "entry-block dominance fixture should inject wipe helper call");
+}
+
 }  // namespace
 
 int main() {
@@ -228,6 +310,7 @@ int main() {
   ok = test_sample_anchor_literals_are_rewritten() && ok;
   ok = test_tutorial_anchor_is_disallowed() && ok;
   ok = test_rewrite_avoids_long_lived_plaintext_semantics() && ok;
+  ok = test_entry_block_dominance_regression() && ok;
 
   if (!ok) {
     return 1;

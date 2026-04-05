@@ -1,0 +1,148 @@
+# 2026-04-04 sample-suite CI Delta-2.5d 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5d 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只处理当前已验证的 `StringProtectionPass` broken IR blocker。
+- 替代范围仅限：
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+  - 如确有必要，最小额外测试 CMake 文件
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- 当前 blocker 已不在 `build_macos_ios.sh`
+- 已确认真正问题是：
+  - `StringProtectionPass` 生成了不满足 dominance 的坏 IR
+  - 本地 `opt -verify` 直接失败
+  - 具体表现为同一 entry block 内出现 use 在 def 之前
+
+## Task Charter
+- Objective：
+  - 修复 `StringProtectionPass` 的 dominance 缺陷，保证 pass 生成的 IR 可通过 verifier
+- Scope：
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+- Non-Goals：
+  - 不改 workflow
+  - 不改 `build_macos_ios.sh`
+  - 不改其它 pass
+  - 不加编译 flag 规避
+  - 不关闭 string protection pass
+- Forbidden Shortcuts：
+  - 禁止把根因再写成 jump table / build script flag / pass plugin bundle link
+  - 禁止只改测试不改生产代码
+  - 禁止把 verifier 失败降级成 warning
+  - 禁止回滚 Delta-2.5b
+
+## Root Cause Judgment
+- 根因固定为：
+  - `StringProtectionPass` 的 decrypt/materialization 插入点没有被限制在 entry block 的 `alloca` 之后
+  - 结果是 pass 新建的 `state.active_flag`、`state.stack_array` 及其派生 `gep` 在同一 basic block 内被提前使用，破坏 dominance
+- 唯一推荐修复路径固定为：
+  - 在 `StringProtectionPass.cpp` 增加 entry-block 安全插入点规则
+  - 若 `decrypt_block == &function.getEntryBlock()`，最终插入点不得早于“所有 allocas 之后”的安全插入点
+  - `emit_runtime_decode` 和 `materialize_replacement_operand` 都继续沿用同一个受控 builder
+  - 在 `string_protection_pass_test.cpp` 新增 verifier regression，强制 `verifyModule` 通过
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 的生产修复和测试回归
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计是否修生产缺陷而非绕过保护链、是否把 verifier gate 写死
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / StringProtectionPass Dominance Closure
+- Owner：`Agent 2`
+- Files：
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+- Exact Change：
+  1. 在 `StringProtectionPass.cpp` 新增 helper，返回 entry block 中“所有 `alloca` 之后”的安全插入点
+  2. 调整 decrypt insertion 逻辑：
+     - 若 `decrypt_block == &function.getEntryBlock()`，最终 `decrypt_ip` 必须被钳制到该安全插入点之后
+  3. 保持 `emit_runtime_decode`、`materialize_replacement_operand` 基于同一个受控 builder 工作
+  4. 不改 string encryption、decode helper、wipe helper 语义
+  5. 在 `string_protection_pass_test.cpp` 新增一个带 entry allocas 的 regression fixture
+  6. 在该 regression 中强制执行 `verifyModule`
+  7. 保留现有 rewrite/helper/wipe 断言，不得删除
+- Forbidden：
+  - 不改其它 pass
+  - 不改 workflow
+  - 不改 `build_macos_ios.sh`
+  - 不把 verifier 失败降级成 warning
+
+## File Ownership
+- `core/passes/src/StringProtectionPass.cpp` -> `Agent 2`
+- `core/tests/passes/string_protection_pass_test.cpp` -> `Agent 2`
+- `plan/*delta-2-5d*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - decrypt insertion point
+  - entry-block allocas 的支配关系
+  - verifier test contract
+- 邻接路径：
+  - `create_runtime_state()`
+  - `choose_decrypt_insertion_point()`
+  - `materialize_replacement_operand()`
+  - `string_protection_pass_test`
+- 必须保持不变：
+  - string rewrite 语义
+  - decode helper / wipe helper 注入
+  - disallowed lexical anchor 行为
+  - Delta-2.5b gate
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only` 只允许出现：
+  - `core/passes/src/StringProtectionPass.cpp`
+  - `core/tests/passes/string_protection_pass_test.cpp`
+  - 以及本轮计划/审核/执行记录
+- `git diff --check`
+
+### Local Gates
+- `cmake -S /workspace/core -B /workspace/build_pm_delta25d -G Ninja`
+- `cmake --build /workspace/build_pm_delta25d -j --target string_protection_pass_test`
+- `ctest --test-dir /workspace/build_pm_delta25d --output-on-failure -R '^string_protection_pass_test$'`
+
+### Verifier Gates
+- 对 sample-suite iOS 样例重新生成 IR 后：
+  - `opt -verify <tmp.ll> -disable-output` 必须通过
+- 新 regression fixture 必须在测试中显式调用 `verifyModule`
+
+### CI Gates
+- `build-macos-ios` 不得再因 broken IR 的下游症状失败
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否根因固定为 production pass 的 dominance 缺陷
+  - 是否范围和验收门明确
+- `Agent 2` 审：
+  - 是否修复路径唯一
+  - 是否任务卡已机械化到 helper、插入点、verifier 回归
+- `Agent 3` 审：
+  - 是否修生产缺陷而不是绕过保护链
+  - 是否 verifier gate 被写死
+
+## Merge Order
+1. 批准 Delta-2.5d
+2. `Agent 2` 修改 `StringProtectionPass.cpp` 和 `string_protection_pass_test.cpp`
+3. PM 跑本地构建 / 测试 / verifier
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 `build-macos-ios` 复跑
+
+## Open Risks
+- dominance 修复后，可能暴露 `StringProtectionPass` 的第二层 IR 结构问题；若复现，另开新 delta，不在本计划扩 scope
+
+## State Snapshot
+- 本地 verifier 已坐实 broken IR
+- 当前唯一 blocker 是 `StringProtectionPass` entry-block dominance 缺陷

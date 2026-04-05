@@ -1,0 +1,45 @@
+# 2026-04-04 sample-suite CI Delta-2.5d 审批与分配
+
+## 审批结论
+- `Agent 1 (Planner / PM)`：`PASS`
+  - 原因：
+    - 根因已固定为 `StringProtectionPass` 的 entry-block dominance 缺陷
+    - 范围收敛到最小生产文件 + 最小测试文件
+    - verifier gate 已写成硬门
+- `Agent 2 (Engineer Reviewer)`：`PASS`
+  - 原文摘录：
+    - 计划已把根因固定为 `StringProtectionPass` 的 entry-block dominance 缺陷
+    - 文件范围收敛到最小集
+    - 修复路径唯一：引入 entry-block 安全插入点并钳制 `decrypt_ip`
+    - 任务卡明确要求了安全插入点与 `verifyModule` regression
+    - 步骤和禁止项足够机械化
+- `Agent 3 (Security Reviewer)`：`PASS`
+  - 原文摘录：
+    - 计划把根因固定在 `StringProtectionPass` 生成坏 IR，没有回到 build 脚本或编译 flag 规避
+    - 修复路径没有关闭 `string protection pass`
+    - `verifyModule` 和外部 `opt -verify` 都被写成硬门
+    - 作用域被限制在最小文件集
+    - 计划明确要求保留现有 string rewrite、decode helper、wipe helper 语义
+
+## 批准结果
+- `Delta-2.5d` 计划已批准，可以进入实现阶段。
+
+## 分配
+- `Agent 2 (Engineer)` 实施：
+  - 文件：
+    - `/workspace/core/passes/src/StringProtectionPass.cpp`
+    - `/workspace/core/tests/passes/string_protection_pass_test.cpp`
+  - 任务卡：
+    - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-5d-phase-1-task-card.txt`
+- `Agent 1 (Planner / PM)`：
+  - 实施后只做静态核验、本地构建/测试/verifier、复审组织、提交推送、CI 观察
+- `Agent 3 (Security Reviewer)`：
+  - 实施完成后只审 verifier gate、保护链是否降级、scope 是否漂移
+
+## 实施前核验
+- 当前唯一 blocker 固定为：
+  - `StringProtectionPass` 生成 broken IR，`opt -verify` 失败
+- 当前不纳入 blocker：
+  - `build_macos_ios.sh`
+  - build script flags
+  - 其它 pass
