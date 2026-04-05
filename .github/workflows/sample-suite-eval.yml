@@ -1018,21 +1018,23 @@ jobs:
               expected_path: Path,
               fail_msg: str,
           ) -> Path:
-              tokens = command_payload_tokens(command_text)
+              tokens = shlex.split(command_text, posix=True)
+              if "--" in tokens:
+                  wrapper_tokens = tokens[:tokens.index("--")]
+              else:
+                  wrapper_tokens = tokens
               candidates: list[Path] = []
-              index = 0
-              while index < len(tokens):
-                  token = tokens[index]
+              expect_value = False
+              for token in wrapper_tokens:
+                  if expect_value:
+                      candidates.append(Path(token))
+                      expect_value = False
+                      continue
                   if token == option:
-                      if index + 1 < len(tokens):
-                          candidates.append(Path(tokens[index + 1]))
-                          index += 2
-                          continue
-                      index += 1
+                      expect_value = True
                       continue
                   if token.startswith(f"{option}="):
                       candidates.append(Path(token[len(option) + 1 :]))
-                  index += 1
               if len(candidates) != 1:
                   raise SystemExit(fail_msg)
               candidate = candidates[0]

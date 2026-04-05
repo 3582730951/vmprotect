@@ -1,0 +1,78 @@
+# 2026-04-05 sample-suite CI Delta-2.5i Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 修改范围只允许落在 macOS `Validate macOS iOS Toolchain Report` 内嵌 Python 段中的：
+  - `assert_wrapper_option_path_matches_expected()`
+
+## 目标
+- 修掉 `assert_wrapper_option_path_matches_expected()` 错把 wrapper 层 `--compiler` 裁掉的问题
+- 保留 Delta-2.5b / 2.5e / 2.5f / 2.5g / 2.5h 的所有既有 strict gate
+
+## 机械步骤
+1. 定位 `assert_wrapper_option_path_matches_expected()`。
+2. 保持函数签名不变：
+   - `def assert_wrapper_option_path_matches_expected(command_text: str, command_key: str, option: str, expected_path: Path, fail_msg: str) -> Path:`
+3. 只改该函数体。
+4. 将：
+   - `tokens = command_payload_tokens(command_text)`
+   替换为：
+   - `tokens = shlex.split(command_text, posix=True)`
+5. 在函数体内增加 wrapper token 切片：
+   - `if "--" in tokens:`
+   - `wrapper_tokens = tokens[:tokens.index("--")]`
+   - `else:`
+   - `wrapper_tokens = tokens`
+6. 将候选提取循环改成只遍历 `wrapper_tokens`：
+   - `for token in wrapper_tokens:`
+7. 仅保留以下两种 `--compiler` 形式：
+   - `--compiler <path>`
+   - `--compiler=<path>`
+8. 保持以下逻辑完全不变：
+   - 候选数必须 `== 1`
+   - 候选必须绝对路径
+   - 候选必须存在
+   - 候选必须与 `expected_path` 通过 `paths_identical(...)` 匹配
+   - 失败直接 `raise SystemExit(fail_msg)`
+9. 不改：
+   - `command_payload_tokens`
+   - `paths_identical`
+   - `assert_command_driver_path_matches_expected`
+   - 任何调用点
+   - 任何失败文案
+10. 不要顺手清理、重排、格式化其它代码。
+
+## 禁止项
+- 禁止修改除 `.github/workflows/sample-suite-eval.yml` 外的任何文件
+- 禁止修改 `assert_wrapper_option_path_matches_expected()` 之外的代码
+- 禁止修改函数签名、函数名、调用点
+- 禁止恢复或新增 `command_payload_tokens(command_text)` 于该函数体
+- 禁止引入 `except Exception`
+- 禁止放宽 `exact-one`、绝对路径、存在性、path identity
+- 禁止修改失败文案
+- 禁止触碰 Linux / Windows / Android validator
+- 禁止触碰 `build_macos_ios.sh`
+
+## 完成回报必须包含
+- `git diff --name-only`
+  - PASS 条件：输出只能是 `.github/workflows/sample-suite-eval.yml`
+- `git diff --check`
+  - PASS 条件：输出必须为空
+- `python3 - <<'PY'\nfrom pathlib import Path\nimport subprocess\nimport re\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = '      - name: Validate macOS iOS Toolchain Report\\n'\nstart = text.index(needle)\nrun_idx = text.index('        run: |\\n', start)\npy_start = text.index(\"          python3 - <<'PY'\\n\", run_idx) + len(\"          python3 - <<'PY'\\n\")\npy_end = text.index('\\n          PY\\n', py_start)\nbody = text[py_start:py_end]\npy_first = text[:py_start].count('\\n') + 1\nline_count = len(body.splitlines())\npy_last = py_first + line_count - 1\nout = subprocess.check_output(['git', '-C', '/workspace', 'diff', '-U0', '--', '.github/workflows/sample-suite-eval.yml'], text=True)\nheader_re = re.compile(r'^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@')\nfor raw in out.splitlines():\n    if not raw.startswith('@@ '):\n        continue\n    m = header_re.match(raw)\n    if not m:\n        raise SystemExit('BAD_HUNK_HEADER')\n    ls = int(m.group(1)); lc = int(m.group(2) or '1')\n    rs = int(m.group(3)); rc = int(m.group(4) or '1')\n    le = ls + max(lc, 1) - 1\n    re_ = rs + max(rc, 1) - 1\n    if lc != 0 and not (py_first <= ls <= le <= py_last):\n        raise SystemExit('LEFT_DIFF_OUT_OF_SCOPE')\n    if rc != 0 and not (py_first <= rs <= re_ <= py_last):\n        raise SystemExit('RIGHT_DIFF_OUT_OF_SCOPE')\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- `python3 - <<'PY'\nfrom pathlib import Path\nimport subprocess\nimport re\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = '          def assert_wrapper_option_path_matches_expected('\nstart = text.index(needle)\nend = text.index('\\n          def enforce_link_language_token_state_machine(', start)\nfn_first = text[:start].count('\\n') + 1\nfn_last = text[:end].count('\\n')\nout = subprocess.check_output(['git', '-C', '/workspace', 'diff', '-U0', '--', '.github/workflows/sample-suite-eval.yml'], text=True)\nheader_re = re.compile(r'^@@ -(\\d+)(?:,(\\d+))? \\+(\\d+)(?:,(\\d+))? @@')\nfor raw in out.splitlines():\n    if not raw.startswith('@@ '):\n        continue\n    m = header_re.match(raw)\n    if not m:\n        raise SystemExit('BAD_HUNK_HEADER')\n    ls = int(m.group(1)); lc = int(m.group(2) or '1')\n    rs = int(m.group(3)); rc = int(m.group(4) or '1')\n    le = ls + max(lc, 1) - 1\n    re_ = rs + max(rc, 1) - 1\n    if lc != 0 and not (fn_first <= ls <= le <= fn_last):\n        raise SystemExit('LEFT_HELPER_DIFF_OUT_OF_SCOPE')\n    if rc != 0 and not (fn_first <= rs <= re_ <= fn_last):\n        raise SystemExit('RIGHT_HELPER_DIFF_OUT_OF_SCOPE')\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = 'def assert_wrapper_option_path_matches_expected('\nstart = text.index(needle)\nend = text.index('\\n          def ', start + 1)\nbody = text[start:end]\nassert 'command_payload_tokens(command_text)' not in body, 'WRAPPER_HELPER_STILL_USES_PAYLOAD_TOKENS'\nassert 'shlex.split(command_text, posix=True)' in body, 'WRAPPER_HELPER_MISSING_FULL_TOKEN_SPLIT'\nassert 'tokens.index(\"--\")' in body, 'WRAPPER_HELPER_MISSING_DASH_DASH_BOUNDARY'\nassert 'wrapper_tokens = tokens[:tokens.index(\"--\")]' in body, 'WRAPPER_HELPER_MISSING_PREFIX_SLICE'\nassert 'wrapper_tokens = tokens' in body, 'WRAPPER_HELPER_MISSING_NO_DASH_DASH_FALLBACK'\nassert 'for token in wrapper_tokens:' in body, 'WRAPPER_HELPER_MISSING_WRAPPER_LOOP'\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- `rg -n '^\\s*except Exception\\s*:' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：必须 0 命中
+- `python3 - <<'PY'\nfrom pathlib import Path\nimport ast\nimport tempfile\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = '      - name: Validate macOS iOS Toolchain Report\\n'\nstart = text.index(needle)\nrun_idx = text.index('        run: |\\n', start)\npy_start = text.index(\"          python3 - <<'PY'\\n\", run_idx) + len(\"          python3 - <<'PY'\\n\")\npy_end = text.index('\\n          PY\\n', py_start)\nbody = '\\n'.join(line[10:] for line in text[py_start:py_end].splitlines())\nmodule = ast.parse(body)\nsegments = {}\nfor node in module.body:\n    if isinstance(node, ast.FunctionDef) and node.name in {'paths_identical', 'assert_wrapper_option_path_matches_expected'}:\n        segments[node.name] = ast.get_source_segment(body, node)\nif set(segments) != {'paths_identical', 'assert_wrapper_option_path_matches_expected'}:\n    raise SystemExit('WRAPPER_HELPER_SEGMENT_EXTRACTION_FAILED')\nns = {}\nhelper_source = 'from pathlib import Path\\nimport shlex\\n' + segments['paths_identical'] + '\\n' + segments['assert_wrapper_option_path_matches_expected'] + '\\n'\nexec(compile(helper_source, '<wrapper-helper-only>', 'exec'), ns)\nwith tempfile.TemporaryDirectory() as td:\n    root = Path(td)\n    toolchain = root / 'toolchain'\n    toolchain.mkdir()\n    compiler = toolchain / 'clang++'\n    compiler.write_text('#!/bin/sh\\nexit 0\\n', encoding='utf-8')\n    compiler.chmod(0o755)\n    wrapper = root / 'eippf_cc.py'\n    wrapper.write_text('# dummy\\n', encoding='utf-8')\n    plugin = root / 'pass.dylib'\n    plugin.write_text('x', encoding='utf-8')\n    src = root / 'in.c'\n    src.write_text('int main(void){return 0;}\\n', encoding='utf-8')\n    out = root / 'out.o'\n    fail_msg = '[FAIL] ios_protected_compile_command missing host compiler path'\n    cmd_space = f'python3 {wrapper} --pass-plugin {plugin} --compiler {compiler} -- -target arm64-apple-ios17.0-simulator -c {src} -o {out}'\n    cmd_equals = f'python3 {wrapper} --pass-plugin {plugin} --compiler={compiler} -- -target arm64-apple-ios17.0-simulator -c {src} -o {out}'\n    for cmd in (cmd_space, cmd_equals):\n        result = ns['assert_wrapper_option_path_matches_expected'](cmd, 'ios_protected_compile_command', '--compiler', compiler, fail_msg)\n        if result != compiler:\n            raise SystemExit('WRAPPER_HELPER_RETURN_MISMATCH')\n    bad_missing = f'python3 {wrapper} --pass-plugin {plugin} -- -target arm64-apple-ios17.0-simulator -c {src} -o {out}'\n    bad_duplicate = f'python3 {wrapper} --pass-plugin {plugin} --compiler {compiler} --compiler={compiler} -- -target arm64-apple-ios17.0-simulator -c {src} -o {out}'\n    for bad_cmd, signal in ((bad_missing, 'WRAPPER_HELPER_MISSING_NEGATIVE_GATE_MISSING'), (bad_duplicate, 'WRAPPER_HELPER_DUPLICATE_NEGATIVE_GATE_MISSING')):\n        try:\n            ns['assert_wrapper_option_path_matches_expected'](bad_cmd, 'ios_protected_compile_command', '--compiler', compiler, fail_msg)\n        except SystemExit as exc:\n            if str(exc) != fail_msg:\n                raise\n        else:\n            raise SystemExit(signal)\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedles = {\n    'plugin_build_cxx': '''assert_cmake_define_matches_expected(\n              plugin_build_text,\n              \"CMAKE_CXX_COMPILER\",\n              Path(kv[\"host_compiler_path\"]),\n              \"[FAIL] plugin_build_command missing host compiler path\",\n          )''',\n    'plugin_build_llvm_dir': '''assert_cmake_define_matches_expected(\n              plugin_build_text,\n              \"LLVM_DIR\",\n              Path(kv[\"llvm_dir\"]),\n              \"[FAIL] sidecar missing required token: plugin_build_command\",\n          )''',\n    'ios_helper_isysroot': 'assert_flag_path_matches_expected(ios_helper_text, \"ios_user_helper_compile_command\", \"-isysroot\", Path(kv[\"ios_isysroot\"]), \"[FAIL] ios_user_helper_compile_command missing isysroot\")',\n    'ios_protected_isysroot': 'assert_flag_path_matches_expected(protected_compile_text, \"ios_protected_compile_command\", \"-isysroot\", Path(kv[\"ios_isysroot\"]), \"[FAIL] ios_protected_compile_command missing isysroot\")',\n    'ios_link_isysroot': 'assert_flag_path_matches_expected(command_text, \"ios_link_command\", \"-isysroot\", Path(kv[\"ios_isysroot\"]), \"[FAIL] ios_link_command missing isysroot\")',\n    'plugin_link_missing_path': 'raise SystemExit(\"[FAIL] plugin_link_command missing plugin path\")',\n    'plugin_link_ninja_prefix': 'raise SystemExit(\"[FAIL] plugin_link_command leaked ninja progress prefix\")',\n    'plugin_link_dead_strip': 'raise SystemExit(\"[FAIL] plugin_link_command leaked dead_strip\")',\n    'plugin_build_log_assert_under': 'assert_under(plugin_build_log, commands_root, \"plugin_build_log\")',\n    'plugin_link_sidecar_assert_under': 'assert_under(plugin_link_sidecar, commands_root, \"plugin_link_command\")',\n}\nfor key, needle in needles.items():\n    if text.count(needle) != 1:\n        raise SystemExit(f'{key}_GATE_COUNT_MISMATCH')\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- 明确列出你改的文件路径
+- 以上静态 gate 必须全部 PASS，才允许 PM 合入与推送

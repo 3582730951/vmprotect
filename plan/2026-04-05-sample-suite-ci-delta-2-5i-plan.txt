@@ -1,0 +1,175 @@
+# 2026-04-05 sample-suite CI Delta-2.5i 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5i 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即成为已批准 delta。
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- Delta-2.5h 推送后，`sample-suite-eval` run `23994978083` 的 macOS `Validate macOS iOS Toolchain Report` 再次失败。
+- 根因已在本地代码路径确认：
+  - `assert_wrapper_option_path_matches_expected()` 错用 `command_payload_tokens(command_text)`
+  - `command_payload_tokens` 会截断到 `--` 之后
+  - `--compiler` 位于 wrapper 层，在 `--` 之前，被截断后候选为空
+  - 导致 `ios_protected_compile_command` 的 host compiler path 校验继续假失败
+
+## Task Charter
+- Objective：
+  - 修复 `assert_wrapper_option_path_matches_expected()` 的 token 边界错误，闭合当前 macOS blocker
+- Scope：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅限 macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段
+- Non-Goals：
+  - 不改 `build_macos_ios.sh`
+  - 不改 Linux / Windows / Android validator
+  - 不改其它 helper 与调用点
+- Forbidden Shortcuts：
+  - 禁止扩大 scope 到其它 path-string 判断
+  - 禁止修改失败文案
+  - 禁止放宽 `exact-one`、绝对路径、存在性、path identity
+  - 禁止引入 `except Exception`
+  - 禁止删除或弱化 Delta-2.5b / 2.5e / 2.5f / 2.5g / 2.5h 的既有 gate
+
+## Root Cause Judgment
+- 根因固定为：
+  - `assert_wrapper_option_path_matches_expected()` 必须检查 wrapper 层参数
+  - 但当前实现从 `command_payload_tokens(command_text)` 取 token
+  - 对 wrapper 命令而言，`command_payload_tokens` 会移除 `--` 之前全部 token
+  - 因而 `--compiler` 永远不可见
+- 唯一推荐修复路径固定为：
+  - 只改 `assert_wrapper_option_path_matches_expected()`
+  - 改为先对完整命令做 `shlex.split(command_text, posix=True)`
+  - 再只在 `--` 之前的 wrapper token 内解析 `--compiler`
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、推送、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 Phase 1 单文件单段修复
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 fail-closed 与保留契约是否未回退
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / wrapper-option Token Boundary Repair
+- Owner：`Agent 2`
+- File：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- Exact Change：
+  1. 只允许修改 `assert_wrapper_option_path_matches_expected()` 的函数体；不得改函数名、参数列表、返回类型和调用点。
+  2. 将：
+     - `tokens = command_payload_tokens(command_text)`
+     替换为：
+     - `tokens = shlex.split(command_text, posix=True)`
+  3. 在函数内部固定新增 wrapper token 切片逻辑：
+     - 若存在 `--`，则 `wrapper_tokens = tokens[:tokens.index("--")]`
+     - 若不存在 `--`，则 `wrapper_tokens = tokens`
+  4. 后续 `--compiler` 候选提取只允许遍历 `wrapper_tokens`
+  5. 支持的候选形式仍固定为：
+     - `--compiler <path>`
+     - `--compiler=<path>`
+  6. 保持 fail-closed 语义不变：
+     - 候选数量必须恰好为 `1`
+     - 候选必须绝对路径
+     - 候选必须存在
+     - 候选必须与 `expected_path` 满足 `paths_identical(...)`
+     - 任一失败直接 `raise SystemExit(fail_msg)`
+  7. 保持以下失败文案完全不变：
+     - `[FAIL] ios_protected_compile_command missing host compiler path`
+     - `[FAIL] ios_protected_compile_command must not use target helper compiler`
+     - `[FAIL] ios_protected_compile_command must not use final link driver`
+  8. 不改其它 helper：
+     - `command_payload_tokens`
+     - `paths_identical`
+     - `assert_command_driver_path_matches_expected`
+     - `assert_flag_path_matches_expected`
+     - `assert_cmake_define_matches_expected`
+
+## File Ownership
+- `/workspace/.github/workflows/sample-suite-eval.yml` -> `Agent 2`
+- `plan/*delta-2-5i*` -> `Agent 1`
+
+## Regression Perimeter
+- 直接影响：
+  - `assert_wrapper_option_path_matches_expected()`
+  - `ios_protected_compile_command missing host compiler path`
+- 邻接路径：
+  - `ios_protected_compile_command must not use target helper compiler`
+  - `ios_protected_compile_command must not use final link driver`
+- 必须保持不变：
+  - Delta-2.5h 新增的 3 个 helper 仍存在
+  - Delta-2.5g 三条 `-isysroot` gate
+  - Delta-2.5f 两条 `assert_cmake_define_matches_expected(plugin_build_text, ...)`
+  - Delta-2.5b / 2.5e 的 `plugin_link_command` / `plugin_build_log` gate
+  - Linux / Windows / Android validator
+  - `build_macos_ios.sh`
+
+## Quality Gates
+### Static Gates
+- `git diff --name-only`
+  - 只能包含 `.github/workflows/sample-suite-eval.yml`
+- diff hunk 左右边界脚本必须通过：
+  - 左右 hunk 都位于 macOS `Validate macOS iOS Toolchain Report` 内嵌 Python 段
+- helper 级 diff 边界脚本必须通过：
+  - 左右 hunk 都位于 `assert_wrapper_option_path_matches_expected()` 函数体
+- `assert_wrapper_option_path_matches_expected()` 函数体内必须满足：
+  - `command_payload_tokens(command_text)` 命中数 = `0`
+  - `shlex.split(command_text, posix=True)` 命中数 >= `1`
+  - `tokens.index("--")` 命中数 >= `1`
+  - `wrapper_tokens = tokens[:tokens.index("--")]` 命中数 >= `1`
+  - `wrapper_tokens = tokens` 命中数 >= `1`
+  - `for token in wrapper_tokens:` 命中数 >= `1`
+- `except Exception` 命中数必须 = `0`
+- 语法 gate：
+  - 必须能从 workflow 中抽出该内嵌 Python 段并通过 `compile(..., "exec")`
+- 语义 microtest：
+  - 只允许抽出并执行 `paths_identical` 与 `assert_wrapper_option_path_matches_expected`，禁止 `exec` 整段 validator
+  - 正向必须覆盖两种形式：
+    - `--compiler <path>`
+    - `--compiler=<path>`
+  - 负向必须覆盖两种失败：
+    - 缺少 `--compiler`
+    - 重复 `--compiler` 候选，证明 `exact-one` 未被弱化
+  - 任一失败都必须以原 `fail_msg` 收敛
+- 保留契约 gate 必须是精确调用计数或精确语句计数，不能只做文案存在性 `rg`
+- 以下保留 gate 必须精确命中 `1`：
+  - Delta-2.5f 两条 `assert_cmake_define_matches_expected(plugin_build_text, ...)`
+  - Delta-2.5g 三条 `assert_flag_path_matches_expected(... "-isysroot" ...)`
+  - Delta-2.5b / 2.5e 的：
+    - `raise SystemExit("[FAIL] plugin_link_command missing plugin path")`
+    - `raise SystemExit("[FAIL] plugin_link_command leaked ninja progress prefix")`
+    - `raise SystemExit("[FAIL] plugin_link_command leaked dead_strip")`
+    - `assert_under(plugin_build_log, commands_root, "plugin_build_log")`
+    - `assert_under(plugin_link_sidecar, commands_root, "plugin_link_command")`
+
+### Validator Gates
+- 本轮 blocker gate：
+  - 不再出现 `[FAIL] ios_protected_compile_command missing host compiler path`
+- 回归 gate：
+  - 不出现 `missing isysroot`
+  - 不出现 `plugin_build_command missing host compiler path`
+  - 不出现 `plugin_link_command missing plugin path`
+  - 不出现 `plugin_link_command leaked dead_strip`
+  - 不出现 `plugin_link_command leaked ninja progress prefix`
+
+## Merge Order
+1. 三角色审核本计划
+2. 回收 reviewer
+3. 下发单写者任务卡
+4. PM 静态 gate 验收
+5. 三角色实现复审
+6. 提交并推送
+7. 观察 `sample-suite-eval`
+
+## Open Risks
+- 若 CI 下一次暴露的是另一个 path-identity 误判，本轮会 fail-closed 并进入新 delta，不扩当前 scope
+- 当前修复只覆盖 wrapper option 层，不覆盖其它 sidecar 结构变化
+
+## State Snapshot
+- `sample-suite-eval` run `23994978083` 仍在进行中
+- macOS job 已明确失败于 `Validate macOS iOS Toolchain Report`
+- 本地根因已收敛到 `assert_wrapper_option_path_matches_expected()` 的 token 边界错误

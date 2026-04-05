@@ -1,0 +1,50 @@
+# 2026-04-05 sample-suite CI Delta-2.5i 批准与分配记录
+
+## 状态
+- `APPROVED`
+
+## 批准范围
+- 仅批准：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 仅允许修改：
+  - macOS `Validate macOS iOS Toolchain Report` 内嵌 Python 段中的 `assert_wrapper_option_path_matches_expected()` 函数体
+
+## 三角色最终审核结论
+- `Architect Reviewer`: `PASS`
+  - 原因：
+    - scope 仍为单文件单段
+    - Exact Change 只修 helper 的 token 边界
+    - helper 级 diff 边界与 microtest 已可机械执行
+- `Engineer Reviewer`: `PASS`
+  - 原因：
+    - 任务卡已完全机械化
+    - 保留契约 gate 已升级为精确计数
+    - microtest 能验证两种正向形式与两种负向形式
+- `Security Reviewer`: `PASS`
+  - 原因：
+    - `exact-one`、绝对路径、存在性、`paths_identical` 未放宽
+    - `except Exception` 仍禁止
+    - 保留契约不再依赖宽松文案存在性
+
+## 回收规则
+- 本记录落盘后，三位 reviewer 立即回收，不参与实现。
+
+## 实现分配
+- 新工程 owner：`Agent 2 (Engineer)` 新实例
+- 文件所有权：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 严格禁止：
+  - 修改其它文件
+  - 修改 `assert_wrapper_option_path_matches_expected()` 之外的代码
+  - 修改函数签名、调用点、其它 helper、失败文案
+
+## PM 验收顺序
+1. `git diff --name-only`
+2. Python 段级 diff 边界
+3. helper 级 diff 边界
+4. helper 结构 gate
+5. 保留契约精确计数 gate
+6. helper-only microtest
+7. 三角色实现复审
+8. 提交推送
+9. 观察 `sample-suite-eval`

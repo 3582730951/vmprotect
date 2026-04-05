@@ -1,0 +1,72 @@
+# 2026-04-05 sample-suite CI Delta-2.5i 执行记录
+
+## 状态
+- `IMPLEMENTED`
+- `READY_TO_PUSH`
+
+## 本轮范围
+- 生产改动：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 计划与审计记录：
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5i-plan.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5i-phase-1-task-card.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5i-approval-and-assignment.txt`
+  - `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5i-execution.txt`
+
+## 实施结果
+- 只修改了 `assert_wrapper_option_path_matches_expected()` 的函数体。
+- token 源已从：
+  - `command_payload_tokens(command_text)`
+  改为：
+  - `shlex.split(command_text, posix=True)`
+- 新增 wrapper 层切片：
+  - 若存在 `--`，只在其前缀 token 中解析 `--compiler`
+  - 若不存在 `--`，则在完整 token 中解析
+- 其余保持不变：
+  - 函数签名
+  - 调用点
+  - 其它 helper
+  - 失败文案
+  - Delta-2.5b / 2.5e / 2.5f / 2.5g / 2.5h 既有契约
+
+## PM 静态验收
+- `git diff --name-only -- .github/workflows/sample-suite-eval.yml`
+  - 结果：仅 `.github/workflows/sample-suite-eval.yml`
+- `git diff --check -- .github/workflows/sample-suite-eval.yml`
+  - 结果：空输出
+- Python 段级 diff 边界
+  - 结果：`OK`
+- helper 级 diff 边界
+  - 结果：`OK`
+- helper 结构 gate
+  - 结果：`OK`
+- `except Exception`
+  - 结果：`OK`
+- 精确保留契约计数
+  - 结果：`OK`
+- helper-only microtest
+  - 结果：`OK`
+  - 覆盖：
+    - `--compiler <path>`
+    - `--compiler=<path>`
+    - 缺失 `--compiler`
+    - 重复 `--compiler`
+
+## 三角色实现复审
+- `Architect Reviewer`: `PASS`
+  - 结论：
+    - 仅改单文件单 helper
+    - 未改签名、调用点、其它 helper、失败文案
+- `Engineer Reviewer`: `PASS`
+  - 结论：
+    - 只做 full split + wrapper 前缀切片
+    - 无额外噪音改动
+- `Security Reviewer`: `PASS`
+  - 结论：
+    - `exact-one`、绝对路径、存在性、`paths_identical` 未放宽
+    - 既有保留契约未削弱
+    - scope 仍锁死在 helper 函数体
+
+## 观察项
+- 上一个 `sample-suite-eval` run `23994978083` 仍未结束，完整日志尚未可取。
+- 本轮将以新提交触发新的 `sample-suite-eval` 复跑作为最终外部验证。
