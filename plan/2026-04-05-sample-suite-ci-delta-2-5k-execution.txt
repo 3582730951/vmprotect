@@ -1,0 +1,85 @@
+# 2026-04-05 sample-suite CI Delta-2.5k 执行记录
+
+## 状态
+- `IMPLEMENTED`
+
+## 触发 blocker
+- `sample-suite-eval` run `23996001377`
+- `build-windows` job `69984057405`
+- 失败阶段：
+  - `Build Windows Samples`
+- 关键失败证据：
+  - `ninja: error: 'C:/Program Files (x86)/Microsoft Visual Studio/2019/Professional/DIA SDK/lib/amd64/diaguids.lib', needed by '.../eippf_protection_suite_pass.dll', missing and no known rule to make it`
+
+## 已批准计划
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5k-plan.txt`
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5k-approval-and-assignment.txt`
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5k-phase-1-task-card.txt`
+
+## 实现 owner
+- `Agent 6 (Engineer)` 新实例
+- 实际执行 agent：
+  - `019d5c84-b34e-77d2-8aa9-e4d5c79520c3`
+
+## 实现结果
+- 修改：
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - `/workspace/core/passes/CMakeLists.txt`
+- 未修改：
+  - `/workspace/core/CMakeLists.txt`
+  - 任何 `.cpp/.hpp/.py/.ps1/.yml`
+  - workflow / validator / build scripts / tests
+
+## PM 独立验收
+### 静态 gate
+- `git -C /workspace diff --name-only`
+  - 结果：仅两个实现文件
+- `git -C /workspace diff --check`
+  - 结果：通过
+- `rg -n 'target_link_libraries\\(\\$\\{name\\} PRIVATE LLVM\\)' /workspace/core/cmake/PassPluginCompat.cmake`
+  - 结果：0 命中
+- `rg -n 'WINDOWS_LLVM_COMPONENTS' /workspace/core/passes/CMakeLists.txt`
+  - 结果：8 命中
+- `rg -n 'llvm_map_components_to_libnames\\(' /workspace/core/cmake/PassPluginCompat.cmake`
+  - 结果：1 命中
+- `rg -n 'diaguids\\\\.lib|DIA SDK|dia sdk' /workspace/core/cmake/PassPluginCompat.cmake`
+  - 结果：命中 denylist 逻辑
+- `python3` forbidden component gate
+  - 结果：通过
+
+### 本地 configure/build gate
+- 命令：
+  - `cmake -S /workspace/core -B /tmp/eippf_delta25k_probe -G Ninja -DLLVM_DIR=/usr/lib/llvm-14/lib/cmake/llvm -DEIPPF_BUILD_TESTS=OFF -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF -DEIPPF_BUILD_SCRIPT_GUARD=OFF -DEIPPF_BUILD_IP_WEAVER=OFF -DEIPPF_BUILD_IP_WEAVER_IR=OFF -DEIPPF_BUILD_TOOLING=OFF`
+  - `cmake --build /tmp/eippf_delta25k_probe --target eippf_protection_suite_pass -j 4`
+- 结果：
+  - configure 通过
+  - build 通过
+
+## 三角色实现复审
+- `Architecture Reviewer`: `PASS`
+- `Engineer Reviewer`: `PASS`
+- `Security Reviewer`: `PASS`
+
+## 关键收口点
+- Windows helper 新增：
+  - `WINDOWS_LLVM_COMPONENTS`
+- Windows helper 删除：
+  - `TARGET LLVM` 路径
+  - `target_link_libraries(${name} PRIVATE LLVM)`
+- Windows helper 改为：
+  - 强制 `llvm_map_components_to_libnames(...)`
+  - 强制 `ARG_WINDOWS_LLVM_COMPONENTS`
+  - 对 `diaguids.lib` / `dia sdk` 做 fail-closed denylist
+- 8 个 pass target 全部显式追加同一组 Windows 组件：
+  - `Core`
+  - `Support`
+  - `Passes`
+  - `Analysis`
+  - `TransformUtils`
+  - `TargetParser`
+- validator、workflow、`build_windows.ps1`、pass 源码均未修改
+
+## 待执行
+- 提交
+- 推送
+- 观察新的 `sample-suite-eval`

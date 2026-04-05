@@ -13,6 +13,13 @@ eippf_add_pass_plugin_target(eippf_string_protection_pass
     src/StringProtectionPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_STRING_PROTECTION_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_selective_vm_pass
@@ -20,6 +27,13 @@ eippf_add_pass_plugin_target(eippf_selective_vm_pass
     src/SelectiveVMPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_SELECTIVE_VM_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_mba_obfuscation_pass
@@ -27,6 +41,13 @@ eippf_add_pass_plugin_target(eippf_mba_obfuscation_pass
     src/MBAObfuscationPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_MBA_OBFUSCATION_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_iat_minimization_pass
@@ -34,6 +55,13 @@ eippf_add_pass_plugin_target(eippf_iat_minimization_pass
     src/IATMinimizationPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_IAT_MINIMIZATION_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_jit_enclave_pass
@@ -41,6 +69,13 @@ eippf_add_pass_plugin_target(eippf_jit_enclave_pass
     src/JITEnclavePass.cpp
   COMPILE_DEFINITIONS
     EIPPF_JIT_ENCLAVE_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_protection_anchor_pass
@@ -48,6 +83,13 @@ eippf_add_pass_plugin_target(eippf_protection_anchor_pass
     src/ProtectionAnchorPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_PROTECTION_ANCHOR_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 eippf_add_pass_plugin_target(eippf_cff_obfuscation_pass
@@ -55,6 +97,13 @@ eippf_add_pass_plugin_target(eippf_cff_obfuscation_pass
     src/CFFObfuscationPass.cpp
   COMPILE_DEFINITIONS
     EIPPF_CFF_OBFUSCATION_STANDALONE_PLUGIN=1
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
 )
 
 if(APPLE)
@@ -70,6 +119,13 @@ eippf_add_pass_plugin_target(eippf_protection_suite_pass
     src/SelectiveVMPass.cpp
     src/JITEnclavePass.cpp
     src/CFFObfuscationPass.cpp
+  WINDOWS_LLVM_COMPONENTS
+    Core
+    Support
+    Passes
+    Analysis
+    TransformUtils
+    TargetParser
   OUTPUT_NAME
     eippf_protection_suite_pass
 )

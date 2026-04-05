@@ -1,0 +1,111 @@
+# 2026-04-05 sample-suite CI Delta-2.5k Phase 1 任务卡
+
+## 角色
+- `Agent 6 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - `/workspace/core/passes/CMakeLists.txt`
+
+## 目标
+- 关闭 Windows pass plugin 链接阶段对 `diaguids.lib` / `DIA SDK` 的错误依赖。
+- 继续生成真实 `eippf_protection_suite_pass.dll`。
+- 保持 validator、workflow、Windows build script、top-level CMake 完全不变。
+
+## 机械步骤
+1. 只打开两个文件：
+   - `/workspace/core/cmake/PassPluginCompat.cmake`
+   - `/workspace/core/passes/CMakeLists.txt`
+2. 在 `PassPluginCompat.cmake` 中修改 helper 签名：
+   - 从：
+     - `cmake_parse_arguments(ARG "" "OUTPUT_NAME" "SOURCES;COMPILE_DEFINITIONS" ${ARGN})`
+   - 改为：
+     - `cmake_parse_arguments(ARG "" "OUTPUT_NAME" "SOURCES;COMPILE_DEFINITIONS;WINDOWS_LLVM_COMPONENTS" ${ARGN})`
+3. 在 `PassPluginCompat.cmake` 的 `if(WIN32)` 分支中：
+   - 完全删除：
+     - `if(TARGET LLVM)` 分支
+     - `set(eippf_link_with_llvm_target ON/OFF)` 路径
+     - `target_link_libraries(${name} PRIVATE LLVM)`
+   - 固定新增以下硬 gate，顺序不能改：
+     - `if(NOT ARG_WINDOWS_LLVM_COMPONENTS) message(FATAL_ERROR "...") endif()`
+     - `if(NOT COMMAND llvm_map_components_to_libnames) message(FATAL_ERROR "...") endif()`
+   - 固定新增：
+     - `llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs ${ARG_WINDOWS_LLVM_COMPONENTS})`
+   - 对 `eippf_pass_plugin_llvm_libs` 做逐项 denylist 检查：
+     - 每一项转小写比较
+     - 任何一项命中以下任意模式，立刻 `message(FATAL_ERROR "...")`
+       - `diaguids.lib`
+       - `dia sdk`
+       - `DIA SDK`
+   - Windows 分支最终只允许：
+     - `target_link_libraries(${name} PRIVATE ${eippf_pass_plugin_llvm_libs})`
+4. 在 `PassPluginCompat.cmake` 中保留不变：
+   - `add_library(${name} SHARED ${ARG_SOURCES})`
+   - `PREFIX ""`
+   - `WINDOWS_EXPORT_ALL_SYMBOLS ON`
+   - 输出目录同步逻辑
+   - target-type fail-closed
+   - include dirs
+   - compile definitions
+   - `eippf_apply_common_compile_options`
+   - `ARG_OUTPUT_NAME`
+   - 非 Windows 的 `add_llvm_pass_plugin(${name} ${ARG_SOURCES})`
+5. 在 `/workspace/core/passes/CMakeLists.txt` 中：
+   - 保留：
+     - `find_package(LLVM REQUIRED CONFIG)`
+     - `list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")`
+     - `include(AddLLVM)`
+     - `include(PassPluginCompat)`
+     - `APPLE` 的 `LLVM_NO_DEAD_STRIP` 包裹逻辑
+     - `set_target_properties(eippf_protection_suite_pass PROPERTIES OUTPUT_NAME "eippf_protection_suite_pass" PREFIX "")`
+     - `if(NOT EIPPF_PASS_PLUGIN) eippf_register_pass_plugin("eippf_protection_suite_pass") endif()`
+6. 在 `passes/CMakeLists.txt` 的 8 个 `eippf_add_pass_plugin_target(...)` 调用里，全部显式追加同一组 Windows 组件，顺序固定为：
+   - `WINDOWS_LLVM_COMPONENTS`
+   - `Core`
+   - `Support`
+   - `Passes`
+   - `Analysis`
+   - `TransformUtils`
+   - `TargetParser`
+7. 不允许在这 8 个调用中加入：
+   - `ipo`
+   - `Instrumentation`
+   - `IRReader`
+   - 任何 `DebugInfo*`
+8. 不要顺手重排、不做格式化、不清理其它代码。
+
+## 禁止项
+- 禁止修改：
+  - `/workspace/core/CMakeLists.txt`
+  - 任何 `.cpp/.hpp/.py/.ps1/.yml`
+  - tests
+  - workflow
+  - sample-suite 构建脚本
+- 禁止恢复任何 Windows `PRIVATE LLVM` 链接路径
+- 禁止新增环境修补、路径 hack、`LIB/LIBPATH` 注入
+- 禁止改 validator、sidecar、报告字段
+- 禁止自行扩张 `WINDOWS_LLVM_COMPONENTS`
+
+## 完成回报必须包含
+- `git diff --name-only`
+  - PASS 条件：只能包含
+    - `core/cmake/PassPluginCompat.cmake`
+    - `core/passes/CMakeLists.txt`
+- `git diff --check`
+  - PASS 条件：输出为空
+- `rg -n 'target_link_libraries\\(\\$\\{name\\} PRIVATE LLVM\\)' /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：0 命中
+- `rg -n 'WINDOWS_LLVM_COMPONENTS' /workspace/core/passes/CMakeLists.txt`
+  - PASS 条件：8 命中
+- `rg -n 'llvm_map_components_to_libnames\\(' /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：1 命中
+- `rg -n 'diaguids\\.lib|DIA SDK|dia sdk' /workspace/core/cmake/PassPluginCompat.cmake`
+  - PASS 条件：至少 1 命中
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/core/passes/CMakeLists.txt').read_text(encoding='utf-8')\nfor bad in ['ipo', 'Instrumentation', 'IRReader', 'DebugInfo']:\n    if bad in text:\n        raise SystemExit(f'FORBIDDEN_WINDOWS_COMPONENT_PRESENT:{bad}')\nprint('OK')\nPY`
+  - PASS 条件：输出 `OK`
+- `cmake -S /workspace/core -B /tmp/eippf_delta25k_probe -G Ninja -DLLVM_DIR=/usr/lib/llvm-14/lib/cmake/llvm -DEIPPF_BUILD_TESTS=OFF -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF -DEIPPF_BUILD_SCRIPT_GUARD=OFF -DEIPPF_BUILD_IP_WEAVER=OFF -DEIPPF_BUILD_IP_WEAVER_IR=OFF -DEIPPF_BUILD_TOOLING=OFF`
+  - PASS 条件：通过
+- `cmake --build /tmp/eippf_delta25k_probe --target eippf_protection_suite_pass -j 4`
+  - PASS 条件：通过
+- 明确列出你修改的文件

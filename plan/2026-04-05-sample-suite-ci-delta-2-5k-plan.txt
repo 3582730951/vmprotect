@@ -1,0 +1,397 @@
+# 2026-04-05 sample-suite CI Delta-2.5k 计划
+
+Execution Mode:
+- `real-multi-agent`
+
+Assurance Level:
+- `heavy`
+
+Task Charter:
+- Objective:
+  - 关闭 Windows `build-windows` 在 pass plugin 链接阶段对 `diaguids.lib` / DIA SDK 的错误依赖。
+  - 保持真实 `eippf_protection_suite_pass.dll` 产物。
+  - 保持 `Validate Windows Toolchain Report` 与现有 validator 契约完全不变。
+- Scope:
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - `/workspace/core/passes/CMakeLists.txt`
+- Non-Goals:
+  - 不修改 `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - 不修改 `/.github/workflows/sample-suite-eval.yml`
+  - 不修改 `/workspace/core/CMakeLists.txt`
+  - 不修改任何 `.cpp/.hpp`
+  - 不安装、补拷贝、伪造或下载 `diaguids.lib`
+- Acceptance Criteria:
+  - `sample-suite-eval` 的 `build-windows` 通过 `Build Windows Samples`
+  - `sample-suite-eval` 的 `build-windows` 继续通过 `Validate Windows Toolchain Report`
+  - `sample_suite_inputs/pass_plugins/eippf_protection_suite_pass.dll` 仍为真实 pass plugin DLL
+  - Windows sidecar 仍包含 `--pass-plugin <...eippf_protection_suite_pass.dll>`
+  - 新 run 日志不再出现 `diaguids.lib` / `DIA SDK` / `missing and no known rule to make it`
+- Constraints:
+  - 必须保持 `PassPluginCompat.cmake` 继续承担 Windows pass plugin fallback 职责
+  - 必须保持 `passes/CMakeLists.txt` 仍由 8 个 `eippf_add_pass_plugin_target(...)` 调用驱动
+  - 必须 fail-closed；不允许出现“无保护编译也算通过”
+- Forbidden Shortcuts:
+  - 禁止在 Windows 路径禁用 `--pass-plugin`
+  - 禁止把 `eippf_protection_suite_pass` 改回 `link-into-tools` / 静态内建
+  - 禁止修改 validator、报告字段、sidecar 规则、失败文案
+  - 禁止在 workflow 或 `build_windows.ps1` 里追加 `LIB` / `LIBPATH` / `VCINSTALLDIR` hack 去喂 `diaguids.lib`
+  - 禁止把 VS bundled LLVM 或其他 root 放宽为新的 allowed LLVM 来源
+  - 禁止继续保留 Windows `TARGET LLVM` / monolithic LLVM 链接路径
+  - 禁止把 `ipo`、`Instrumentation`、`IRReader`、`DebugInfo*` 组件加入 Windows pass plugin 链接面
+- Sources Of Truth:
+  - run `23996001377` 的 Windows 失败日志：`diaguids.lib` 缺失
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - `/workspace/core/passes/CMakeLists.txt`
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/passes/src/*.cpp` 的 LLVM 头依赖
+
+Main PM:
+- `main_agent`
+
+Agent Roster:
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审核推进、任务分发、独立验收、提交推送、CI 观察
+- `Agent 2 (Architect)`
+  - 负责：定义 Windows DIA / `diaguids.lib` blocker 的架构解法
+  - 当前计划作者：`019d5c3a-5fbf-7620-9de1-937025c77cbc`
+- `Agent 3 (Architecture Reviewer)`
+  - 负责：审查架构边界、组件 allowlist、第二阶风险
+  - 指派 reviewer：`019d590c-9a7b-7162-bdd7-b8ba534f5426`
+- `Agent 4 (Engineer Reviewer)`
+  - 负责：审查计划是否足够机械化，可直接下发给单写者 engineer
+  - 指派 reviewer：`019d5975-d574-7fe1-b049-753f0a8571cc`
+- `Agent 5 (Security Reviewer)`
+  - 负责：审查 fail-closed、真实 pass plugin、禁止捷径
+  - 指派 reviewer：`019d5afb-30b3-7990-a97d-905910075295`
+- `Agent 6 (Engineer / later single-writer)`
+  - 负责：仅在计划三审通过后执行两个 CMake 文件的落地
+  - 本计划阶段不持有写权限
+
+Delegation Map:
+- 本轮规划阶段使用真实 delegated reviewers。
+- 顺序固定为：
+  - Architect：输出本计划
+  - Architecture Reviewer：审查架构边界和组件清单
+  - Engineer Reviewer：审查任务是否机械化
+  - Security Reviewer：审查 fail-closed 与真实插件契约
+- 只有三位 reviewer 全部 `PASS`，才允许：
+  - 回收 reviewer
+  - 新分配单写者 engineer
+  - 进入代码落地
+
+Root Cause Candidates:
+- P0:
+  - 当前 Windows helper 允许 `TARGET LLVM` 或较宽的 `llvm_map_components_to_libnames(...)` 结果直接进入 pass plugin 链接面，把 pinned LLVM18 在 Windows 上的 DIA SDK 依赖一并带入。
+  - 证据：
+    - `PassPluginCompat.cmake` 当前仍有 `if(TARGET LLVM) target_link_libraries(${name} PRIVATE LLVM)`。
+    - 当前组件列表包含 `ipo`、`Instrumentation`、`IRReader`，但 pass 源文件并未包含对应头族。
+  - 如何证伪：
+    - 检查生成的 Windows link line 或 Ninja 依赖；若去掉 monolithic/宽组件后 `diaguids.lib` 消失且 DLL 仍能成功链接，则 P0 成立。
+- P1:
+  - 触发 DIA 依赖的不是 monolithic `LLVM` 本身，而是当前宽组件集合中的一个或多个组件把 `diaguids.lib` 传递进来。
+  - 优先怀疑：
+    - `ipo`
+    - `Instrumentation`
+    - `IRReader`
+  - 如何证伪：
+    - 把 Windows pass plugin 改成只解析固定最小组件 allowlist；若 `diaguids.lib` 消失，则 P1 成立。
+- P2:
+  - pinned LLVM18 的 Windows CMake package 即使走组件解析，也可能仍把 `diaguids.lib` 暴露为某个 resolved item。
+  - 如何证伪：
+    - 在 helper 中对 resolved Windows link items 做 denylist 检查；若 denylist 被触发，则 P2 成立并 fail-closed。
+- P3:
+  - runner 缺少某个 VS DIA SDK 路径只是表象，真实问题仍是 pass plugin 不该依赖 DIA。
+  - 如何证伪：
+    - 若缩小 LLVM 组件后完全不再请求 `diaguids.lib`，则环境不是主因。
+  - 处理优先级：
+    - 最低。
+    - 本 delta 明确禁止通过“补环境”修复它。
+
+Recommended Delta Scope:
+- Mandatory:
+  - `/workspace/core/cmake/PassPluginCompat.cmake`
+  - `/workspace/core/passes/CMakeLists.txt`
+- Unchanged:
+  - `/workspace/core/tools/sample_suite/build_windows.ps1`
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - `/workspace/core/CMakeLists.txt`
+  - 所有 pass 源码与 runtime/wrapper 代码
+
+Architecture Contract Summary:
+- Boundaries:
+  - 只修 Windows pass plugin 的 LLVM 链接面。
+  - 不碰 sample-suite 的构建脚本、validator、报告结构和路径契约。
+- Interfaces:
+  - `eippf_add_pass_plugin_target(...)` 新增显式参数：
+    - `WINDOWS_LLVM_COMPONENTS`
+  - 非 Windows 路径继续使用 `add_llvm_pass_plugin(...)`
+  - Windows 路径只允许 `llvm_map_components_to_libnames(...)`，不允许 `TARGET LLVM`
+- Invariants:
+  - `eippf_protection_suite_pass.dll` 仍是真实 DLL
+  - `PREFIX ""`、`OUTPUT_NAME "eippf_protection_suite_pass"`、输出目录契约保持不变
+  - `if(NOT EIPPF_PASS_PLUGIN)` 注册逻辑保持不变
+  - validator 输入/输出 key 集和 sidecar 检查保持不变
+- Task-Specific Coding Rules:
+  - Windows helper 禁止自动推断组件；调用点必须显式传入 `WINDOWS_LLVM_COMPONENTS`
+  - Windows helper 在链接前必须检查 resolved items；若命中 `diaguids.lib`、`DIA SDK` 或路径中含 `dia sdk`，立即 `FATAL_ERROR`
+  - Windows helper 禁止任何 `target_link_libraries(${name} PRIVATE LLVM)` 分支
+  - 调用点不允许为工程方便临时扩到 `ipo`、`Instrumentation`、`IRReader`
+
+Exact Change Contract:
+- 1. `/workspace/core/cmake/PassPluginCompat.cmake`
+  - 扩展 helper 签名：
+    - `cmake_parse_arguments(ARG "" "OUTPUT_NAME" "SOURCES;COMPILE_DEFINITIONS;WINDOWS_LLVM_COMPONENTS" ${ARGN})`
+  - Windows 路径固定改为：
+    - 若 `NOT ARG_WINDOWS_LLVM_COMPONENTS`，直接 `message(FATAL_ERROR ...)`
+    - 若 `NOT COMMAND llvm_map_components_to_libnames`，直接 `message(FATAL_ERROR ...)`
+    - 调用 `llvm_map_components_to_libnames(eippf_pass_plugin_llvm_libs ${ARG_WINDOWS_LLVM_COMPONENTS})`
+    - 对 `eippf_pass_plugin_llvm_libs` 逐项做 denylist 检查：
+      - `diaguids.lib`
+      - `DIA SDK`
+      - `dia sdk`
+    - 若命中 denylist，直接 `message(FATAL_ERROR ...)`
+    - 仅链接 `${eippf_pass_plugin_llvm_libs}`
+  - Windows 路径必须删除：
+    - `if(TARGET LLVM)` 主链接路径
+    - `target_link_libraries(${name} PRIVATE LLVM)`
+  - 保留：
+    - `add_library(${name} SHARED ...)`
+    - `PREFIX ""`
+    - `WINDOWS_EXPORT_ALL_SYMBOLS ON`
+    - target-type fail-closed
+    - 输出目录同步
+    - 公共 include / compile definitions / compile options
+- 2. `/workspace/core/passes/CMakeLists.txt`
+  - 8 个 helper 调用全部显式追加同一组 Windows 组件：
+    - `WINDOWS_LLVM_COMPONENTS`
+    - `Core`
+    - `Support`
+    - `Passes`
+    - `Analysis`
+    - `TransformUtils`
+    - `TargetParser`
+  - 不允许改动：
+    - 8 个 target 名
+    - 各自 `SOURCES`
+    - 各自 `COMPILE_DEFINITIONS`
+    - suite 的 `OUTPUT_NAME`
+    - `APPLE` 的 `LLVM_NO_DEAD_STRIP` 包裹逻辑
+    - `if(NOT EIPPF_PASS_PLUGIN)` 注册逻辑
+
+Mechanical Implementation Sequence:
+- 1. 只打开 `/workspace/core/cmake/PassPluginCompat.cmake` 和 `/workspace/core/passes/CMakeLists.txt`
+- 2. 先在 helper 签名里加入 `WINDOWS_LLVM_COMPONENTS`
+- 3. 直接删除 Windows `TARGET LLVM` / `PRIVATE LLVM` 路径
+- 4. 在 Windows 分支中加入“必须有 `ARG_WINDOWS_LLVM_COMPONENTS`”和“必须有 `llvm_map_components_to_libnames`”两个硬 gate
+- 5. 把 Windows 解析后的 link items 加 denylist gate，命中 `diaguids.lib` / `DIA SDK` 立刻失败
+- 6. 在 `passes/CMakeLists.txt` 的 8 个 helper 调用后追加同一组固定 `WINDOWS_LLVM_COMPONENTS`
+- 7. 不改任何 `.ps1`、`.yml`、`.cpp`、`.hpp`
+- 8. 若本 delta 后出现的是“缺少某个 LLVM 符号”而不是 `diaguids.lib`，本 delta 视为已成功关闭 DIA blocker，但整体 Windows 仍未完成；下一 delta 只允许围绕组件清单重规划
+
+Parallel Tracks:
+- Phase 0 / Plan Freeze
+  - Owner: `Agent 1 (PM)` + `Agent 2 (Architect)`
+  - Dependencies:
+    - 当前 Windows 日志
+    - 当前 `PassPluginCompat.cmake`
+  - Outputs:
+    - 本计划文件
+- Phase 0R / Plan Review
+  - Owners:
+    - `Agent 3 (Architecture Reviewer)`
+    - `Agent 4 (Engineer Reviewer)`
+    - `Agent 5 (Security Reviewer)`
+  - Dependencies:
+    - 本计划文件
+  - Outputs:
+    - `PASS` / `BLOCK`
+- Phase 1 / Single-Writer CMake Delta
+  - Owner: `Agent 6 (Engineer)` in later execution
+  - Dependencies:
+    - 本计划三审通过
+  - Outputs:
+    - Windows pass plugin 链接面去 monolithic 化
+    - 显式组件 allowlist
+    - DIA denylist gate
+- Phase 2 / PM Validation
+  - Owner: `Agent 1 (PM)` in later execution
+  - Dependencies:
+    - 代码变更完成
+  - Outputs:
+    - 静态 gate
+    - Linux configure/build gate
+    - CI 观察结论
+- Phase 3 / Review
+  - Owners:
+    - `Agent 3 (Architecture Reviewer)`
+    - `Agent 4 (Engineer Reviewer)`
+    - `Agent 5 (Security Reviewer)`
+  - Dependencies:
+    - PM 验收结果
+  - Outputs:
+    - 是否保持真实 pass plugin 与 fail-closed
+
+File Ownership:
+- `/workspace/core/cmake/PassPluginCompat.cmake` -> `Agent 6 (Engineer)` after approval
+- `/workspace/core/passes/CMakeLists.txt` -> `Agent 6 (Engineer)` after approval
+- `/workspace/plan/2026-04-05-sample-suite-ci-delta-2-5k-plan.txt` -> `Agent 1 (PM)` + `Agent 2 (Architect)`
+
+Dependencies:
+- pinned Windows LLVM18 CMake package
+- `llvm_map_components_to_libnames`
+- `build_windows.ps1` 现有 `CMAKE_LIBRARY_OUTPUT_DIRECTORY` / `EIPPF_EXPECTED_PLUGIN_PATH` 契约
+- `sample-suite-eval` 现有 Windows validator
+
+Regression Perimeter:
+Root Cause:
+- Windows pass plugin 的 LLVM 链接面过宽，把不需要的 DIA 依赖带入了 DLL 链接阶段。
+Changed Path:
+- `PassPluginCompat.cmake` 的 Windows 链接分支
+- `passes/CMakeLists.txt` 的 8 个 helper 调用参数
+Adjacent Paths:
+- Windows `eippf_protection_suite_pass.dll` 生成
+- `sample_suite_inputs/pass_plugins` 输出路径
+- Windows sidecar 的 `--pass-plugin` 记录
+- 非 Windows `add_llvm_pass_plugin(...)` 路径
+Unchanged Guarantees:
+- validator 文案、key 集、严格性不变
+- `build_windows.ps1` 不变
+- pass 源码不变
+- 输出 DLL 名与插件路径不变
+- `wrapper` 行为不变
+Second-Order Risks:
+- 组件清单收得过窄，可能引出新的 unresolved LLVM symbols
+- denylist gate 写得过宽，可能误杀正常 Windows 路径
+- 非 Windows 路径若被误动，可能回归 `add_llvm_pass_plugin` 行为
+Regression Matrix:
+- 静态：
+  - 只改两个文件
+  - Windows 路径不再出现 `PRIVATE LLVM`
+  - 8 个 helper 调用都显式带 `WINDOWS_LLVM_COMPONENTS`
+  - helper 存在 `diaguids.lib` / `DIA SDK` denylist gate
+- 本地：
+  - Linux `cmake configure` 通过
+  - Linux `cmake --build ... --target eippf_protection_suite_pass` 通过
+- CI：
+  - `Build Windows Samples` 通过
+  - `Validate Windows Toolchain Report` 通过
+  - 日志不再含 `diaguids.lib`
+
+Unchanged Guarantees:
+- `sample-suite-eval` 的 Windows validator 不变
+- `build_windows.ps1` 的 pinned LLVM provenance 契约不变
+- `plugin_path` 仍以 `eippf_protection_suite_pass.dll` 结尾
+- `windows.plugin_build.txt` sidecar 仍由 CMake configure/build 生成
+
+Second-Order Risks:
+- 如果 pinned LLVM18 的某个被允许组件仍然隐式依赖 DIA，本 delta 会被 denylist gate 拦下并进入下一 delta
+- 如果固定组件集合少了一项，可能从 “missing `diaguids.lib`” 变成 “missing LLVM symbol/library”
+- 如果 `llvm_map_components_to_libnames` 在 Windows package 不可用，必须 fail-closed，不得回退到 `LLVM`
+
+Model Routing:
+- PM -> `main_agent / GPT-5 Codex` -> 负责冻结范围、验收和调度
+- Architect -> `Noether the 5th` -> 负责链接契约与边界
+- Architecture Reviewer -> `Confucius the 4th` -> 负责检查架构边界与第二阶风险
+- Engineer Reviewer -> `Euler the 4th` -> 负责检查任务是否机械化
+- Security Reviewer -> `Socrates the 4th` -> 负责检查 fail-closed 与真实插件契约
+- Engineer -> `later single-writer worker` -> 负责实现，不参与最终批准
+
+Context Packages:
+- Engineer 可依赖：
+  - 当前两个 CMake 文件
+  - 本计划里的固定 `WINDOWS_LLVM_COMPONENTS` 清单
+  - 当前 Windows build/validator 契约
+- Engineer 不可依赖：
+  - 自己猜测新的 LLVM 组件
+  - 自己改 workflow/build script
+  - 自己放宽 validator
+- Reviewer 必须检查：
+  - 是否删除了 Windows `TARGET LLVM`
+  - 是否新增了 DIA denylist gate
+  - 是否保持 validator 不变
+
+Quality Gates:
+- Plan Gate:
+  - 必须明确 root cause 候选优先级
+  - 必须把 scope 收敛到两个文件
+  - 必须明确禁止“补 `diaguids.lib` 环境”
+- Static Gates:
+  - `git diff --name-only`
+    - 只能包含：
+      - `core/cmake/PassPluginCompat.cmake`
+      - `core/passes/CMakeLists.txt`
+  - `git diff --check`
+    - 必须为空
+  - `rg -n 'target_link_libraries\\(\\$\\{name\\} PRIVATE LLVM\\)' /workspace/core/cmake/PassPluginCompat.cmake`
+    - 必须 `0` 命中
+  - `rg -n 'WINDOWS_LLVM_COMPONENTS' /workspace/core/passes/CMakeLists.txt`
+    - 必须 `= 8` 命中
+  - `rg -n 'llvm_map_components_to_libnames\\(' /workspace/core/cmake/PassPluginCompat.cmake`
+    - 必须 `= 1` 命中
+  - `rg -n 'diaguids\\.lib|DIA SDK|dia sdk' /workspace/core/cmake/PassPluginCompat.cmake`
+    - 必须 `>= 1` 命中
+  - `rg -n 'ipo|Instrumentation|IRReader' /workspace/core/passes/CMakeLists.txt`
+    - 在 `WINDOWS_LLVM_COMPONENTS` 区域内必须 `0` 命中
+- Local Build Gates:
+  - `cmake -S /workspace/core -B /tmp/eippf_delta25k_probe -G Ninja -DLLVM_DIR=/usr/lib/llvm-14/lib/cmake/llvm -DEIPPF_BUILD_TESTS=OFF -DEIPPF_BUILD_POST_LINK_MUTATOR=OFF -DEIPPF_BUILD_DEX_TOOLCHAIN=OFF -DEIPPF_BUILD_SCRIPT_GUARD=OFF -DEIPPF_BUILD_IP_WEAVER=OFF -DEIPPF_BUILD_IP_WEAVER_IR=OFF -DEIPPF_BUILD_TOOLING=OFF`
+    - 必须通过
+  - `cmake --build /tmp/eippf_delta25k_probe --target eippf_protection_suite_pass -j 4`
+    - 必须通过
+  - configure / build 输出不得出现：
+    - `diaguids.lib`
+    - `DIA SDK`
+    - `non-compilable target type`
+- CI Gates:
+  - `sample-suite-eval` 的 `build-windows` 必须通过 `Build Windows Samples`
+  - `sample-suite-eval` 的 `build-windows` 必须继续通过 `Validate Windows Toolchain Report`
+  - CI 日志不得出现：
+    - `diaguids.lib`
+    - `DIA SDK`
+    - `missing and no known rule to make it`
+  - sidecar / 报告仍必须证明：
+    - `plugin_path` 以 `eippf_protection_suite_pass.dll` 结尾
+    - `windows.plugin_build.txt` 存在
+    - wrapper 编译命令仍含 `--pass-plugin <...eippf_protection_suite_pass.dll>`
+
+Assurance Scorecard:
+- architecture completeness:
+  - `PASS`
+- evidence coverage:
+  - `PASS`
+- blast radius coverage:
+  - `PASS`
+- review independence:
+  - `PASS`
+- context integrity:
+  - `PASS`
+- delegation integrity:
+  - `PASS`
+- gate result:
+  - `PASS`
+
+Open Risks:
+- 风险：
+  - 固定组件集合可能少一项。
+  - Owner:
+    - `Agent 1 / Agent 2`
+  - Mitigation:
+    - 若 Windows 新失败变成 unresolved LLVM symbols，则下一 delta 只允许围绕组件 allowlist 重规划。
+- 风险：
+  - 某个被允许组件仍隐式拉入 DIA 依赖。
+  - Owner:
+    - `Agent 1 / Agent 3`
+  - Mitigation:
+    - helper denylist gate 直接 fail-closed，并保留 CI 日志证据。
+- 风险：
+  - 工程侧试图通过 workflow 或环境修补“快速过关”。
+  - Owner:
+    - `Agent 1 / Agent 3`
+  - Mitigation:
+    - 静态 gate 限制 diff 文件范围；review 专查 forbidden shortcuts。
+
+State Snapshot:
+- 当前 `delta-2.5j` 已关闭 Windows `non-compilable target type` blocker。
+- 新 blocker 已切换为 Windows pass plugin 链接阶段的 `diaguids.lib` 缺失。
+- 当前证据更支持“链接面过宽”而不是“validator 或输出目录错误”。
+- Delta-2.5k 的唯一目标是让 Windows pass plugin 不再请求 DIA SDK，同时保持真实 DLL 与 validator 契约不变。
