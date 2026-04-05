@@ -922,6 +922,44 @@ jobs:
               if "--" in tokens:
                   return tokens[tokens.index("--") + 1 :]
               return tokens
+          def extract_flag_value_paths(command_text: str, flag: str) -> list[Path]:
+              tokens = command_payload_tokens(command_text)
+              results: list[Path] = []
+              index = 0
+              while index < len(tokens):
+                  token = tokens[index]
+                  if token == flag:
+                      if index + 1 < len(tokens):
+                          results.append(Path(tokens[index + 1]))
+                          index += 2
+                          continue
+                      index += 1
+                      continue
+                  if token.startswith(f"{flag}="):
+                      results.append(Path(token[len(flag) + 1 :]))
+                  index += 1
+              return results
+          def assert_flag_path_matches_expected(
+              command_text: str,
+              command_key: str,
+              flag: str,
+              expected_path: Path,
+              fail_msg: str,
+          ) -> None:
+              candidates = extract_flag_value_paths(command_text, flag)
+              if len(candidates) != 1:
+                  raise SystemExit(fail_msg)
+              candidate = candidates[0]
+              if not candidate.is_absolute():
+                  raise SystemExit(fail_msg)
+              if not candidate.exists():
+                  raise SystemExit(fail_msg)
+              try:
+                  is_same_path = candidate.samefile(expected_path)
+              except (OSError, FileNotFoundError):
+                  is_same_path = candidate.resolve(strict=False) == expected_path.resolve(strict=False)
+              if not is_same_path:
+                  raise SystemExit(fail_msg)
           def extract_cmake_define_paths(text: str, define_key: str) -> list[Path]:
               tokens = shlex.split(text, posix=True)
               pattern = re.compile(rf"^-D{re.escape(define_key)}(?::[^=]+)?=(.+)$")
@@ -1183,8 +1221,7 @@ jobs:
               raise SystemExit("[FAIL] ios_user_helper_compile_command missing language/runtime flags")
           if "-fPIC" not in ios_helper_text:
               raise SystemExit("[FAIL] ios_user_helper_compile_command missing -fPIC")
-          if "-isysroot" not in ios_helper_text or str(Path(kv["ios_isysroot"]).resolve()) not in ios_helper_text:
-              raise SystemExit("[FAIL] ios_user_helper_compile_command missing isysroot")
+          assert_flag_path_matches_expected(ios_helper_text, "ios_user_helper_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_user_helper_compile_command missing isysroot")
           protected_compile_sidecar = Path(kv["ios_protected_compile_command"])
           assert_under(protected_compile_sidecar, commands_root, "ios_protected_compile_command")
           protected_compile_text = protected_compile_sidecar.read_text(encoding="ascii")
@@ -1202,8 +1239,7 @@ jobs:
               raise SystemExit("[FAIL] ios_protected_compile_command missing source path")
           if "-target arm64-apple-ios17.0-simulator" not in protected_compile_text:
               raise SystemExit("[FAIL] ios_protected_compile_command missing target")
-          if "-isysroot" not in protected_compile_text or str(ios_sdk) not in protected_compile_text:
-              raise SystemExit("[FAIL] ios_protected_compile_command missing isysroot")
+          assert_flag_path_matches_expected(protected_compile_text, "ios_protected_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_protected_compile_command missing isysroot")
           if str(Path(kv["ios_user_helper_o"]).resolve()) in protected_compile_text:
               raise SystemExit("[FAIL] ios_protected_compile_command must not include helper object")
           if "-shared" in protected_compile_text:
@@ -1254,8 +1290,7 @@ jobs:
               raise SystemExit("[FAIL] ios_link_command missing helper input")
           if "-target arm64-apple-ios17.0-simulator" not in command_text:
               raise SystemExit("[FAIL] ios_link_command missing target")
-          if "-isysroot" not in command_text or str(ios_sdk) not in command_text:
-              raise SystemExit("[FAIL] ios_link_command missing isysroot")
+          assert_flag_path_matches_expected(command_text, "ios_link_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_link_command missing isysroot")
           if str(ios_source) in command_text:
               raise SystemExit("[FAIL] ios_link_command must not include source path")
           if str(wrapper_path) in command_text:

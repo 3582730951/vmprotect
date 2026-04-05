@@ -1,0 +1,179 @@
+# 2026-04-04 sample-suite CI Delta-2.5g 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5g 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只处理当前 macOS validator 的 `-isysroot` path-identity 误判 blocker。
+- 替代范围仅限：
+  - `.github/workflows/sample-suite-eval.yml`
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- Delta-2.5f 后，macOS job 已不再失败于 `plugin_build_command missing host compiler path`
+- 新 blocker 固定为：
+  - GitHub Actions `sample-suite-eval`
+  - macOS `Validate macOS iOS Toolchain Report`
+  - 失败信号：`[FAIL] ios_user_helper_compile_command missing isysroot`
+
+## Task Charter
+- Objective：
+  - 让 macOS validator 对 `ios_user_helper_compile_command` / `ios_protected_compile_command` / `ios_link_command` 的 `-isysroot` 做路径同一性判断，而不是 `resolve()` 后的脆弱字符串包含判断
+- Scope：
+  - `.github/workflows/sample-suite-eval.yml`
+- Non-Goals：
+  - 不改 `build_macos_ios.sh`
+  - 不改 Linux / Windows / Android validator
+  - 不改 `plugin_build_log` / `plugin_link_command` / `plugin_build_command` 已收口的 gate
+- Forbidden Shortcuts：
+  - 禁止把校验降级为 basename 或普通子串匹配
+  - 禁止接受非绝对路径或不存在路径
+  - 禁止新增 pass-open 或兼容分支
+
+## Root Cause Judgment
+- 根因固定为：
+  - macOS validator 当前对三处 `-isysroot` 使用：
+    - `"-isysroot" in text`
+    - `str(Path(...).resolve()) in text`
+  - `build_macos_ios.sh` 写入 sidecar 时保留的是原始 `IOS_SDK` 文本
+  - macOS runner 上 `xcrun` SDK 路径常见 symlink / canonical 差异
+  - 两者可能指向同一路径目标，但字符串不同，造成假失败
+- 唯一推荐修复路径固定为：
+  - 只修改 `.github/workflows/sample-suite-eval.yml`
+  - 在 macOS validator 中解析 `-isysroot` flag 值
+  - 用路径同一性比较代替 `resolve()` 后的字符串包含
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 单文件 workflow 修复
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 validator 是否保持 fail-closed，且未放宽 Delta-2.5f / Delta-2.5e / Delta-2.5b 契约
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / macOS isysroot Path Identity Sync
+- Owner：`Agent 2`
+- File：
+  - `.github/workflows/sample-suite-eval.yml`
+- Exact Change：
+  1. 只允许修改 macOS `Validate macOS iOS Toolchain Report` 这个 job 内嵌 Python 段；不得改同一 YAML 中 Linux / Windows / Android validator 段。
+  2. 在 `command_payload_tokens` 之后新增：
+     - `extract_flag_value_paths(command_text: str, flag: str) -> list[Path]`
+     - `assert_flag_path_matches_expected(command_text: str, command_key: str, flag: str, expected_path: Path, fail_msg: str) -> None`
+  3. `extract_flag_value_paths(...)` 固定规则：
+     - 先 `tokens = command_payload_tokens(command_text)`
+     - 只提取：
+       - `-isysroot <path>`
+       - `-isysroot=<path>`
+     - 不接受其它拼写
+     - 匹配值直接转成 `Path`
+  4. `assert_flag_path_matches_expected(...)` 的机械规则固定为：
+     - 候选数量必须恰好为 1，否则 `raise SystemExit(fail_msg)`
+     - 候选必须是绝对路径，否则 `raise SystemExit(fail_msg)`
+     - 候选必须存在，否则 `raise SystemExit(fail_msg)`
+     - 先尝试 `candidate.samefile(expected_path)` 做同一性比较
+     - 仅当 `samefile` 抛出 `OSError` 或 `FileNotFoundError` 时，才 fallback 到 `candidate.resolve(strict=False) == expected_path.resolve(strict=False)`
+     - 若仍不相等，`raise SystemExit(fail_msg)`
+  5. 用三次函数调用替换当前三条旧逻辑：
+     - `ios_user_helper_compile_command`
+       - 失败文案保持：`[FAIL] ios_user_helper_compile_command missing isysroot`
+     - `ios_protected_compile_command`
+       - 失败文案保持：`[FAIL] ios_protected_compile_command missing isysroot`
+     - `ios_link_command`
+       - 失败文案保持：`[FAIL] ios_link_command missing isysroot`
+  6. 保持现有：
+     - `if Path(kv["ios_isysroot"]).resolve() != ios_sdk: raise ...`
+     - `has_forbidden_linker_controls(...)`
+     - key-set gate
+     - explicit input order gate
+  7. 不改其它平台 validator
+  8. 不改 `build_macos_ios.sh`
+- Forbidden：
+  - 不新增 schema 兼容分支
+  - 不删除 Delta-2.5f / Delta-2.5e 的既有 helper 和 strict gate
+  - 不把比较降级成 basename 或普通子串匹配
+  - 不触碰其它 workflow job 的验证逻辑
+
+## File Ownership
+- `.github/workflows/sample-suite-eval.yml` -> `Agent 2`
+- `plan/*delta-2-5g*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - macOS 三处 `-isysroot` 路径身份校验
+- 邻接路径：
+  - `ios_isysroot`
+  - `ios_user_helper_compile_command`
+  - `ios_protected_compile_command`
+  - `ios_link_command`
+  - `plugin_build_command`
+- 必须保持不变：
+  - Linux / Windows / Android validator
+  - `build_macos_ios.sh`
+  - Delta-2.5f 的 `plugin_build_command` path-identity gate
+  - Delta-2.5e 的 `plugin_build_log` / `plugin_link_command` strict gate
+
+## Quality Gates
+### Static Gates
+- `Agent 2` 的提交 diff 只允许出现：
+  - `.github/workflows/sample-suite-eval.yml`
+- PM 自身维护的计划/审核/执行记录不计入 `Agent 2` 实现 diff 验收边界
+- `git diff --check`
+- 必须存在脚本化边界 gate，自动验证本次 diff 的每个 hunk 完整区间都位于 macOS `Validate macOS iOS Toolchain Report` 内嵌 Python 段
+
+### Validator Gates
+- `rg -n 'if \"-isysroot\" not in ios_helper_text|if \"-isysroot\" not in protected_compile_text|if \"-isysroot\" not in command_text' .github/workflows/sample-suite-eval.yml` 必须 0 命中
+- validator 中必须存在：
+  - `extract_flag_value_paths`
+  - `assert_flag_path_matches_expected`
+- `assert_flag_path_matches_expected(..., "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ... missing isysroot")` 三处调用必须全部存在，且分别覆盖：
+  - `ios_user_helper_compile_command`
+  - `ios_protected_compile_command`
+  - `ios_link_command`
+- `except Exception` 必须 0 命中
+- validator 中必须继续保留：
+  - `assert_cmake_define_matches_expected`，且必须独立验证其保留存在
+  - `plugin_link_command leaked dead_strip`，且必须独立验证其保留存在
+  - `plugin_link_command leaked ninja progress prefix`，且必须独立验证其保留存在
+
+### Syntax Gate
+- 必须能从 workflow 中抽出该内嵌 Python 段并通过 `compile(..., "exec")`
+
+### CI Gates
+- `Validate macOS iOS Toolchain Report` 不得再因：
+  - `[FAIL] ios_user_helper_compile_command missing isysroot`
+  - `[FAIL] ios_protected_compile_command missing isysroot`
+  - `[FAIL] ios_link_command missing isysroot`
+  而失败
+- CI 复跑结果是观察项，不替代 PM 的阻塞静态验收
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否问题边界单一且单文件可修
+- `Agent 2` 审：
+  - 是否任务卡可机械执行
+  - 是否没有把推理留给实现者
+- `Agent 3` 审：
+  - 是否仍保持 fail-closed
+  - 是否未放宽 Delta-2.5f / Delta-2.5e / Delta-2.5b 契约
+  - 是否未扩展到其它平台 validator
+
+## Merge Order
+1. 批准 Delta-2.5g
+2. `Agent 2` 修改 `.github/workflows/sample-suite-eval.yml`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 macOS `Validate macOS iOS Toolchain Report` 复跑
+
+## Open Risks
+- 若 macOS validator 在 `-isysroot` 之后继续暴露其它路径同一性误判，本轮会 fail-closed 并暴露为新 blocker；届时另开新 delta，不在本计划扩 scope
+
+## State Snapshot
+- macOS build 阶段已通过
+- 当前唯一 blocker 是 macOS validator 对三处 `-isysroot` 的 path-identity 误判

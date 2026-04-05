@@ -1,0 +1,90 @@
+# 2026-04-04 sample-suite CI Delta-2.5g Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 修改范围只允许落在 macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段
+
+## 目标
+- 修掉 macOS validator 对三处 `-isysroot` 的 path-identity 假失败
+- 保留 Delta-2.5f / Delta-2.5e 的既有 strict gate
+
+## 机械步骤
+1. 保留 macOS validator 当前 `required` 列表，不增删 key。
+2. 保留现有：
+   - `if set(kv) != set(required): raise SystemExit("[FAIL] key set mismatch")`
+3. 在 `command_payload_tokens` 后新增：
+   - `extract_flag_value_paths(command_text: str, flag: str) -> list[Path]`
+   - `assert_flag_path_matches_expected(command_text: str, command_key: str, flag: str, expected_path: Path, fail_msg: str) -> None`
+4. `extract_flag_value_paths(...)` 固定实现：
+   - 先 `tokens = command_payload_tokens(command_text)`
+   - 只接受：
+     - `-isysroot <path>`
+     - `-isysroot=<path>`
+   - 不接受其它拼写
+   - 匹配值直接转成 `Path`
+5. `assert_flag_path_matches_expected(...)` 固定顺序：
+   - 候选数不等于 1 -> `raise SystemExit(fail_msg)`
+   - 不是绝对路径 -> `raise SystemExit(fail_msg)`
+   - 不存在 -> `raise SystemExit(fail_msg)`
+   - 先试 `candidate.samefile(expected_path)`
+   - 仅当抛 `OSError` 或 `FileNotFoundError` 时，再试 `candidate.resolve(strict=False) == expected_path.resolve(strict=False)`
+   - 禁止 `except Exception`
+   - 仍不相等 -> `raise SystemExit(fail_msg)`
+6. 删除当前三条旧逻辑：
+   - `if "-isysroot" not in ios_helper_text or str(Path(kv["ios_isysroot"]).resolve()) not in ios_helper_text`
+   - `if "-isysroot" not in protected_compile_text or str(ios_sdk) not in protected_compile_text`
+   - `if "-isysroot" not in command_text or str(ios_sdk) not in command_text`
+7. 用三次函数调用替换：
+   - `assert_flag_path_matches_expected(ios_helper_text, "ios_user_helper_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_user_helper_compile_command missing isysroot")`
+   - `assert_flag_path_matches_expected(protected_compile_text, "ios_protected_compile_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_protected_compile_command missing isysroot")`
+   - `assert_flag_path_matches_expected(command_text, "ios_link_command", "-isysroot", Path(kv["ios_isysroot"]), "[FAIL] ios_link_command missing isysroot")`
+8. 保留：
+   - `if Path(kv["ios_isysroot"]).resolve() != ios_sdk: raise ...`
+   - `assert_cmake_define_matches_expected(...)`
+   - `plugin_build_log` / `plugin_link_command` 既有 gate
+9. 不改 Linux / Windows / Android validator
+10. 不改 `build_macos_ios.sh`
+
+## 禁止项
+- 禁止触碰 Linux / Windows / Android validator
+- 禁止新增宽松兼容分支
+- 禁止把路径比较降级为 basename 或普通子串匹配
+- 禁止接受非绝对路径或不存在路径
+- 禁止动 `build_macos_ios.sh`
+- 禁止删除 Delta-2.5f / Delta-2.5e 的既有 helper 和 gate
+
+## 完成回报必须包含
+- `git diff --name-only`
+  - PASS 条件：输出只能是 `.github/workflows/sample-suite-eval.yml`
+- `python3 - <<'PY'\nfrom pathlib import Path\nimport subprocess\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = '      - name: Validate macOS iOS Toolchain Report\\n'\nstart = text.index(needle)\nrun_idx = text.index('        run: |\\n', start)\npy_start = text.index(\"          python3 - <<'PY'\\n\", run_idx) + len(\"          python3 - <<'PY'\\n\")\npy_end = text.index('\\n          PY\\n', py_start)\nbody = text[py_start:py_end]\nline_count = len(body.splitlines())\nout = subprocess.check_output(['git','-C','/workspace','diff','-U0','--','.github/workflows/sample-suite-eval.yml'], text=True)\nfor raw in out.splitlines():\n    if raw.startswith('@@ '):\n        right = raw.split(' ')[2]\n        plus = right[1:]\n        parts = plus.split(',')\n        start_line = int(parts[0])\n        count = int(parts[1]) if len(parts) > 1 else 1\n        end_line = start_line + max(count, 1) - 1\n        py_first = text[:py_start].count('\\n') + 1\n        py_last = text[:py_start].count('\\n') + line_count + 1\n        if not (start_line >= py_first and end_line <= py_last):\n            raise SystemExit('DIFF_OUT_OF_SCOPE')\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- `git diff --check`
+  - PASS 条件：输出必须为空
+- `rg -n '^\\s*except Exception\\s*:' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：必须 0 命中
+- `rg -n '^\\s*def extract_flag_value_paths\\(' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n '^\\s*def assert_flag_path_matches_expected\\(' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'assert_flag_path_matches_expected\\(ios_helper_text, \"ios_user_helper_compile_command\", \"-isysroot\", Path\\(kv\\[\"ios_isysroot\"\\]\\), \"\\[FAIL\\] ios_user_helper_compile_command missing isysroot\"\\)' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'assert_flag_path_matches_expected\\(protected_compile_text, \"ios_protected_compile_command\", \"-isysroot\", Path\\(kv\\[\"ios_isysroot\"\\]\\), \"\\[FAIL\\] ios_protected_compile_command missing isysroot\"\\)' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'assert_flag_path_matches_expected\\(command_text, \"ios_link_command\", \"-isysroot\", Path\\(kv\\[\"ios_isysroot\"\\]\\), \"\\[FAIL\\] ios_link_command missing isysroot\"\\)' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'if \"-isysroot\" not in ios_helper_text|if \"-isysroot\" not in protected_compile_text|if \"-isysroot\" not in command_text' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：必须 0 命中
+- `rg -n '^\\s*def assert_cmake_define_matches_expected\\(' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'plugin_link_command leaked dead_strip' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `rg -n 'plugin_link_command leaked ninja progress prefix' /workspace/.github/workflows/sample-suite-eval.yml`
+  - PASS 条件：命中数必须 = 1
+- `python3 - <<'PY'\nfrom pathlib import Path\ntext = Path('/workspace/.github/workflows/sample-suite-eval.yml').read_text(encoding='utf-8')\nneedle = '      - name: Validate macOS iOS Toolchain Report\\n'\nstart = text.index(needle)\nrun_idx = text.index('        run: |\\n', start)\npy_start = text.index(\"          python3 - <<'PY'\\n\", run_idx) + len(\"          python3 - <<'PY'\\n\")\npy_end = text.index('\\n          PY\\n', py_start)\nbody = text[py_start:py_end]\nlines = [ln[10:] for ln in body.splitlines()]\ncompile('\\n'.join(lines), '<macos-validator>', 'exec')\nprint('OK')\nPY`
+  - PASS 条件：输出必须恰好包含 `OK`
+- 明确列出你改的文件路径
+- 以上静态 gate 必须全部 PASS，才允许 PM 合入与推送
