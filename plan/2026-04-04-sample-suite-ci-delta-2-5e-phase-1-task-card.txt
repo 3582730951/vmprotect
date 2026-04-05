@@ -1,0 +1,49 @@
+# 2026-04-04 sample-suite CI Delta-2.5e Phase 1 任务卡
+
+## 角色
+- `Agent 2 (Engineer)`
+
+## 文件所有权
+- 只允许修改：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 修改范围只允许落在 macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段
+
+## 目标
+- 让 macOS validator 与 `build_macos_ios.sh` 当前 report schema 完全同步
+- 保留 Delta-2.5b 的 normalized / no-dead-strip 契约
+
+## 机械步骤
+1. 保留 macOS validator 当前旧完整 `required` 列表，并只新增：
+   - `plugin_build_log`
+   - `plugin_link_command`
+2. 保留现有：
+   - `if set(kv) != set(required): raise SystemExit("[FAIL] key set mismatch")`
+3. 对 `plugin_build_log` 增加独立校验，固定复用现有表达式风格：
+   - 缺失 key 时必须保持 `[FAIL] missing key: plugin_build_log`
+   - `Path(kv["plugin_build_log"]).is_absolute()`，失败文案必须是 `[FAIL] non-absolute path for plugin_build_log`
+   - `Path(kv["plugin_build_log"]).exists()`，失败文案必须是 `[FAIL] missing path for plugin_build_log`
+   - `assert_under(Path(kv["plugin_build_log"]), commands_root, "plugin_build_log")`
+4. 对 `plugin_link_command` 增加独立校验，固定放在 `plugin_build_command` 校验之后、`ios_user_helper_compile_command` 校验之前：
+   - `Path(kv["plugin_link_command"]).is_absolute()`，失败文案必须是 `[FAIL] non-absolute path for plugin_link_command`
+   - `Path(kv["plugin_link_command"]).exists()`，失败文案必须是 `[FAIL] missing path for plugin_link_command`
+   - `assert_under(Path(kv["plugin_link_command"]), commands_root, "plugin_link_command")`
+   - 读取文本后 `text.strip()` 非空，否则 `[FAIL] plugin_link_command empty`
+   - 文本必须包含 `str(Path(kv["plugin_path"]).resolve())`，否则 `[FAIL] plugin_link_command missing plugin path`
+   - 文本不得匹配正则 `r'^\[[0-9]+/[0-9]+\]\s+'`，否则 `[FAIL] plugin_link_command leaked ninja progress prefix`
+   - 文本不得包含 `-Wl,-dead_strip`，否则 `[FAIL] plugin_link_command leaked dead_strip`
+5. 不改其它平台 validator
+6. 不改 `build_macos_ios.sh`
+
+## 禁止项
+- 禁止删除 report key
+- 禁止新增宽松兼容分支
+- 禁止放宽 normalized / dead_strip 契约
+- 禁止触碰 Linux / Windows / Android validator
+- 禁止把 `plugin_link_command` 的 plugin 令牌校验降级为仅检查 `eippf_protection_suite_pass.dylib` basename
+
+## 完成回报必须包含
+- `git diff --name-only`
+- `git diff -U0 -- /workspace/.github/workflows/sample-suite-eval.yml`
+- `git diff --check`
+- `rg -n 'plugin_build_log|plugin_link_command|key set mismatch|dead_strip|ninja progress prefix|missing plugin path|non-absolute path for plugin_link_command|missing path for plugin_link_command|missing key: plugin_build_log|plugin_build_log escaped allowed root' /workspace/.github/workflows/sample-suite-eval.yml`
+- 明确列出你改的文件路径

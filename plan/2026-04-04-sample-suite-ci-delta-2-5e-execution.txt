@@ -1,0 +1,65 @@
+# 2026-04-04 sample-suite CI Delta-2.5e 执行记录
+
+## Scope
+- delta: `2.5e`
+- blocker: `macOS Validate macOS iOS Toolchain Report -> [FAIL] key set mismatch`
+- implementation file:
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+
+## Plan Approval
+- `Agent 1 (Planner / PM)`: `PASS`
+- `Agent 2 (Engineer plan reviewer)`: `PASS`
+- `Agent 3 (Security Reviewer)`: `PASS`
+
+## Assignment
+- `Agent 2 (Engineer)` 获得唯一实现文件所有权：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- 修改范围冻结为：
+  - macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段
+
+## Implementation Summary
+- 在 macOS validator 的 `required` 列表中新增：
+  - `plugin_build_log`
+  - `plugin_link_command`
+- 保留：
+  - `if set(kv) != set(required): raise SystemExit("[FAIL] key set mismatch")`
+- 新增 `plugin_build_log` 独立校验：
+  - 绝对路径
+  - 存在性
+  - `commands_root` 约束
+- 新增 `plugin_link_command` 独立校验：
+  - 绝对路径
+  - 存在性
+  - `commands_root` 约束
+  - 非空
+  - 必含 `str(Path(kv["plugin_path"]).resolve())`
+  - 禁止 `[n/m]` progress prefix
+  - 禁止 `-Wl,-dead_strip`
+- 未触碰：
+  - Linux validator
+  - Windows validator
+  - Android validator
+  - `build_macos_ios.sh`
+
+## PM Static Validation
+- `git diff --name-only`
+  - 结果：仅 `.github/workflows/sample-suite-eval.yml`
+- `git diff -U0 -- .github/workflows/sample-suite-eval.yml`
+  - 结果：仅 2 个 hunk，均位于 macOS validator 段
+- `git diff --check`
+  - 结果：通过
+- `rg -n 'plugin_build_log|plugin_link_command|key set mismatch|dead_strip|ninja progress prefix|missing plugin path|non-absolute path for plugin_link_command|missing path for plugin_link_command|missing key: plugin_build_log|plugin_build_log escaped allowed root' /workspace/.github/workflows/sample-suite-eval.yml`
+  - 结果：新增 key、strict gate、dead_strip 拒绝、progress prefix 拒绝均已命中
+
+## Implementation Review
+- `Agent 1 (Planner / PM)`: `PASS`
+  - 原因：diff 单文件；hunk 单段；契约与任务卡一致
+- `Agent 2 (Engineer reviewer)`: `PASS`
+  - 原因：`plugin_build_log` 与 `plugin_link_command` 校验完整，顺序正确；通用 missing-key 循环足以满足口径
+- `Agent 3 (Security Reviewer)`: `PASS`
+  - 原因：`fail-closed` 保持；未弱化 Delta-2.5b 的 normalized / no-dead-strip 契约；无假绿路径
+
+## Next Step
+1. 提交 delta-2.5e
+2. 推送远端
+3. 观察新的 `sample-suite-eval` GitHub Actions run

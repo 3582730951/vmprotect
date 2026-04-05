@@ -1,0 +1,49 @@
+# 2026-04-04 sample-suite CI Delta-2.5e 审批与分配
+
+## Plan Verdict
+- `Agent 1 (Planner / PM)`: `PASS`
+- `Agent 2 (Engineer plan reviewer)`: `PASS`
+- `Agent 3 (Security Reviewer)`: `PASS`
+
+## Approval Basis
+- 当前唯一 blocker 已收敛为 macOS `Validate macOS iOS Toolchain Report` 的 validator contract 漂移。
+- 计划边界已冻结为单文件、单段实现：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+  - 仅允许修改 macOS `Validate macOS iOS Toolchain Report` 的内嵌 Python 段
+- 任务卡已写死：
+  - `required = 旧完整列表 + {plugin_build_log, plugin_link_command}`
+  - 保留 `set(kv) == set(required)` 的 fail-closed 断言
+  - `plugin_link_command` 必须包含 `str(Path(kv["plugin_path"]).resolve())`
+  - 继续拒绝 `[n/m]` 前缀与 `-Wl,-dead_strip`
+  - 禁止波及 Linux / Windows / Android validator
+
+## Implementation Assignment
+- `Agent 2 (Engineer)` 负责唯一实现任务。
+- 任务卡：
+  - `/workspace/plan/2026-04-04-sample-suite-ci-delta-2-5e-phase-1-task-card.txt`
+
+## PM Constraints
+- PM 不写生产实现代码。
+- PM 只负责：
+  - reviewer 回收
+  - 工程任务下发
+  - 静态验证
+  - 实现复审
+  - 提交推送
+  - CI 观察
+
+## Acceptance Before Merge
+- `Agent 2` 的实现 diff 只允许：
+  - `/workspace/.github/workflows/sample-suite-eval.yml`
+- PM 必须完成：
+  - `git diff --name-only`
+  - `git diff -U0 -- /workspace/.github/workflows/sample-suite-eval.yml`
+  - `git diff --check`
+  - `rg -n 'plugin_build_log|plugin_link_command|key set mismatch|dead_strip|ninja progress prefix|missing plugin path|non-absolute path for plugin_link_command|missing path for plugin_link_command|missing key: plugin_build_log|plugin_build_log escaped allowed root' /workspace/.github/workflows/sample-suite-eval.yml`
+
+## Next Step
+1. 回收 plan reviewer
+2. 下发单写者实现任务
+3. PM 做静态验证
+4. 三角色实现复审
+5. 提交推送并观察 CI

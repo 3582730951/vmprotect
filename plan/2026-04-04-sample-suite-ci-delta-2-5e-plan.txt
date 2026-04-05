@@ -1,0 +1,154 @@
+# 2026-04-04 sample-suite CI Delta-2.5e 计划
+
+## Superseding Approval
+- 本文件是 Delta-2.5e 的 superseding plan 候选。
+- 一旦 `Agent 1 / Agent 2 / Agent 3` 三角色全部 `PASS`，本计划即作为已批准的 superseding delta，只处理当前 macOS validator contract 漂移 blocker。
+- 替代范围仅限：
+  - `.github/workflows/sample-suite-eval.yml`
+
+## Execution Mode
+- `real-multi-agent`
+
+## Assurance Level
+- `heavy`
+
+## Task Summary
+- Delta-2.5d 后，`Build iOS Mach-O Sample` 已通过
+- 新 blocker 仅位于：
+  - GitHub Actions `sample-suite-eval`
+  - macOS `Validate macOS iOS Toolchain Report`
+  - 失败信号：`[FAIL] key set mismatch`
+
+## Task Charter
+- Objective：
+  - 让 macOS validator 与 `build_macos_ios.sh` 当前 report schema 完全同步
+- Scope：
+  - `.github/workflows/sample-suite-eval.yml`
+- Non-Goals：
+  - 不改 `build_macos_ios.sh`
+  - 不改 Linux / Windows / Android validator
+  - 不回滚 Delta-2.5b / Delta-2.5d
+- Forbidden Shortcuts：
+  - 禁止通过删除 report key 规避
+  - 禁止新增“兼容旧 schema”的宽松分支
+  - 禁止弱化 `plugin_link_command` 的 normalized / no-dead-strip 契约
+
+## Root Cause Judgment
+- 根因固定为：
+  - macOS validator 未与 `build_macos_ios.sh` 的 report schema 同步
+  - report 已写出：
+    - `plugin_build_log`
+    - `plugin_link_command`
+  - validator 的 `required` key set 未包含这两个 key
+  - validator 也未对 `plugin_link_command` 做独立契约校验
+- 唯一推荐修复路径固定为：
+  - 只修改 `.github/workflows/sample-suite-eval.yml`
+  - 在 macOS validator 中同步 required key set
+  - 增补对 `plugin_build_log` 和 `plugin_link_command` 的严格 fail-closed 校验
+  - 保留 `set(kv) == set(required)` 的 fail-closed 断言，不得缩小原 required 集合
+
+## Agent Roster
+- `Agent 1 (Planner / PM / main_agent)`
+  - 负责：冻结范围、审批、验收、CI 观察
+- `Agent 2 (Engineer)`
+  - 负责：只实施 `Phase 1` 单文件 workflow 修复
+- `Agent 3 (Security Reviewer)`
+  - 负责：审计 validator 是否保持 fail-closed，且未放宽 Delta-2.5b 契约
+  - 本轮性能结论：`N/A`
+
+## Phase 1 / macOS Validator Contract Sync
+- Owner：`Agent 2`
+- File：
+  - `.github/workflows/sample-suite-eval.yml`
+- Exact Change：
+  1. 只允许修改 macOS `Validate macOS iOS Toolchain Report` 这个 job 内嵌 Python 段；不得改同一 YAML 中 Linux / Windows / Android validator 段。
+  2. 在 macOS `Validate macOS iOS Toolchain Report` 的 `required` key set 中保留当前旧完整列表，并只新增：
+     - `plugin_build_log`
+     - `plugin_link_command`
+  3. 必须保留 `if set(kv) != set(required): raise SystemExit(\"[FAIL] key set mismatch\")` 这条 fail-closed 断言。
+  4. 对 `plugin_build_log` 增加独立校验，固定复用现有 `Path(value).is_absolute()` 与 `assert_under(sidecar, commands_root, label)` 风格：
+     - 缺失时报 `[FAIL] missing key: plugin_build_log`
+     - 非绝对路径时报 `[FAIL] non-absolute path for plugin_build_log`
+     - 不存在时报 `[FAIL] missing path for plugin_build_log`
+     - 越过 commands 根时报 `[FAIL] plugin_build_log escaped allowed root`
+  5. 对 `plugin_link_command` 增加独立校验，固定放在 `plugin_build_command` 校验之后、`ios_user_helper_compile_command` 校验之前，且失败文案必须统一为 `[FAIL] ...`：
+     - sidecar 文件存在
+     - `Path(...).is_absolute()`
+     - `assert_under(sidecar, commands_root, "plugin_link_command")`
+     - 内容 `strip()` 后非空，否则报 `[FAIL] plugin_link_command empty`
+     - 内容必须包含 `str(Path(kv["plugin_path"]).resolve())` 这个绝对路径令牌，否则报 `[FAIL] plugin_link_command missing plugin path`
+     - 内容不得匹配正则 `r'^\[[0-9]+/[0-9]+\]\s+'`，否则报 `[FAIL] plugin_link_command leaked ninja progress prefix`
+     - 内容不得包含 `-Wl,-dead_strip`，否则报 `[FAIL] plugin_link_command leaked dead_strip`
+  6. 不改其它平台 validator
+  7. 不改 `build_macos_ios.sh`
+- Forbidden：
+  - 不新增 schema 兼容分支
+  - 不删除 Delta-2.5b 契约
+  - 不触碰其它 workflow job 的验证逻辑
+  - 不把 `plugin_link_command` 的 plugin 路径校验降级为仅检查 basename
+
+## File Ownership
+- `.github/workflows/sample-suite-eval.yml` -> `Agent 2`
+- `plan/*delta-2-5e*` -> `Agent 1`
+- 安全 / 性能审计结论 -> `Agent 3`
+
+## Regression Perimeter
+- 直接影响：
+  - macOS report key set
+  - macOS plugin sidecar 校验逻辑
+- 邻接路径：
+  - `plugin_build_log`
+  - `plugin_link_command`
+  - `plugin_build_command`
+  - `ios_protected_compile_command`
+  - `ios_link_command`
+- 必须保持不变：
+  - Linux / Windows / Android validator
+  - `build_macos_ios.sh`
+  - Delta-2.5b 的 normalized / dead_strip 契约
+
+## Quality Gates
+### Static Gates
+- `Agent 2` 的提交 diff 只允许出现：
+  - `.github/workflows/sample-suite-eval.yml`
+- PM 自身维护的计划/审核/执行记录不计入 `Agent 2` 实现 diff 验收边界
+- `git diff --check`
+- `git diff -U0 -- .github/workflows/sample-suite-eval.yml` 中修改 hunk 只允许位于 macOS `Validate macOS iOS Toolchain Report` 段
+
+### Validator Gates
+- macOS validator 的 `required` key set 必须等于“旧完整列表 + {plugin_build_log, plugin_link_command}”
+- validator 中必须存在对 `plugin_link_command` 的独立读取与内容校验逻辑
+- validator 中必须使用 `Path(kv["plugin_path"]).resolve()` 作为 `plugin_link_command` 的必含路径令牌
+- validator 中必须继续拒绝：
+  - `[n/m]` 前缀
+  - `-Wl,-dead_strip`
+
+### CI Gates
+- `Validate macOS iOS Toolchain Report` 不得再因 `key set mismatch` 失败
+- CI 复跑结果是观察项，不替代 PM 的阻塞静态验收
+
+## Reviewer Audit Notes
+- `Agent 1` 审：
+  - 是否问题边界单一且单文件可修
+- `Agent 2` 审：
+  - 是否任务卡可机械执行
+  - 是否 required key set 和 sidecar 校验完整
+- `Agent 3` 审：
+  - 是否仍保持 fail-closed
+  - 是否未放宽 Delta-2.5b 契约
+  - 是否未扩展到其它平台 validator
+
+## Merge Order
+1. 批准 Delta-2.5e
+2. `Agent 2` 修改 `.github/workflows/sample-suite-eval.yml`
+3. PM 静态核验
+4. 3 角色实现复审
+5. 提交并推送
+6. 观察 `Validate macOS iOS Toolchain Report` 复跑
+
+## Open Risks
+- required key set 同步后，若 `plugin_link_command` 内容校验不完整，可能出现“假绿”；若复现，另开新 delta，不在本计划扩 scope
+
+## State Snapshot
+- macOS build 阶段已通过
+- 当前唯一 blocker 是 macOS validator contract 漂移

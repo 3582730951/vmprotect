@@ -852,7 +852,7 @@ jobs:
               "platform", "ios_target_source", "host_compiler_path", "host_compiler_version_first_line",
               "ios_target_compiler_path", "ios_target_compiler_version_first_line",
               "ios_link_driver_path", "ios_link_driver_version_first_line", "llvm_dir",
-              "plugin_path", "ios_user_helper_o", "ios_protected_o", "plugin_build_command",
+              "plugin_path", "ios_user_helper_o", "ios_protected_o", "plugin_build_log", "plugin_build_command", "plugin_link_command",
               "ios_user_helper_compile_command", "ios_protected_compile_command",
               "ios_link_inputs", "ios_link_command",
               "ios_target", "ios_isysroot",
@@ -1125,17 +1125,46 @@ jobs:
           assert_under(Path(kv["ios_protected_o"]), output_root, "ios_protected_o")
           if Path(kv["ios_protected_o"]).name != "ios_macho.protected.o":
               raise SystemExit("[FAIL] ios_protected_o mismatch")
-          for pair in [("plugin_build_command", str((llvm_prefix / "lib" / "cmake" / "llvm").resolve())), ("ios_user_helper_compile_command", str(Path(kv["ios_user_helper_o"]).resolve()))]:
-              sidecar = Path(kv[pair[0]])
-              assert_under(sidecar, commands_root, pair[0])
-              text = sidecar.read_text(encoding="ascii")
-              if has_forbidden_linker_controls(text):
-                  raise SystemExit(f"[FAIL] sidecar is not fully expanded: {pair[0]}")
-              if str(Path(kv["host_compiler_path"]).resolve()) not in text and pair[0] == "plugin_build_command":
-                  raise SystemExit("[FAIL] plugin_build_command missing host compiler path")
-              if pair[1] not in text:
-                  raise SystemExit(f"[FAIL] sidecar missing required token: {pair[0]}")
-          ios_helper_text = Path(kv["ios_user_helper_compile_command"]).read_text(encoding="ascii")
+          plugin_build_log = Path(kv["plugin_build_log"])
+          if not plugin_build_log.is_absolute():
+              raise SystemExit("[FAIL] non-absolute path for plugin_build_log")
+          if not plugin_build_log.exists():
+              raise SystemExit("[FAIL] missing path for plugin_build_log")
+          assert_under(plugin_build_log, commands_root, "plugin_build_log")
+
+          plugin_build_sidecar = Path(kv["plugin_build_command"])
+          assert_under(plugin_build_sidecar, commands_root, "plugin_build_command")
+          plugin_build_text = plugin_build_sidecar.read_text(encoding="ascii")
+          if has_forbidden_linker_controls(plugin_build_text):
+              raise SystemExit("[FAIL] sidecar is not fully expanded: plugin_build_command")
+          if str(Path(kv["host_compiler_path"]).resolve()) not in plugin_build_text:
+              raise SystemExit("[FAIL] plugin_build_command missing host compiler path")
+          if str((llvm_prefix / "lib" / "cmake" / "llvm").resolve()) not in plugin_build_text:
+              raise SystemExit("[FAIL] sidecar missing required token: plugin_build_command")
+
+          plugin_link_sidecar = Path(kv["plugin_link_command"])
+          if not plugin_link_sidecar.is_absolute():
+              raise SystemExit("[FAIL] non-absolute path for plugin_link_command")
+          if not plugin_link_sidecar.exists():
+              raise SystemExit("[FAIL] missing path for plugin_link_command")
+          assert_under(plugin_link_sidecar, commands_root, "plugin_link_command")
+          plugin_link_text = plugin_link_sidecar.read_text(encoding="ascii")
+          if not plugin_link_text.strip():
+              raise SystemExit("[FAIL] plugin_link_command empty")
+          if str(Path(kv["plugin_path"]).resolve()) not in plugin_link_text:
+              raise SystemExit("[FAIL] plugin_link_command missing plugin path")
+          if re.search(r'^\[[0-9]+/[0-9]+\]\s+', plugin_link_text):
+              raise SystemExit("[FAIL] plugin_link_command leaked ninja progress prefix")
+          if "-Wl,-dead_strip" in plugin_link_text:
+              raise SystemExit("[FAIL] plugin_link_command leaked dead_strip")
+
+          ios_helper_sidecar = Path(kv["ios_user_helper_compile_command"])
+          assert_under(ios_helper_sidecar, commands_root, "ios_user_helper_compile_command")
+          ios_helper_text = ios_helper_sidecar.read_text(encoding="ascii")
+          if has_forbidden_linker_controls(ios_helper_text):
+              raise SystemExit("[FAIL] sidecar is not fully expanded: ios_user_helper_compile_command")
+          if str(Path(kv["ios_user_helper_o"]).resolve()) not in ios_helper_text:
+              raise SystemExit("[FAIL] sidecar missing required token: ios_user_helper_compile_command")
           if str(Path(kv["ios_target_compiler_path"]).resolve()) not in ios_helper_text:
               raise SystemExit("[FAIL] ios_user_helper_compile_command missing target compiler path")
           if str(helper_source) not in ios_helper_text or str(shared_include) not in ios_helper_text or str(runtime_include) not in ios_helper_text:
