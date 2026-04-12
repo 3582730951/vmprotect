@@ -162,7 +162,18 @@ jobs:
               raise SystemExit("[FAIL] android_target_source mismatch")
 
           for key, value in kv.items():
-              if key in {"platform", "android_target_source", "suite_summary", "linux_ko_link_flags", "android_ko_link_flags", "android_so_link_inputs", "android_ko_link_inputs"} or key.endswith("_version_first_line"):
+              if key in {
+                  "platform",
+                  "android_target_source",
+                  "suite_summary",
+                  "linux_elf_link_inputs",
+                  "linux_so_link_inputs",
+                  "linux_ko_link_inputs",
+                  "android_so_link_inputs",
+                  "android_ko_link_inputs",
+                  "linux_ko_link_flags",
+                  "android_ko_link_flags",
+              } or key.endswith("_version_first_line"):
                   continue
               if not Path(value).is_absolute():
                   raise SystemExit(f"[FAIL] non-absolute path for {key}")

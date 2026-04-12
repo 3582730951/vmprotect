@@ -6,12 +6,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
-#include <mutex>
 
 #include "runtime/analysis_marker_scan.hpp"
 #include "runtime/memory_hal.hpp"
+#include "runtime/spin_lock.hpp"
 
 #if defined(_WIN32) || defined(_WIN64)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -176,8 +175,9 @@ void secure_zero_buffer(std::array<char, N>& buffer) noexcept {
 
 enum class RuntimeInitState : std::uint8_t {
   kUninitialized = 0u,
-  kReady = 1u,
-  kPoisoned = 2u,
+  kInitializing = 1u,
+  kReady = 2u,
+  kPoisoned = 3u,
 };
 
 std::atomic<RuntimeInitState>& init_state() noexcept {
@@ -185,12 +185,79 @@ std::atomic<RuntimeInitState>& init_state() noexcept {
   return state;
 }
 
-std::once_flag& init_once_flag() noexcept {
-  static std::once_flag flag;
-  return flag;
+void ensure_runtime_initialized() noexcept;
+
+std::size_t c_string_length(const char* text) noexcept {
+  if (text == nullptr) {
+    return 0u;
+  }
+  std::size_t length = 0u;
+  while (text[length] != '\0') {
+    ++length;
+  }
+  return length;
 }
 
-void ensure_runtime_initialized() noexcept;
+#if defined(__linux__)
+#if defined(__x86_64__)
+long raw_syscall6(long number,
+                  long arg0,
+                  long arg1,
+                  long arg2,
+                  long arg3,
+                  long arg4,
+                  long arg5) noexcept {
+  long result = 0;
+  register long r10 __asm__("r10") = arg3;
+  register long r8 __asm__("r8") = arg4;
+  register long r9 __asm__("r9") = arg5;
+  __asm__ __volatile__("syscall"
+                       : "=a"(result)
+                       : "a"(number), "D"(arg0), "S"(arg1), "d"(arg2), "r"(r10), "r"(r8), "r"(r9)
+                       : "rcx", "r11", "memory");
+  return result;
+}
+#elif defined(__aarch64__)
+long raw_syscall6(long number,
+                  long arg0,
+                  long arg1,
+                  long arg2,
+                  long arg3,
+                  long arg4,
+                  long arg5) noexcept {
+  register long x8 __asm__("x8") = number;
+  register long x0 __asm__("x0") = arg0;
+  register long x1 __asm__("x1") = arg1;
+  register long x2 __asm__("x2") = arg2;
+  register long x3 __asm__("x3") = arg3;
+  register long x4 __asm__("x4") = arg4;
+  register long x5 __asm__("x5") = arg5;
+  __asm__ __volatile__("svc #0"
+                       : "+r"(x0)
+                       : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                       : "memory");
+  return x0;
+}
+#else
+long raw_syscall6(long number,
+                  long arg0,
+                  long arg1,
+                  long arg2,
+                  long arg3,
+                  long arg4,
+                  long arg5) noexcept {
+  return ::syscall(number, arg0, arg1, arg2, arg3, arg4, arg5);
+}
+#endif
+
+long raw_syscall3(long number, long arg0, long arg1, long arg2) noexcept {
+  return raw_syscall6(number, arg0, arg1, arg2, 0, 0, 0);
+}
+
+long raw_syscall4(long number, long arg0, long arg1, long arg2, long arg3) noexcept {
+  return raw_syscall6(number, arg0, arg1, arg2, arg3, 0, 0);
+}
+#endif
 
 #if defined(__linux__)
 bool read_linux_text_file(const char* path, char* dest, std::size_t capacity) noexcept {
@@ -198,13 +265,14 @@ bool read_linux_text_file(const char* path, char* dest, std::size_t capacity) no
     return false;
   }
 
-  const long fd = ::syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+  const long fd = raw_syscall4(SYS_openat, AT_FDCWD, reinterpret_cast<long>(path), O_RDONLY | O_CLOEXEC, 0);
   if (fd < 0) {
     return false;
   }
 
-  const long read_size = ::syscall(SYS_read, fd, dest, capacity - 1u);
-  (void)::syscall(SYS_close, fd);
+  const long read_size =
+      raw_syscall3(SYS_read, fd, reinterpret_cast<long>(dest), static_cast<long>(capacity - 1u));
+  (void)raw_syscall3(SYS_close, fd, 0, 0);
   if (read_size <= 0) {
     dest[0] = '\0';
     return false;
@@ -216,7 +284,7 @@ bool read_linux_text_file(const char* path, char* dest, std::size_t capacity) no
 }
 
 bool linux_tracer_pid_is_zero(const char* text) noexcept {
-  return eippf::runtime::analysis::parse_tracer_pid_zero(text, std::strlen(text));
+  return eippf::runtime::analysis::parse_tracer_pid_zero(text, c_string_length(text));
 }
 
 bool contains_suspicious_linux_module(const char* text) noexcept {
@@ -293,19 +361,35 @@ bool anti_tamper_check_passed() noexcept {
 }
 
 void ensure_runtime_initialized() noexcept {
-  std::call_once(init_once_flag(), []() noexcept {
-    if (init_state().load(std::memory_order_acquire) == RuntimeInitState::kReady) {
-      return;
-    }
+  RuntimeInitState observed = init_state().load(std::memory_order_acquire);
+  if (observed == RuntimeInitState::kReady) {
+    return;
+  }
+  if (observed == RuntimeInitState::kPoisoned) {
+    fail_closed_now();
+  }
+
+  RuntimeInitState expected = RuntimeInitState::kUninitialized;
+  if (init_state().compare_exchange_strong(expected,
+                                           RuntimeInitState::kInitializing,
+                                           std::memory_order_acq_rel,
+                                           std::memory_order_acquire)) {
     if (!anti_tamper_check_passed()) {
       init_state().store(RuntimeInitState::kPoisoned, std::memory_order_release);
       fail_closed_now();
     }
     init_state().store(RuntimeInitState::kReady, std::memory_order_release);
-  });
+    return;
+  }
 
-  if (init_state().load(std::memory_order_acquire) != RuntimeInitState::kReady) {
-    fail_closed_now();
+  for (;;) {
+    observed = init_state().load(std::memory_order_acquire);
+    if (observed == RuntimeInitState::kReady) {
+      return;
+    }
+    if (observed == RuntimeInitState::kPoisoned) {
+      fail_closed_now();
+    }
   }
 }
 
@@ -322,8 +406,8 @@ class AntiTamperInitializer final {
 
 [[maybe_unused]] const AntiTamperInitializer kAntiTamperInitializer{};
 
-std::mutex& cache_mutex() noexcept {
-  static std::mutex mutex;
+eippf::runtime::SpinLock& cache_mutex() noexcept {
+  static eippf::runtime::SpinLock mutex;
   return mutex;
 }
 
@@ -476,7 +560,6 @@ constexpr std::array<ApiCandidate, 39> kApiCandidates = {{
 #endif
 
 #if defined(__linux__)
-
 const char* basename_ptr(const char* path) noexcept {
   if (path == nullptr) {
     return nullptr;
@@ -539,21 +622,13 @@ std::size_t gnu_hash_symbol_upper_bound(const std::uint32_t* gnu_hash) noexcept 
   return max_symbol_index == 0u ? 0u : static_cast<std::size_t>(max_symbol_index) + 1u;
 }
 
-void* resolve_symbol_in_module(const dl_phdr_info& info, std::uint64_t target_hash) noexcept {
-  const std::uintptr_t module_base = static_cast<std::uintptr_t>(info.dlpi_addr);
-  const ElfW(Phdr)* dynamic_header = nullptr;
-
-  for (ElfW(Half) i = 0; i < info.dlpi_phnum; ++i) {
-    if (info.dlpi_phdr[i].p_type == PT_DYNAMIC) {
-      dynamic_header = &info.dlpi_phdr[i];
-      break;
-    }
-  }
-  if (dynamic_header == nullptr) {
+void* resolve_symbol_in_module(std::uintptr_t module_base,
+                               const ElfW(Dyn)* dynamic,
+                               std::uint64_t target_hash) noexcept {
+  if (dynamic == nullptr) {
     return nullptr;
   }
 
-  const auto* dynamic = reinterpret_cast<const ElfW(Dyn)*>(module_base + dynamic_header->p_vaddr);
   const char* strtab = nullptr;
   const ElfW(Sym)* symtab = nullptr;
   const std::uint32_t* sysv_hash = nullptr;
@@ -618,39 +693,45 @@ void* resolve_symbol_in_module(const dl_phdr_info& info, std::uint64_t target_ha
   return nullptr;
 }
 
-struct LinuxLookupContext {
-  std::uint64_t module_hash = 0u;
-  std::uint64_t symbol_hash = 0u;
-  void* result = nullptr;
-};
-
-int linux_lookup_callback(dl_phdr_info* info, std::size_t, void* userdata) noexcept {
-  auto* ctx = static_cast<LinuxLookupContext*>(userdata);
-  if (ctx == nullptr || info == nullptr || ctx->result != nullptr) {
-    return 1;
+const r_debug* runtime_debug_state() noexcept {
+  for (const ElfW(Dyn)* entry = _DYNAMIC; entry != nullptr && entry->d_tag != DT_NULL; ++entry) {
+    if (entry->d_tag == DT_DEBUG && entry->d_un.d_ptr != 0u) {
+      return reinterpret_cast<const r_debug*>(entry->d_un.d_ptr);
+    }
   }
-
-  const char* module_path = info->dlpi_name;
-  if (module_path == nullptr || module_path[0] == '\0') {
-    return 0;
-  }
-
-  const char* module_name = basename_ptr(module_path);
-  if (module_name == nullptr || fnv1a_hash_cstr(module_name) != ctx->module_hash) {
-    return 0;
-  }
-
-  ctx->result = resolve_symbol_in_module(*info, ctx->symbol_hash);
-  return ctx->result != nullptr ? 1 : 0;
+  return nullptr;
 }
 
 void* resolve_symbol_linux(const char* module_name, std::uint64_t symbol_hash) noexcept {
-  LinuxLookupContext context{};
-  context.module_hash = fnv1a_hash_cstr(module_name);
-  context.symbol_hash = symbol_hash;
+  if (module_name == nullptr || *module_name == '\0') {
+    return nullptr;
+  }
 
-  ::dl_iterate_phdr(linux_lookup_callback, &context);
-  return context.result;
+  const r_debug* debug = runtime_debug_state();
+  if (debug == nullptr) {
+    return nullptr;
+  }
+
+  const std::uint64_t module_hash = fnv1a_hash_cstr(module_name);
+  for (const link_map* cursor = debug->r_map; cursor != nullptr; cursor = cursor->l_next) {
+    const char* module_path = cursor->l_name;
+    if (module_path == nullptr || module_path[0] == '\0') {
+      continue;
+    }
+
+    const char* basename = basename_ptr(module_path);
+    if (basename == nullptr || fnv1a_hash_cstr(basename) != module_hash) {
+      continue;
+    }
+
+    void* symbol = resolve_symbol_in_module(static_cast<std::uintptr_t>(cursor->l_addr),
+                                            cursor->l_ld,
+                                            symbol_hash);
+    if (symbol != nullptr) {
+      return symbol;
+    }
+  }
+  return nullptr;
 }
 
 #endif
@@ -712,7 +793,7 @@ void* resolve_api_mvp(std::uint64_t hash) noexcept {
 }
 
 void* lookup_or_resolve(std::uint64_t hash) noexcept {
-  std::lock_guard<std::mutex> lock(cache_mutex());
+  eippf::runtime::SpinLockGuard lock(cache_mutex());
   if (void* cached = lookup_cached_symbol(hash); cached != nullptr) {
     return cached;
   }

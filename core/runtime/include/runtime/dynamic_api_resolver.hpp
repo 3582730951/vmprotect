@@ -1,14 +1,15 @@
 #pragma once
 
+#include <atomic>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <mutex>
 #include <optional>
 #include <utility>
 
 #include "runtime/constexpr_obfuscated_string.hpp"
 #include "runtime/os_hal_standard.hpp"
+#include "runtime/spin_lock.hpp"
 
 namespace eippf::runtime {
 
@@ -39,7 +40,7 @@ class DynamicAPIResolver final {
     const std::uint64_t symbol_hash = fnv1a_hash(decoded_symbol.c_str());
     const std::uint64_t symbol_key = combine_hashes(module_hash, symbol_hash);
 
-    std::lock_guard<std::mutex> lock(mutex_);
+    SpinLockGuard lock(mutex_);
     if (void* cached = lookup_symbol_locked(symbol_key); cached != nullptr) {
       decoded_module.wipe();
       decoded_symbol.wipe();
@@ -62,7 +63,7 @@ class DynamicAPIResolver final {
   }
 
   void wipe() noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
+    SpinLockGuard lock(mutex_);
 
     for (ModuleCacheEntry& module : modules_) {
       if (module.occupied) {
@@ -80,7 +81,7 @@ class DynamicAPIResolver final {
   }
 
   [[nodiscard]] std::size_t cached_symbol_count_for_testing() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
+    SpinLockGuard lock(mutex_);
     std::size_t used = 0u;
     for (const SymbolCacheEntry& symbol : symbols_) {
       used += symbol.occupied ? 1u : 0u;
@@ -206,7 +207,7 @@ class DynamicAPIResolver final {
     return &entry.loader;
   }
 
-  mutable std::mutex mutex_{};
+  mutable SpinLock mutex_{};
   std::array<SymbolCacheEntry, kMaxSymbolCache> symbols_{};
   std::array<ModuleCacheEntry, kMaxModuleCache> modules_{};
 };
