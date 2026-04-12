@@ -27,6 +27,10 @@ if(TARGET eippf_dex_toolchain)
       EIPPF_DEX_LOADER_PATH="${EIPPF_DEX_LOADER_TEST_BIN}"
       EIPPF_ARTIFACT_AUDIT_PATH="${CMAKE_SOURCE_DIR}/tools/artifact_audit.py"
     )
+    add_dependencies(${_dex_test} eippf_dex_toolchain)
+    if(TARGET eippf_dex_loader)
+      add_dependencies(${_dex_test} eippf_dex_loader)
+    endif()
 
     if(COMMAND eippf_apply_common_compile_options)
       eippf_apply_common_compile_options(${_dex_test})

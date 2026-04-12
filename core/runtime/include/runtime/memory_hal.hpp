@@ -14,6 +14,9 @@
 #endif
 #include <windows.h>
 #else
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64))
 #include <pthread.h>
 #if defined(__has_include)
@@ -186,7 +189,8 @@ struct MemoryHAL final {
                                    region.base,
                                    static_cast<SIZE_T>(region.size)) != FALSE;
 #elif defined(__linux__) || defined(__APPLE__)
-#if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64))
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64)) && \
+    (!defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE)
     (void)resolver;
     pthread_jit_write_protect_np(1);
 #if defined(EIPPF_HAS_SYS_ICACHE_INVALIDATE)
@@ -255,7 +259,8 @@ struct MemoryHAL final {
                            PAGE_READWRITE,
                            &old_protect) != FALSE;
 #elif defined(__linux__) || defined(__APPLE__)
-#if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64))
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64)) && \
+    (!defined(TARGET_OS_IPHONE) || !TARGET_OS_IPHONE)
     (void)resolver;
     pthread_jit_write_protect_np(0);
     return true;
