@@ -23,6 +23,7 @@
 #include <sys/types.h>
 #endif
 
+#include "runtime/analysis_marker_scan.hpp"
 #include "runtime/constexpr_obfuscated_string.hpp"
 #include "runtime/android_so_policy.hpp"
 #include "runtime/dynamic_api_resolver.hpp"
@@ -60,45 +61,41 @@ class EnvironmentAttestation final {
   }
 
   [[nodiscard]] static bool parse_tracer_pid_status(const char* text, std::size_t size) noexcept {
+    return analysis::parse_tracer_pid_zero(text, size);
+  }
+
+  [[nodiscard]] static bool contains_suspicious_module_token(const char* text) noexcept {
+    return analysis::contains_suspicious_marker(text);
+  }
+
+  [[nodiscard]] static bool proc_maps_contains_suspicious_module(const char* text,
+                                                                 std::size_t size) noexcept {
     if (text == nullptr || size == 0u) {
       return false;
     }
 
-    constexpr char kTracerPid[] = "TracerPid:";
-    constexpr std::size_t kTokenSize = sizeof(kTracerPid) - 1u;
-    if (size < kTokenSize) {
-      return false;
-    }
-
-    for (std::size_t i = 0; i + kTokenSize <= size; ++i) {
-      bool match = true;
-      for (std::size_t j = 0; j < kTokenSize; ++j) {
-        if (text[i + j] != kTracerPid[j]) {
-          match = false;
-          break;
+    std::array<char, 512u> line{};
+    std::size_t line_size = 0u;
+    for (std::size_t i = 0; i < size; ++i) {
+      const char ch = text[i];
+      if (ch == '\n' || line_size + 1u >= line.size()) {
+        line[line_size] = '\0';
+        if (contains_suspicious_module_token(line.data())) {
+          return true;
         }
-      }
-      if (!match) {
+        line_size = 0u;
+        if (ch != '\n' && ch != '\0') {
+          line[line_size++] = ch;
+        }
         continue;
       }
-
-      std::size_t cursor = i + kTokenSize;
-      while (cursor < size && (text[cursor] == ' ' || text[cursor] == '\t')) {
-        ++cursor;
+      if (ch == '\0') {
+        break;
       }
-
-      std::uint32_t tracer_pid = 0u;
-      bool has_digit = false;
-      while (cursor < size && text[cursor] >= '0' && text[cursor] <= '9') {
-        has_digit = true;
-        tracer_pid = static_cast<std::uint32_t>((tracer_pid * 10u) +
-                                                static_cast<std::uint32_t>(text[cursor] - '0'));
-        ++cursor;
-      }
-      return has_digit && tracer_pid == 0u;
+      line[line_size++] = ch;
     }
-
-    return false;
+    line[line_size] = '\0';
+    return contains_suspicious_module_token(line.data());
   }
 
   [[nodiscard]] static AndroidSoPolicyResult evaluate_android_so_baseline(
@@ -159,6 +156,8 @@ class EnvironmentAttestation final {
     constexpr auto kClose = security::make_obfuscated_string<0x54u>("close");
     constexpr auto kProcSelfStatus =
         security::make_obfuscated_string<0x55u>("/proc/self/status");
+    constexpr auto kProcSelfMaps =
+        security::make_obfuscated_string<0x56u>("/proc/self/maps");
 
     using OpenFn = int (*)(const char*, int, ...);
     using ReadFn = long (*)(int, void*, std::size_t);
@@ -187,8 +186,29 @@ class EnvironmentAttestation final {
 
     const std::size_t text_size = static_cast<std::size_t>(read_size);
     status_buffer[text_size] = '\0';
-    return parse_tracer_pid_status(status_buffer.data(), text_size) ? Verdict::kTrusted
-                                                                     : Verdict::kMitigated;
+    if (!parse_tracer_pid_status(status_buffer.data(), text_size)) {
+      return Verdict::kMitigated;
+    }
+
+    auto proc_maps_path = kProcSelfMaps.decrypt();
+    const int maps_fd = open_fn(proc_maps_path.c_str(), O_RDONLY, 0);
+    proc_maps_path.wipe();
+    if (maps_fd < 0) {
+      return Verdict::kMitigated;
+    }
+
+    std::array<char, 8192u> maps_buffer{};
+    const long maps_read_size = read_fn(maps_fd, maps_buffer.data(), maps_buffer.size() - 1u);
+    (void)close_fn(maps_fd);
+    if (maps_read_size <= 0) {
+      return Verdict::kMitigated;
+    }
+
+    const std::size_t maps_size = static_cast<std::size_t>(maps_read_size);
+    maps_buffer[maps_size] = '\0';
+    return proc_maps_contains_suspicious_module(maps_buffer.data(), maps_size)
+               ? Verdict::kMitigated
+               : Verdict::kTrusted;
 #elif defined(__APPLE__) && defined(__MACH__)
     constexpr auto kLibSystem = security::make_obfuscated_string<0x61u>("libSystem.B.dylib");
     constexpr auto kPtrace = security::make_obfuscated_string<0x62u>("ptrace");

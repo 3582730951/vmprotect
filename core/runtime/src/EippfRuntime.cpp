@@ -6,9 +6,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <mutex>
 
+#include "runtime/analysis_marker_scan.hpp"
 #include "runtime/memory_hal.hpp"
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -23,6 +25,10 @@
 #include "bootstrap/os_hal_windows.hpp"
 #else
 #include <cerrno>
+#if defined(__linux__)
+#include <fcntl.h>
+#include <sys/syscall.h>
+#endif
 #if defined(__linux__) || (defined(__APPLE__) && defined(__MACH__))
 #include <sys/mman.h>
 #include <sys/ptrace.h>
@@ -48,6 +54,7 @@ constexpr std::size_t kResolverCacheCapacity = 256u;
 constexpr std::uint32_t kJitEnclaveProbeGateChecked = 0x1u;
 constexpr std::uint32_t kJitEnclaveProbeResolveAttempted = 0x2u;
 constexpr std::uint32_t kJitEnclaveProbeExecAllocAttempted = 0x4u;
+constexpr std::uint32_t kJitEnclaveProbeWxTransitioned = 0x8u;
 constexpr const char* kJitRouteForbiddenForTarget = "jit_route_forbidden_for_target";
 
 thread_local const char* g_last_gate_code = "";
@@ -78,7 +85,7 @@ constexpr std::uint64_t fnv1a_hash_cstr(const char* text) noexcept {
 }
 
 template <std::size_t N>
-consteval std::uint64_t fnv1a_hash_literal(const char (&text)[N]) noexcept {
+constexpr std::uint64_t fnv1a_hash_literal(const char (&text)[N]) noexcept {
   std::uint64_t hash = kFnv1aOffset;
   for (std::size_t i = 0; i + 1u < N; ++i) {
     hash = fnv1a_step(hash, static_cast<std::uint8_t>(text[i]));
@@ -100,7 +107,7 @@ struct EncodedField final {
 };
 
 template <std::size_t Capacity, std::size_t N>
-consteval EncodedField<Capacity> encode_field(const char (&text)[N], std::uint8_t key_salt) noexcept {
+constexpr EncodedField<Capacity> encode_field(const char (&text)[N], std::uint8_t key_salt) noexcept {
   static_assert(N <= Capacity, "encoded field capacity is too small");
 
   EncodedField<Capacity> field{};
@@ -180,6 +187,42 @@ std::once_flag& init_once_flag() noexcept {
 
 void ensure_runtime_initialized() noexcept;
 
+#if defined(__linux__)
+bool read_linux_text_file(const char* path, char* dest, std::size_t capacity) noexcept {
+  if (path == nullptr || dest == nullptr || capacity < 2u) {
+    return false;
+  }
+
+  const long fd = ::syscall(SYS_openat, AT_FDCWD, path, O_RDONLY | O_CLOEXEC, 0);
+  if (fd < 0) {
+    return false;
+  }
+
+  const long read_size = ::syscall(SYS_read, fd, dest, capacity - 1u);
+  (void)::syscall(SYS_close, fd);
+  if (read_size <= 0) {
+    dest[0] = '\0';
+    return false;
+  }
+
+  const std::size_t text_size = static_cast<std::size_t>(read_size);
+  dest[text_size] = '\0';
+  return true;
+}
+
+bool linux_tracer_pid_is_zero(const char* text) noexcept {
+  return eippf::runtime::analysis::parse_tracer_pid_zero(text, std::strlen(text));
+}
+
+bool contains_suspicious_linux_module(const char* text) noexcept {
+  return eippf::runtime::analysis::contains_suspicious_marker(text);
+}
+
+bool linux_maps_are_trusted(const char* text) noexcept {
+  return text != nullptr && !contains_suspicious_linux_module(text);
+}
+#endif
+
 bool anti_tamper_check_passed() noexcept {
 #if defined(_WIN32) || defined(_WIN64)
   if (::IsDebuggerPresent() != FALSE) {
@@ -211,9 +254,19 @@ bool anti_tamper_check_passed() noexcept {
 #endif
 #elif defined(__linux__)
 #if defined(__x86_64__) || defined(__i386__) || defined(__arm__) || defined(__aarch64__)
-  errno = 0;
-  const long ptrace_result = ::ptrace(PTRACE_TRACEME, 0, nullptr, 0);
-  return ptrace_result != -1;
+  std::array<char, 4096u> status{};
+  if (!read_linux_text_file("/proc/self/status", status.data(), status.size())) {
+    return false;
+  }
+  if (!linux_tracer_pid_is_zero(status.data())) {
+    return false;
+  }
+
+  std::array<char, 8192u> maps{};
+  if (!read_linux_text_file("/proc/self/maps", maps.data(), maps.size())) {
+    return false;
+  }
+  return linux_maps_are_trusted(maps.data());
 #else
   return false;
 #endif
@@ -313,7 +366,7 @@ struct ApiCandidate final {
 };
 
 template <std::size_t NameN, std::size_t ModuleN>
-consteval ApiCandidate make_candidate(const char (&api_name)[NameN],
+constexpr ApiCandidate make_candidate(const char (&api_name)[NameN],
                                       const char (&module_name)[ModuleN],
                                       std::uint8_t salt) noexcept {
   ApiCandidate candidate{};
@@ -325,7 +378,8 @@ consteval ApiCandidate make_candidate(const char (&api_name)[NameN],
 }
 
 #if defined(_WIN32) || defined(_WIN64)
-constexpr std::array<ApiCandidate, 35> kApiCandidates = {{
+constexpr std::array<ApiCandidate, 39> kApiCandidates = {{
+    make_candidate("Sleep", "kernel32.dll", 0x10u),
     make_candidate("VirtualAlloc", "kernel32.dll", 0x11u),
     make_candidate("VirtualFree", "kernel32.dll", 0x12u),
     make_candidate("VirtualProtect", "kernel32.dll", 0x13u),
@@ -358,12 +412,18 @@ constexpr std::array<ApiCandidate, 35> kApiCandidates = {{
     make_candidate("memmove", "ucrtbase.dll", 0x2Eu),
     make_candidate("memset", "ucrtbase.dll", 0x2Fu),
     make_candidate("memcmp", "ucrtbase.dll", 0x30u),
-    make_candidate("printf", "ucrtbase.dll", 0x31u),
-    make_candidate("malloc", "msvcrt.dll", 0x32u),
-    make_candidate("free", "msvcrt.dll", 0x33u),
+    make_candidate("getenv", "ucrtbase.dll", 0x31u),
+    make_candidate("strtol", "ucrtbase.dll", 0x32u),
+    make_candidate("puts", "ucrtbase.dll", 0x33u),
+    make_candidate("printf", "ucrtbase.dll", 0x34u),
+    make_candidate("malloc", "msvcrt.dll", 0x35u),
+    make_candidate("free", "msvcrt.dll", 0x36u),
+    make_candidate("getenv", "msvcrt.dll", 0x37u),
+    make_candidate("strtol", "msvcrt.dll", 0x38u),
+    make_candidate("puts", "msvcrt.dll", 0x39u),
 }};
 #else
-constexpr std::array<ApiCandidate, 36> kApiCandidates = {{
+constexpr std::array<ApiCandidate, 39> kApiCandidates = {{
     make_candidate("malloc", "libc.so.6", 0x41u),
     make_candidate("free", "libc.so.6", 0x42u),
     make_candidate("calloc", "libc.so.6", 0x43u),
@@ -379,27 +439,30 @@ constexpr std::array<ApiCandidate, 36> kApiCandidates = {{
     make_candidate("strchr", "libc.so.6", 0x4Du),
     make_candidate("strrchr", "libc.so.6", 0x4Eu),
     make_candidate("strstr", "libc.so.6", 0x4Fu),
-    make_candidate("printf", "libc.so.6", 0x50u),
-    make_candidate("fprintf", "libc.so.6", 0x51u),
-    make_candidate("snprintf", "libc.so.6", 0x52u),
-    make_candidate("puts", "libc.so.6", 0x53u),
-    make_candidate("fputs", "libc.so.6", 0x54u),
-    make_candidate("fopen", "libc.so.6", 0x55u),
-    make_candidate("fclose", "libc.so.6", 0x56u),
-    make_candidate("fread", "libc.so.6", 0x57u),
-    make_candidate("fwrite", "libc.so.6", 0x58u),
-    make_candidate("open", "libc.so.6", 0x59u),
-    make_candidate("close", "libc.so.6", 0x5Au),
-    make_candidate("read", "libc.so.6", 0x5Bu),
-    make_candidate("write", "libc.so.6", 0x5Cu),
-    make_candidate("mmap", "libc.so.6", 0x5Du),
-    make_candidate("munmap", "libc.so.6", 0x5Eu),
-    make_candidate("mprotect", "libc.so.6", 0x5Fu),
-    make_candidate("dlopen", "libdl.so.2", 0x60u),
-    make_candidate("dlsym", "libdl.so.2", 0x61u),
-    make_candidate("dlclose", "libdl.so.2", 0x62u),
-    make_candidate("abort", "libc.so.6", 0x63u),
-    make_candidate("exit", "libc.so.6", 0x64u),
+    make_candidate("getenv", "libc.so.6", 0x50u),
+    make_candidate("strtol", "libc.so.6", 0x51u),
+    make_candidate("usleep", "libc.so.6", 0x52u),
+    make_candidate("printf", "libc.so.6", 0x53u),
+    make_candidate("fprintf", "libc.so.6", 0x54u),
+    make_candidate("snprintf", "libc.so.6", 0x55u),
+    make_candidate("puts", "libc.so.6", 0x56u),
+    make_candidate("fputs", "libc.so.6", 0x57u),
+    make_candidate("fopen", "libc.so.6", 0x58u),
+    make_candidate("fclose", "libc.so.6", 0x59u),
+    make_candidate("fread", "libc.so.6", 0x5Au),
+    make_candidate("fwrite", "libc.so.6", 0x5Bu),
+    make_candidate("open", "libc.so.6", 0x5Cu),
+    make_candidate("close", "libc.so.6", 0x5Du),
+    make_candidate("read", "libc.so.6", 0x5Eu),
+    make_candidate("write", "libc.so.6", 0x5Fu),
+    make_candidate("mmap", "libc.so.6", 0x60u),
+    make_candidate("munmap", "libc.so.6", 0x61u),
+    make_candidate("mprotect", "libc.so.6", 0x62u),
+    make_candidate("dlopen", "libdl.so.2", 0x63u),
+    make_candidate("dlsym", "libdl.so.2", 0x64u),
+    make_candidate("dlclose", "libdl.so.2", 0x65u),
+    make_candidate("abort", "libc.so.6", 0x66u),
+    make_candidate("exit", "libc.so.6", 0x67u),
 }};
 #endif
 
@@ -654,7 +717,7 @@ void* lookup_or_resolve(std::uint64_t hash) noexcept {
 
 }  // namespace
 
-extern "C" void* eippf_resolve_api(std::uint64_t hash) noexcept {
+extern "C" void* eippf_ra0(std::uint64_t hash) noexcept {
   ensure_runtime_initialized();
   if (hash == 0u) {
     return nullptr;
@@ -662,21 +725,21 @@ extern "C" void* eippf_resolve_api(std::uint64_t hash) noexcept {
   return lookup_or_resolve(hash);
 }
 
-extern "C" const char* eippf_runtime_last_gate_code() noexcept {
+extern "C" const char* eippf_jgc0() noexcept {
   return g_last_gate_code;
 }
 
-extern "C" void eippf_runtime_reset_jit_enclave_probe() noexcept {
+extern "C" void eippf_jgr0() noexcept {
   g_last_gate_code = "";
   g_jit_enclave_probe_flags = 0u;
 }
 
-extern "C" std::uint32_t eippf_runtime_jit_enclave_probe_flags() noexcept {
+extern "C" std::uint32_t eippf_jgf0() noexcept {
   return g_jit_enclave_probe_flags;
 }
 
-extern "C" void eippf_execute_jit_enclave(const std::uint8_t* encrypted_payload, std::size_t size,
-                                          std::uint8_t key) noexcept {
+extern "C" void eippf_je0(const std::uint8_t* encrypted_payload, std::size_t size,
+                          std::uint8_t key) noexcept {
   ensure_runtime_initialized();
   g_last_gate_code = "";
   g_jit_enclave_probe_flags = 0u;
@@ -690,90 +753,40 @@ extern "C" void eippf_execute_jit_enclave(const std::uint8_t* encrypted_payload,
   }
   g_jit_enclave_probe_flags |= kJitEnclaveProbeResolveAttempted;
 
-#if defined(_WIN32) || defined(_WIN64)
-  using VirtualAllocFn = void* (WINAPI*)(void*, SIZE_T, DWORD, DWORD);
-  using VirtualFreeFn = BOOL(WINAPI*)(void*, SIZE_T, DWORD);
-
-  auto* virtual_alloc = reinterpret_cast<VirtualAllocFn>(
-      eippf_resolve_api(fnv1a_hash_literal("VirtualAlloc")));
-  auto* virtual_free = reinterpret_cast<VirtualFreeFn>(
-      eippf_resolve_api(fnv1a_hash_literal("VirtualFree")));
-  if (virtual_alloc == nullptr || virtual_free == nullptr) {
-    return;
-  }
+  using Resolver = eippf::runtime::DynamicAPIResolver<64u, 4u>;
+  Resolver resolver;
 
   g_jit_enclave_probe_flags |= kJitEnclaveProbeExecAllocAttempted;
-  void* executable_page = virtual_alloc(
-      nullptr, static_cast<SIZE_T>(size), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-  if (executable_page == nullptr) {
+  eippf::runtime::MemoryHAL::Region region =
+      eippf::runtime::MemoryHAL::allocate_rw(resolver, size);
+  if (!region.valid()) {
     return;
   }
 
-  auto* executable_bytes = static_cast<std::uint8_t*>(executable_page);
+  auto release_region = [&]() noexcept {
+    eippf::runtime::MemoryHAL::release(resolver, region);
+  };
+
+  auto* executable_bytes = static_cast<std::uint8_t*>(region.base);
   for (std::size_t i = 0; i < size; ++i) {
     executable_bytes[i] = static_cast<std::uint8_t>(encrypted_payload[i] ^ key);
   }
 
-  auto* payload_entry = reinterpret_cast<void (*)()>(executable_page);
-  payload_entry();
-
-  auto* shred_bytes = static_cast<volatile std::uint8_t*>(executable_page);
-  for (std::size_t i = 0; i < size; ++i) {
-    shred_bytes[i] = 0u;
-  }
-#if defined(_MSC_VER)
-  _ReadWriteBarrier();
-#elif defined(__GNUC__) || defined(__clang__)
-  __asm__ __volatile__("" : : : "memory");
-#endif
-
-  (void)virtual_free(executable_page, 0u, MEM_RELEASE);
-#elif defined(__linux__) || (defined(__APPLE__) && defined(__MACH__))
-  using MmapFn = void* (*)(void*, std::size_t, int, int, int, off_t);
-  using MunmapFn = int (*)(void*, std::size_t);
-
-  auto* mmap_fn = reinterpret_cast<MmapFn>(eippf_resolve_api(fnv1a_hash_literal("mmap")));
-  auto* munmap_fn = reinterpret_cast<MunmapFn>(eippf_resolve_api(fnv1a_hash_literal("munmap")));
-  if (mmap_fn == nullptr || munmap_fn == nullptr) {
+  if (!eippf::runtime::MemoryHAL::protect_rx(resolver, region)) {
+    if (eippf::runtime::MemoryHAL::protect_rw(resolver, region)) {
+      secure_zero_buffer(region.base, region.size);
+    }
+    release_region();
     return;
   }
 
-  int map_flags = MAP_PRIVATE;
-#if defined(MAP_ANONYMOUS)
-  map_flags |= MAP_ANONYMOUS;
-#elif defined(MAP_ANON)
-  map_flags |= MAP_ANON;
-#else
-  return;
-#endif
-
-  g_jit_enclave_probe_flags |= kJitEnclaveProbeExecAllocAttempted;
-  void* executable_page = mmap_fn(
-      nullptr, size, PROT_READ | PROT_WRITE | PROT_EXEC, map_flags, -1, static_cast<off_t>(0));
-  if (executable_page == MAP_FAILED || executable_page == nullptr) {
-    return;
-  }
-
-  auto* executable_bytes = static_cast<std::uint8_t*>(executable_page);
-  for (std::size_t i = 0; i < size; ++i) {
-    executable_bytes[i] = static_cast<std::uint8_t>(encrypted_payload[i] ^ key);
-  }
-
-  auto* payload_entry = reinterpret_cast<void (*)()>(executable_page);
+  auto* payload_entry = reinterpret_cast<void (*)()>(region.base);
   payload_entry();
 
-  auto* shred_bytes = static_cast<volatile std::uint8_t*>(executable_page);
-  for (std::size_t i = 0; i < size; ++i) {
-    shred_bytes[i] = 0u;
+  if (eippf::runtime::MemoryHAL::protect_rw(resolver, region)) {
+    g_jit_enclave_probe_flags |= kJitEnclaveProbeWxTransitioned;
+    secure_zero_buffer(region.base, region.size);
   }
-#if defined(__GNUC__) || defined(__clang__)
-  __asm__ __volatile__("" : : : "memory");
-#endif
 
-  (void)munmap_fn(executable_page, size);
-#else
-  (void)encrypted_payload;
-  (void)size;
-  (void)key;
-#endif
+  release_region();
 }

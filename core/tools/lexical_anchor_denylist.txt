@@ -9,3 +9,16 @@ jdwp_probe
 lldb_probe
 windbg_probe
 ghidra_probe
+ida
+idapro
+cheatengine
+cheat engine
+ollydbg
+x64dbg
+gdb
+gdbserver
+magisk
+zygisk
+lsposed
+substrate
+substitute

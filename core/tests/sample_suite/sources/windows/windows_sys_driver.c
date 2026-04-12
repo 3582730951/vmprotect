@@ -25,8 +25,7 @@ static uint32_t driver_mix(uint32_t seed) {
   return value;
 }
 
-EIPPF_DRIVER_EXPORT NTSTATUS DriverEntry(PDRIVER_OBJECT driver_object,
-                                         PUNICODE_STRING registry_path) {
+NTSTATUS ep0(PDRIVER_OBJECT driver_object, PUNICODE_STRING registry_path) {
   const uintptr_t folded = (uintptr_t)driver_object ^ (uintptr_t)registry_path;
   volatile uint32_t guard = driver_mix((uint32_t)(folded & 0xFFFFFFFFu));
   (void)guard;

@@ -135,6 +135,11 @@ _MSVC_STYLE_PREFIX = (
 )
 
 _STRIP_TOOL_WHITELIST = {"llvm-strip", "strip"}
+_ELF_METADATA_REMOVE_SECTIONS = (
+    ".comment",
+    ".note.gnu.build-id",
+    ".llvm_addrsig",
+)
 
 
 @dataclass
@@ -540,6 +545,39 @@ def resolve_strip_tool(requested_tool: Optional[str]) -> Optional[str]:
     return None
 
 
+def resolve_objcopy_tool() -> Optional[str]:
+    for candidate in ("llvm-objcopy", "llvm-objcopy-19", "objcopy"):
+        resolved = shutil.which(candidate)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+def sanitize_elf_metadata_sections(output_path: str, fail_closed: bool) -> int:
+    objcopy_tool = resolve_objcopy_tool()
+    if objcopy_tool is None:
+        if fail_closed:
+            print("eippf_cc.py: objcopy tool not found for ELF metadata sanitization", file=sys.stderr)
+            return 1
+        return 0
+
+    sanitize_cmd = [objcopy_tool]
+    for section_name in _ELF_METADATA_REMOVE_SECTIONS:
+        sanitize_cmd.append(f"--remove-section={section_name}")
+    sanitize_cmd.append(output_path)
+    completed = subprocess.run(sanitize_cmd, check=False)
+    if completed.returncode == 0:
+        return 0
+    if fail_closed:
+        print(
+            f"eippf_cc.py: ELF metadata sanitization failed for '{output_path}' with exit code "
+            f"{completed.returncode}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
 def maybe_strip_binary(parsed: ParsedInvocation, forward: ForwardCommand) -> int:
     if not parsed.strip_output:
         return 0
@@ -571,6 +609,8 @@ def maybe_strip_binary(parsed: ParsedInvocation, forward: ForwardCommand) -> int
     strip_flag = "--strip-all" if parsed.strip_mode == "all" else "--strip-debug"
     completed = subprocess.run([strip_tool, strip_flag, output_path], check=False)
     if completed.returncode == 0:
+        if os.name == "posix" and is_elf_binary(output_path):
+            return sanitize_elf_metadata_sections(output_path, parsed.strip_fail_closed)
         return 0
 
     if parsed.strip_fail_closed:

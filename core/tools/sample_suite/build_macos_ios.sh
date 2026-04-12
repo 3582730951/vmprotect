@@ -30,6 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 SRC_FILE="${REPO_ROOT}/core/tests/sample_suite/sources/ios/ios_macho_main.c"
 WRAPPER="${REPO_ROOT}/core/wrapper/eippf_cc.py"
+PROTECTION_SUITE_SUMMARY="ProtectionAnchor,StringProtection,IATMinimization,MBAObfuscation,CFFObfuscation"
 
 IOS_DIR="${OUT_ROOT}/ios_macho"
 PASS_PLUGIN_DIR="${OUT_ROOT}/pass_plugins"
@@ -39,6 +40,7 @@ REPORT_DIR="${OUT_ROOT}/toolchain_reports"
 COMMANDS_DIR="${REPORT_DIR}/commands"
 PASS_PLUGIN_PATH="${PASS_PLUGIN_DIR}/eippf_protection_suite_pass.dylib"
 IOS_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.ios.user.o"
+IOS_USER_RUNTIME_O="${RUNTIME_LIB_DIR}/runtime_core.ios.user.o"
 IOS_PROTECTED_O="${RUNTIME_LIB_DIR}/ios_macho.protected.o"
 IOS_OUTPUT_BIN="${IOS_DIR}/sample_ios_macho"
 REPORT_PATH="${REPORT_DIR}/macos_ios.txt"
@@ -46,6 +48,7 @@ PLUGIN_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.plugin_build.txt"
 PLUGIN_BUILD_LOG_PATH="${COMMANDS_DIR}/macos_ios.plugin_build.log.txt"
 PLUGIN_LINK_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.plugin_link_command.txt"
 IOS_HELPER_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_user_helper_compile.txt"
+IOS_RUNTIME_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_user_runtime_compile.txt"
 IOS_PROTECTED_COMPILE_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_protected_compile.txt"
 IOS_LINK_COMMAND_PATH="${COMMANDS_DIR}/macos_ios.ios_link.txt"
 IOS_TARGET="arm64-apple-ios17.0-simulator"
@@ -55,6 +58,14 @@ for tool in cmake ninja python3 xcrun; do
     fail "required tool missing: ${tool}"
   fi
 done
+if ! command -v strip >/dev/null 2>&1; then
+  fail "required tool missing: strip"
+fi
+
+export EIPPF_STRIP_OUTPUT=1
+export EIPPF_STRIP_MODE=all
+export EIPPF_STRIP_FAIL_CLOSED=1
+export EIPPF_STRIP_TOOL=strip
 
 if [[ ! -f "${WRAPPER}" ]]; then
   fail "wrapper script is missing: ${WRAPPER}"
@@ -121,8 +132,9 @@ if [[ ! -d "${IOS_SDK}" ]]; then
 fi
 
 HOST_COMPILER_VERSION_FIRST_LINE="$("${HOST_CLANGXX}" --version | head -n 1)"
-if [[ "${HOST_COMPILER_VERSION_FIRST_LINE}" != *"clang version 18"* ]]; then
-  fail "host compiler is not clang version 18: ${HOST_COMPILER_VERSION_FIRST_LINE}"
+if [[ "${HOST_COMPILER_VERSION_FIRST_LINE}" != *"clang version 18"* &&
+      "${HOST_COMPILER_VERSION_FIRST_LINE}" != *"clang version 19"* ]]; then
+  fail "host compiler is not clang version 18/19: ${HOST_COMPILER_VERSION_FIRST_LINE}"
 fi
 IOS_TARGET_COMPILER_VERSION_FIRST_LINE="$("${IOS_TARGET_CLANGXX}" --version | head -n 1)"
 IOS_LINK_DRIVER_VERSION_FIRST_LINE="$("${IOS_TARGET_CLANG}" --version | head -n 1)"
@@ -214,6 +226,9 @@ ios_helper_cmd=(
   -fno-exceptions
   -fno-rtti
   -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
   -c "${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp"
   "-I${REPO_ROOT}/core/include"
   "-I${REPO_ROOT}/core/runtime/include"
@@ -226,6 +241,37 @@ printf '\n' >> "${IOS_HELPER_COMMAND_PATH}"
 
 if [[ ! -f "${IOS_USER_HELPER_O}" ]]; then
   fail "iOS helper output missing: ${IOS_USER_HELPER_O}"
+fi
+
+ios_runtime_cmd=(
+  "${IOS_TARGET_CLANGXX}"
+  -target arm64-apple-ios17.0-simulator
+  -isysroot "${IOS_SDK}"
+  -std=c++20
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Wconversion
+  -Wshadow
+  -Wnull-dereference
+  -fno-exceptions
+  -fno-rtti
+  -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
+  -c "${REPO_ROOT}/core/runtime/src/EippfRuntime.cpp"
+  "-I${REPO_ROOT}/core/include"
+  "-I${REPO_ROOT}/core/runtime/include"
+  -o "${IOS_USER_RUNTIME_O}"
+)
+
+join_argv "${ios_runtime_cmd[@]}" > "${IOS_RUNTIME_COMMAND_PATH}"
+printf '\n' >> "${IOS_RUNTIME_COMMAND_PATH}"
+"${ios_runtime_cmd[@]}"
+
+if [[ ! -f "${IOS_USER_RUNTIME_O}" ]]; then
+  fail "iOS runtime output missing: ${IOS_USER_RUNTIME_O}"
 fi
 
 ios_protected_compile_cmd=(
@@ -258,16 +304,18 @@ ios_link_cmd=(
   "${IOS_TARGET_CLANG}"
   -target arm64-apple-ios17.0-simulator
   -isysroot "${IOS_SDK}"
+  -Wl,-dead_strip
   -o "${IOS_OUTPUT_BIN}"
   "${IOS_PROTECTED_O}"
   "${IOS_USER_HELPER_O}"
+  "${IOS_USER_RUNTIME_O}"
 )
 
 join_argv "${ios_link_cmd[@]}" > "${IOS_LINK_COMMAND_PATH}"
 printf '\n' >> "${IOS_LINK_COMMAND_PATH}"
 "${ios_link_cmd[@]}"
 
-IOS_LINK_INPUTS="${IOS_PROTECTED_O};${IOS_USER_HELPER_O}"
+IOS_LINK_INPUTS="${IOS_PROTECTED_O};${IOS_USER_HELPER_O};${IOS_USER_RUNTIME_O}"
 
 {
   printf 'platform=macos_ios\n'
@@ -280,12 +328,15 @@ IOS_LINK_INPUTS="${IOS_PROTECTED_O};${IOS_USER_HELPER_O}"
   printf 'ios_link_driver_version_first_line=%s\n' "${IOS_LINK_DRIVER_VERSION_FIRST_LINE}"
   printf 'llvm_dir=%s\n' "${LLVM_CMAKE_DIR}"
   printf 'plugin_path=%s\n' "${PASS_PLUGIN_PATH}"
+  printf 'suite_summary=%s\n' "${PROTECTION_SUITE_SUMMARY}"
   printf 'ios_user_helper_o=%s\n' "${IOS_USER_HELPER_O}"
+  printf 'ios_user_runtime_o=%s\n' "${IOS_USER_RUNTIME_O}"
   printf 'ios_protected_o=%s\n' "${IOS_PROTECTED_O}"
   printf 'plugin_build_command=%s\n' "${PLUGIN_COMMAND_PATH}"
   printf 'plugin_build_log=%s\n' "${PLUGIN_BUILD_LOG_PATH}"
   printf 'plugin_link_command=%s\n' "${PLUGIN_LINK_COMMAND_PATH}"
   printf 'ios_user_helper_compile_command=%s\n' "${IOS_HELPER_COMMAND_PATH}"
+  printf 'ios_user_runtime_compile_command=%s\n' "${IOS_RUNTIME_COMMAND_PATH}"
   printf 'ios_protected_compile_command=%s\n' "${IOS_PROTECTED_COMPILE_COMMAND_PATH}"
   printf 'ios_link_inputs=%s\n' "${IOS_LINK_INPUTS}"
   printf 'ios_link_command=%s\n' "${IOS_LINK_COMMAND_PATH}"

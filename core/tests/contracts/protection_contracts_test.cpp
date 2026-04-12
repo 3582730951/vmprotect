@@ -2,6 +2,7 @@
 #include <string>
 
 #include "contracts/protection_contracts.hpp"
+#include "contracts/redteam_report_contracts.hpp"
 
 namespace {
 
@@ -9,6 +10,8 @@ using eippf::contracts::ArtifactKind;
 using eippf::contracts::MutationProfileKind;
 using eippf::contracts::ProtectionManifestV2;
 using eippf::contracts::ProtectionTargetKind;
+using eippf::contracts::RedteamReport;
+using eippf::contracts::RedteamSampleResult;
 using eippf::contracts::ReviewStatus;
 using eippf::contracts::RuntimeBackendKind;
 using eippf::contracts::StrikeReasonCode;
@@ -120,6 +123,69 @@ int main() {
   if (!expect(std::string(eippf::contracts::to_string(ReviewStatus::kConditionalPass)) ==
                   "conditional_pass",
               "review status string mapping should be stable")) {
+    return 1;
+  }
+
+  RedteamSampleResult redteam_sample{};
+  redteam_sample.artifact_id = "linux_elf";
+  redteam_sample.platform = "linux";
+  redteam_sample.format = "elf";
+  redteam_sample.protection_profile = "desktop_native_strict";
+  redteam_sample.static_leak_pass = true;
+  redteam_sample.dynamic_probe_pass = true;
+  redteam_sample.runtime_dump_pass = true;
+  redteam_sample.signature_policy_pass = true;
+  redteam_sample.perf_budget_pass = true;
+  redteam_sample.perf_delta_pct = 4.0;
+  redteam_sample.final_verdict = "pass";
+
+  if (!expect(eippf::contracts::validate_redteam_sample_baseline(redteam_sample),
+              "redteam sample baseline should pass")) {
+    return 1;
+  }
+
+  redteam_sample.perf_delta_pct = 12.0;
+  redteam_sample.perf_budget_pass = false;
+  redteam_sample.final_verdict = "fail";
+  if (!expect(eippf::contracts::validate_redteam_sample_baseline(redteam_sample),
+              "redteam sample should accept a valid failure report above perf budget")) {
+    return 1;
+  }
+
+  redteam_sample.perf_budget_pass = true;
+  if (!expect(!eippf::contracts::validate_redteam_sample_baseline(redteam_sample),
+              "redteam sample must reject perf pass with perf delta above budget")) {
+    return 1;
+  }
+
+  redteam_sample.perf_delta_pct = 4.0;
+  redteam_sample.perf_budget_pass = true;
+  redteam_sample.dynamic_probe_pass = false;
+  redteam_sample.final_verdict = "pass";
+  if (!expect(!eippf::contracts::validate_redteam_sample_baseline(redteam_sample),
+              "redteam sample must reject pass verdict with failed dynamic probe")) {
+    return 1;
+  }
+
+  RedteamSampleResult valid_report_sample{};
+  valid_report_sample.artifact_id = "linux_elf";
+  valid_report_sample.platform = "linux";
+  valid_report_sample.format = "elf";
+  valid_report_sample.protection_profile = "desktop_native_strict";
+  valid_report_sample.static_leak_pass = true;
+  valid_report_sample.dynamic_probe_pass = true;
+  valid_report_sample.runtime_dump_pass = true;
+  valid_report_sample.signature_policy_pass = true;
+  valid_report_sample.perf_budget_pass = true;
+  valid_report_sample.perf_delta_pct = 4.0;
+  valid_report_sample.final_verdict = "pass";
+
+  RedteamReport report{};
+  report.schema_version = 1u;
+  report.generated_at_utc = "2026-04-12T00:00:00+00:00";
+  report.samples.push_back(valid_report_sample);
+  if (!expect(eippf::contracts::validate_redteam_report_baseline(report),
+              "redteam report baseline should accept populated report")) {
     return 1;
   }
 

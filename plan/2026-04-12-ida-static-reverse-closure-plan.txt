@@ -1,0 +1,501 @@
+# IDA 静态逆向闭环计划（2026-04-12）
+
+## 一、目标
+
+本计划专门解决当前项目在 `IDA / Ghidra / objdump / readelf / nm / strings` 视角下仍然存在的静态可定位面，目标不是“再多做一些混淆”，而是把下列静态逆向路径变成可验证、可阻断、可回归的工程闭环：
+
+1. 根据函数名称推导业务语义。
+2. 根据函数交叉引用（xrefs）定位破解点。
+3. 根据反汇编转伪高级语言后读懂业务逻辑。
+4. 根据导入导出表、RTTI、vtable、TLS/init 结构推断用途。
+5. 根据 `main` / `DllMain` / `JNI_OnLoad` / `init_array` 等入口调用链定位关键路径。
+6. 根据反汇编逻辑直接还原“校验点、失败点、解密点、授权点”。
+
+本计划同时补齐两类经常被误判的验收边界：
+
+1. Android 模拟器与真机/root/注入验收必须分开。
+2. Docker 内的脚本与静态审计，不等于内核模块真实加载验收。
+
+## 二、当前真实状态
+
+### 1. 问题
+当前项目已经把“明文字符串定位”收紧了一部分，但还没有把“IDA 一导入就能看见什么”定义成硬门禁。结果是：
+
+1. 明文锚点降低了，但函数名、导入表、入口调用和反汇编语义还会暴露用途。
+2. `artifact_audit.py` 目前更像“denylist 驱动的静态扫描器”，不是“静态逆向闭环判定器”。
+3. `sample-suite` 目前已有 Linux/Windows host probe 与 redteam gate，但 Android 模拟器、真机、内核模块真实加载还没有纳入同一个可执行矩阵。
+
+### 2. 真实依据
+1. 当前本地 Linux 受保护样本仍可直接看到高语义符号名，例如 `kAnchorLinuxElf`、`resolve_candidate`、`anti_tamper_check_passed`、`ensure_runtime_initialized`。
+2. 当前本地 Linux 受保护样本的导入表仍暴露 `dlopen`、`dlsym`、`prctl`、`getenv`、`open`、`read`、`_exit` 等明显的语义锚点。
+3. 当前样本反汇编仍可从 `main` 直接看出 `runtime_guard -> decode -> getenv -> resolve_api -> call -> wipe` 的主路径。
+4. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py:331) 目前对 symbol surface 的策略是“命中 denylist 才算失败”，不会因为 `resolve_candidate` 这类高语义名字本身就失败。
+5. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py:1027) 到 [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py:1076) 目前只是枚举 `SHT_SYMTAB/SHT_DYNSYM` 并做 denylist 命中检查。
+6. [`core/tools/sample_suite/sample_manifest.json`](/workspace/core/tests/sample_suite/sample_manifest.json:154) 已明确把 Android runtime probe 标为 `device_lab_required`，iOS 标为 `host_probe_backend_pending`。
+7. [`core/tools/sample_suite/build_linux_android.sh`](/workspace/core/tools/sample_suite/build_linux_android.sh:128) 已表明 Android 样本当前是 `aarch64-linux-android24` 目标，不是宿主直接可运行产物。
+8. [`core/wrapper/eippf_cc.py`](/workspace/core/wrapper/eippf_cc.py:543) 到 [`core/wrapper/eippf_cc.py`](/workspace/core/wrapper/eippf_cc.py:578) 已具备 strip 能力，但当前样例验收链没有把它当成 release 级强制门禁。
+
+### 3. 解决方案
+解决思路必须改成“两层闭环”：
+
+1. 第一层是 **静态可定位面闭环**：
+   - 符号名
+   - 导入导出
+   - 入口点
+   - xref hub
+   - 资源/常量/异常/RTTI 等结构面
+   - 反汇编与伪代码可读性
+2. 第二层是 **运行时与平台闭环**：
+   - Android 模拟器
+   - Android 真机/root/Frida/Xposed/JDWP
+   - Docker 静态审计
+   - Linux/Android `.ko`
+   - Windows `.sys`
+
+只有两层都通过，才允许对外声称“通过验收”。
+
+## 三、威胁模型扩展
+
+### 1. 问题
+如果只围绕“字符串定位”和“调试器关键词”设计防护，计划会漏掉 IDA 中更常见、也更稳定的静态定位路径。
+
+### 2. 真实依据
+经 3 角色复核后，当前用户点名的 6 类路径还需要补齐这些静态定位面：
+
+1. `CFG / jump table / switch dispatcher`
+2. `FLIRT / 编译器指纹 / 标准库签名`
+3. `字符串近邻 / 格式串 / 错误码聚类`
+4. `资源节 / 常量节 / 版本信息 / manifest`
+5. `异常路径 / unwind / landing pad / SEH / pdata/xdata`
+6. `RTTI / vtable / TLS / init_array / 构造器`
+
+### 3. 解决方案
+本计划把静态逆向面统一分为 10 类，并对每类设置独立验收口径：
+
+1. 字符串与近邻常量
+2. 函数名与符号表
+3. 导入导出表
+4. 入口点与初始化链
+5. 交叉引用与调用图 hub
+6. 伪代码可读性
+7. 反汇编逻辑可读性
+8. CFG / jump table / dispatcher
+9. 资源节 / 异常表 / RTTI / vtable / TLS / init_array
+10. 平台专用运行环境（Android / kernel / iOS / Windows driver）
+
+## 四、分阶段计划
+
+### Phase 1：把“静态可定位面”写成硬门禁
+
+#### 1. 问题
+当前 `artifact_audit.py` 和 `redteam_harness.py` 只把“denylist 字符串/符号命中”“基础导入面问题”“runtime probe 缺失”等纳入 gate，还没有把“高语义符号名”“入口点可见”“xref hub”“调试/异常/RTTI 泄漏”纳入硬失败。
+
+#### 2. 真实依据
+1. [`core/tools/redteam_harness.py`](/workspace/core/tools/redteam_harness.py:183) 目前只把 `windows_exe` 和 `linux_elf` 视作强制 runtime probe。
+2. [`core/tools/redteam_harness.py`](/workspace/core/tools/redteam_harness.py:218) 静态泄漏仍以 keyword scan 为主。
+3. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py:2338) 会生成 `imports_summary` 和 `symbol_summary`，但当前的 strict 失败仍主要基于 denylist 与结构异常，不是“语义暴露”。
+
+#### 3. 解决方案
+1. 在 `artifact_audit.py` 新增“静态语义泄漏策略”：
+   - `symbol_surface_policy_failed`
+   - `entrypoint_surface_policy_failed`
+   - `xref_hub_policy_failed`
+   - `debug_surface_policy_failed`
+   - `metadata_surface_policy_failed`
+2. 新增可机读的静态逆向报告字段：
+   - `entrypoint_summary`
+   - `xref_summary`
+   - `debug_surface_summary`
+   - `metadata_surface_summary`
+   - `semantic_symbol_summary`
+3. 将 `redteam_harness.py` 的 `static_leak_pass` 改为多维聚合：
+   - 字符串面
+   - 符号面
+   - 导入面
+   - 入口点面
+   - xref hub 面
+   - 调试/异常/RTTI/资源面
+4. 新增失败即阻断规则：
+   - 任一 protected 样本暴露高语义内部函数名，失败。
+   - 任一 protected 样本暴露稳定入口锚点或初始化锚点，失败。
+   - 任一 protected 样本暴露明显的逆向辅助段、调试段、资源业务词，失败。
+
+#### 4. 具体落点
+1. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py)
+2. [`core/tools/redteam_harness.py`](/workspace/core/tools/redteam_harness.py)
+3. [`core/include/contracts/redteam_report_contracts.hpp`](/workspace/core/include/contracts/redteam_report_contracts.hpp)
+4. [`core/tests/tools/`](/workspace/core/tests/tools)
+
+#### 5. 验收标准
+1. `artifact_audit --strict` 在高语义符号名样本上必须 fail。
+2. `redteam.json` 中静态泄漏不再只看 denylist 命中。
+3. CTest 新增 success / failure / security-edge 三类覆盖。
+
+### Phase 2：收口函数名、符号表、导出面
+
+#### 1. 问题
+IDA 最常见的第一刀就是看函数名和导出/局部符号，当前这层还没彻底收掉。
+
+#### 2. 真实依据
+1. 当前本地样本 `nm -C` 可直接看到 `resolve_candidate`、`anti_tamper_check_passed` 等名字。
+2. 手工 `strip --strip-all` 后，这些名字可以全部消失，说明问题不是做不到，而是链路没有强制执行。
+3. 当前仓库中 strip 功能已存在于 [`core/wrapper/eippf_cc.py`](/workspace/core/wrapper/eippf_cc.py:543)。
+
+#### 3. 解决方案
+1. 默认打开 release 级 strip：
+   - `EIPPF_STRIP_OUTPUT=1`
+   - `EIPPF_STRIP_MODE=all`
+   - `EIPPF_STRIP_FAIL_CLOSED=1`
+2. 对 user-mode 产物引入“默认不可见”编译/链接策略：
+   - 全局隐藏可见性
+   - 仅保留必要导出白名单
+   - 禁止发布产物携带内部 helper / guard / token runtime 符号名
+3. 在 pass 和链接阶段收口内部名字：
+   - 把非 ABI 必需符号改为 internal/private
+   - 把 helper hub 进行局部匿名化与内联化
+4. 在 `artifact_audit.py` 新增语义符号策略：
+   - 不再只看 denylist
+   - 对非白名单内部名字设置规则，例如出现“guard / resolve / anti_tamper / runtime_init / anchor / candidate / policy / verify / decrypt / token”等语义簇时直接 fail
+5. 对 Mach-O / PE / ELF 分别做最终格式级 strip 和 symbol sanity gate。
+
+#### 4. 具体落点
+1. [`core/wrapper/eippf_cc.py`](/workspace/core/wrapper/eippf_cc.py)
+2. [`core/wrapper/weaver_proxy.py`](/workspace/core/wrapper/weaver_proxy.py)
+3. [`core/passes/src/ProtectionSuitePassPlugin.cpp`](/workspace/core/passes/src/ProtectionSuitePassPlugin.cpp)
+4. [`core/post_link_mutator/`](/workspace/core/post_link_mutator)
+5. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py)
+
+#### 5. 验收标准
+1. 受保护样本 `nm -C` / `readelf -Ws` / `objdump -t` 不得再出现高语义内部名。
+2. 仅允许 ABI 白名单符号保留。
+3. release/protected lane 没有执行 strip 时必须 fail-closed。
+
+### Phase 3：收口导入表、导出表、RTTI、vtable、TLS/init
+
+#### 1. 问题
+即便函数名没了，IDA 也能通过导入导出和类型结构猜功能。
+
+#### 2. 真实依据
+1. 当前样本导入表仍能直接暴露运行时解析与 anti-tamper 行为。
+2. 现有 `IATMinimizationPass` 只减少一部分外部调用，不代表导入面已经到达“不可推断用途”。
+3. 安全审阅指出 `导入导出 / RTTI / vtable / TLS / init_array` 必须单列，否则闭环不成立。
+
+#### 3. 解决方案
+1. 把“导入最小化”升级为“导入语义最小化”：
+   - 减少稳定、可直接推断用途的 API 暴露
+   - 避免出现稳定的 resolver hub 名称
+2. 对 PE/ELF/Mach-O 分别做格式级收口：
+   - PE：导出表、导入表、调试目录、异常元数据、TLS callback 可见性
+   - ELF：`dynsym/dynstr`、重定位、`.eh_frame/.gcc_except_table/.comment/.note`
+   - Mach-O：`LC_SYMTAB`、`LC_DYSYMTAB`、调试 load commands
+3. 对 C++ 目标新增 `RTTI / vtable / typeinfo` gate：
+   - 若当前 lane 不需要公开类层次，则默认隐藏或清理
+4. 对 `TLS/init_array/constructor/DllMain/JNI_OnLoad` 增加可见性与命名策略：
+   - 允许存在，但不得保持高语义公开名字
+   - 不允许形成稳定入口锚点
+
+#### 4. 具体落点
+1. [`core/passes/src/IATMinimizationPass.cpp`](/workspace/core/passes/src/IATMinimizationPass.cpp)
+2. [`core/post_link_mutator/src/`](/workspace/core/post_link_mutator/src)
+3. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py)
+4. [`core/runtime/src/backends/backend_registry.cpp`](/workspace/core/runtime/src/backends/backend_registry.cpp)
+
+#### 5. 验收标准
+1. 导入表只允许最小白名单。
+2. RTTI / vtable / init/TLS 可见面不再暴露业务语义。
+3. 任一格式留下稳定的 `main / DllMain / JNI_OnLoad / constructor` 公开高语义锚点即失败。
+
+### Phase 4：收口 `main`、入口链和交叉引用 hub
+
+#### 1. 问题
+很多教程不是先找字符串，而是先找 `main`、`DllMain`、`JNI_OnLoad`，再顺着 xref/call graph 找校验点。
+
+#### 2. 真实依据
+1. 当前本地样本从 `main` 的反汇编就可以看见 guard、decode、resolve、wipe 主链。
+2. 当前 runtime helper 仍可能形成稳定 xref hub，例如 guard begin、token decode/wipe、resolver 调用点。
+
+#### 3. 解决方案
+1. 对入口点做 trampoline / dispatcher 化：
+   - 用户态入口不再直接暴露业务骨架
+   - 入口只做最低限度跳转，不承载完整业务语义
+2. 把单一 hub 拆散：
+   - 避免所有关键路径都汇聚到固定 helper
+   - 对关键 helper 做多态封装、分层封装、上下文分裂
+3. 对 `main` / `DllMain` / `JNI_OnLoad` / `init_array` 做调用链瘦身：
+   - 不在入口函数内直接出现高语义业务逻辑
+   - 入口函数只负责拿到上下文与分发
+4. 在审计器里新增 xref hub 规则：
+   - 单一 helper 被大量关键函数引用时，视为静态定位风险
+
+#### 4. 具体落点
+1. [`core/passes/`](/workspace/core/passes)
+2. [`core/runtime/src/EippfRuntime.cpp`](/workspace/core/runtime/src/EippfRuntime.cpp)
+3. [`core/runtime/src/string_token_runtime.cpp`](/workspace/core/runtime/src/string_token_runtime.cpp)
+4. [`core/post_link_mutator/`](/workspace/core/post_link_mutator)
+5. `core/tools/` 下新增 xref 视图扫描器
+
+#### 5. 验收标准
+1. 从入口函数反汇编不能直接读出完整主逻辑骨架。
+2. 关键 helper 不得成为单一超高 fan-in 的 xref hub。
+3. 任一 entrypoint 一跳内即可定位核心校验/授权/解密逻辑，失败。
+
+### Phase 5：收口伪代码与反汇编逻辑，可控“挖坑”
+
+#### 1. 问题
+即便名字和导入表都压下去，IDA 的 Hex-Rays/Ghidra 仍能把规整逻辑还原成接近高级语言。
+
+#### 2. 真实依据
+1. 当前样本的主路径过于线性，容易被 decompiler 还原。
+2. 用户要求必须考虑“根据反汇编转伪高级语言找到破解点”和“根据反汇编逻辑直接找破解点”。
+
+#### 3. 解决方案
+这里不能靠全局重混淆，否则会把性能和稳定性一起打坏；必须做“有选择的静态语义扭曲”和“可验证的陷阱”。
+
+1. 对高风险函数启用选择性控制流扁平化与块拆分：
+   - 不全量铺开
+   - 只打在授权、校验、密钥消费、反篡改、授权返回值聚合这些热点函数
+2. 引入稳定但不破坏语义的“伪代码降质策略”：
+   - 表达式重构
+   - 条件重写
+   - 常量延迟物化
+   - 多出口归一化
+   - 局部分发器
+3. 在反汇编层挖坑，但只允许“可证明等价”的坑：
+   - 不可达噪声块
+   - 误导性辅助路径
+   - 伪相关数据依赖
+   - 延迟解码的关键常量
+   - 非线性但等价的条件组合
+4. 禁止会破坏可维护性或引入未定义行为的做法：
+   - 禁止依赖 UB
+   - 禁止依赖特定编译器 bug
+   - 禁止用不稳定的异常/栈破坏技巧
+5. 把“伪代码可读性”纳入专项验收：
+   - 不是主观判断“看起来乱不乱”
+   - 而是评估是否还能快速恢复业务语义和破解点
+
+#### 4. 具体落点
+1. [`core/passes/src/StringProtectionPass.cpp`](/workspace/core/passes/src/StringProtectionPass.cpp)
+2. [`core/passes/src/`](/workspace/core/passes/src)
+3. `core/passes/` 下新增反编译降质/局部 dispatcher pass
+4. `core/tests/passes/` 下新增行为等价与 CFG 变化测试
+
+#### 5. 验收标准
+1. 关键函数的 decompiler 输出不能在限定时间内直接还原出“成功/失败/授权/解密”语义。
+2. 关键破解点不能从单个 if/单个返回值判断中直接抽出。
+3. 新增保护后语义测试必须保持全绿，性能增量仍受 `<10%` 总预算约束。
+
+### Phase 6：补齐 `CFG / FLIRT / 字符串近邻 / 资源节 / 异常路径`
+
+#### 1. 问题
+如果只挡函数名和导入表，IDA 依然可以从结构和上下文恢复业务。
+
+#### 2. 真实依据
+Security Reviewer 已明确指出：若计划不单列 `CFG / FLIRT / 近邻字符串 / 资源节 / 异常路径 / RTTI-vtable-TLS-init`，就不算闭环。
+
+#### 3. 解决方案
+1. CFG / jump table：
+   - 对关键函数限制稳定 switch table 与明显 dispatcher 形态
+   - 用受控扁平化替代直接状态机
+2. FLIRT / 编译器指纹：
+   - 降低标准库模板和通用 helper 的稳定模式暴露
+   - 对关键 wrapper/helper 做结构差异化
+3. 字符串近邻：
+   - 审计器不只扫目标词本身，也扫其附近常量、错误码、格式串组合
+4. 资源节 / 常量节：
+   - Windows `.rsrc`、ELF `.rodata/.comment/.note`、Mach-O `__cstring` 等统一纳入 gate
+5. 异常路径 / unwind：
+   - 审计 `.eh_frame/.gcc_except_table/.pdata/.xdata` 与清理路径
+   - 禁止异常表暴露关键业务边界语义
+
+#### 4. 具体落点
+1. [`core/tools/artifact_audit.py`](/workspace/core/tools/artifact_audit.py)
+2. `core/tools/` 下新增 CFG/metadata 扫描器
+3. [`core/post_link_mutator/`](/workspace/core/post_link_mutator)
+4. [`core/tests/tools/`](/workspace/core/tests/tools)
+
+#### 5. 验收标准
+1. 资源节、常量节、异常段中出现业务语义或逆向辅助面，失败。
+2. CFG 和 dispatcher 不能直接标出破解路径。
+3. 近邻字符串聚类能推断核心函数用途，失败。
+
+### Phase 7：Android 模拟器、真机与注入链分层验收
+
+#### 1. 问题
+Android 当前不能只停留在“样本能编出来”，也不能把模拟器当真机验收。
+
+#### 2. 真实依据
+1. 当前环境有 `/dev/kvm` 与 `docker`，但没有 `adb`、`emulator`、`sdkmanager`、`avdmanager`。
+2. manifest 已明确 Android runtime probe 还是 `device_lab_required`。
+3. 当前 Android 构件是 `aarch64-linux-android24` 目标，不是宿主直接运行。
+
+#### 3. 解决方案
+1. 新增 Android 模拟器 lane：
+   - 安装 Android SDK / emulator / AVD
+   - 用 `adb` 驱动 loader/app harness
+   - 只做基础运行、静态提取、基础 anti-debug 验证
+2. 新增 Android 真机 / root lane：
+   - 单独验证 Frida / JDWP / Xposed / LSPosed / Magisk / Zygisk / root
+   - 只要能恢复核心锚点或稳定定位逻辑，即失败
+3. `android_so`、`android_dex`、`android_ko` 分三条 lane，不混在一起：
+   - `android_so`：native loader / JNI / maps / hook / dump
+   - `android_dex`：DEX/ART/classloader/JDWP/dump
+   - `android_ko`：GKI / vermagic / signature / load semantics
+4. CI 中模拟器 lane 可以自动化，真机 lane 需要 self-hosted 或设备实验室。
+
+#### 4. 具体落点
+1. [`core/runtime/src/backends/backend_registry.cpp`](/workspace/core/runtime/src/backends/backend_registry.cpp)
+2. [`core/runtime/src/backend_policy.cpp`](/workspace/core/runtime/src/backend_policy.cpp)
+3. [`core/runtime/src/backends/dex_loader_backend.cpp`](/workspace/core/runtime/src/backends/dex_loader_backend.cpp)
+4. `core/tools/sample_suite/` 下新增 Android device/emulator probe runner
+5. [sample_manifest.json](/workspace/core/tests/sample_suite/sample_manifest.json)
+6. [.github/workflows/sample-suite-eval.yml](/workspace/.github/workflows/sample-suite-eval.yml)
+
+#### 5. 验收标准
+1. 模拟器通过，只能代表“基础执行与基础探针通过”，不能替代真机。
+2. 真机/root/注入链中任一恢复核心语义或稳定定位破解点，失败。
+3. Android lane 若只有模拟器结果，没有真机结果，不得标记为“全部通过”。
+
+### Phase 8：Docker、内核模块与 Windows 驱动分层验收
+
+#### 1. 问题
+Docker 可以帮助构建与静态审计，但不能替代内核模块或驱动真实加载验收。
+
+#### 2. 真实依据
+1. 当前容器运行正常，但共享的是 WSL2 宿主内核。
+2. 当前环境没有直接可用的 `insmod/modprobe/lsmod` 工具链，也没有 `/lib/modules` 作为稳定的宿主模块树。
+3. manifest 里 Linux/Android `.ko` 与 Windows `.sys` 目前仍偏向 artifact-level / lane-level 检查，不是真实加载闭环。
+
+#### 3. 解决方案
+1. Docker 只负责：
+   - 可重复构建
+   - 静态审计
+   - 签名/结构/manifest/toolchain 回归
+2. Linux/Android `.ko` 必须新增 VM / 真实宿主 backend：
+   - vermagic 匹配
+   - 签名
+   - 真正的装载、卸载、日志、崩溃回收
+3. Windows `.sys` 必须新增 Windows VM backend：
+   - 签名后加载
+   - attach / x64dbg/WinDbg / 符号面审计
+   - HVCI / 驱动策略约束
+4. 报告层面明确区分：
+   - `container_static_pass`
+   - `vm_load_pass`
+   - `real_kernel_probe_pass`
+
+#### 4. 具体落点
+1. [`core/runtime/src/backends/kernel_safe_backend.cpp`](/workspace/core/runtime/src/backends/kernel_safe_backend.cpp)
+2. [sample_manifest.json](/workspace/core/tests/sample_suite/sample_manifest.json)
+3. `core/tools/sample_suite/` 下新增 VM/kernel probe runner
+4. `.github/workflows/` 或 self-hosted pipeline
+
+#### 5. 验收标准
+1. 容器通过不等于 `.ko/.sys` 通过。
+2. 未经过真实加载 backend 的内核/驱动 lane，不允许标记成最终通过。
+3. 任何签名/结构/加载/probe 失败都直接 fail。
+
+### Phase 9：把 IDA 专项逆向验收单独建成“私有 gate”
+
+#### 1. 问题
+IDA 是用户点名的主威胁，但公共 CI 里通常不会内置商业 IDA。
+
+#### 2. 真实依据
+1. 当前仓库已有开源静态视图和 redteam gate，但没有专门的 IDA lane。
+2. 用户明确要求对 IDA 一导入能看到什么、能推断什么做专项说明。
+
+#### 3. 解决方案
+1. 公共/开源 gate：
+   - `nm`
+   - `readelf`
+   - `objdump`
+   - `strings`
+   - `rizin/radare2` 或 Ghidra headless
+2. 私有/商业 gate：
+   - 使用 self-hosted runner 或离线验收机执行 IDA headless 脚本
+   - 输出统一 JSON，不把 IDA 本身接入公共仓库
+3. IDA gate 的固定检查项：
+   - 函数名恢复率
+   - 入口点可读性
+   - 核心函数 xref fan-in/fan-out
+   - 伪代码可读性评分
+   - 关键破解点检出时间
+
+#### 4. 具体落点
+1. `core/tools/` 下新增 IDA proxy schema 与 gate merger
+2. `core/include/contracts/` 下新增 `ida_static_gate` 契约
+3. `sample-suite` summary / redteam report 接入 `ida_static_report`
+
+#### 5. 验收标准
+1. 没有 IDA 专项结果时，只能标记“开源代理 gate 通过”，不能标记“IDA gate 通过”。
+2. IDA 一导入仍能快速定位核心破解点，失败。
+
+## 五、最终验收标准
+
+### 1. 问题
+如果没有统一硬门禁，计划会退化成“建议列表”。
+
+### 2. 真实依据
+当前最容易被误判的情况有三种：
+
+1. 明文字符串消失了，就误认为静态逆向已经过关。
+2. Docker 脚本跑通了，就误认为内核模块已经完成验收。
+3. Android 模拟器跑通了，就误认为真机/root/注入链已经过关。
+
+### 3. 解决方案
+最终验收必须同时满足：
+
+1. 字符串与近邻常量不过线。
+2. 符号表与函数名不过线。
+3. 导入导出、RTTI、vtable、TLS/init 不过线。
+4. 入口点与 xref hub 不过线。
+5. 伪代码和反汇编在限定时间内不能直接定位破解点。
+6. Android 模拟器与真机/root 分别出报告，不能互相替代。
+7. Docker 与真实内核/驱动加载分别出报告，不能互相替代。
+8. 任一关键平台关键指标性能回归 `>10%`，失败。
+
+最终 verdict 规则：
+
+1. 任一静态泄漏面失败，最终失败。
+2. 任一平台真实运行时 probe 失败，最终失败。
+3. 任一签名/结构/加载/性能 gate 失败，最终失败。
+
+## 六、实施顺序
+
+### 1. 问题
+如果顺序不对，会先做重度混淆，再发现最基本的 strip、导入表、入口点都没收口，成本会很高。
+
+### 2. 真实依据
+3 角色审阅都指向同一个顺序：
+
+1. 先静态硬门禁。
+2. 再默认不可见和 strip。
+3. 再入口链与 xref。
+4. 再伪代码/反汇编扭曲。
+5. 最后补 Android 与内核真实 backend。
+
+### 3. 解决方案
+推荐顺序如下：
+
+1. Phase 1：静态可定位面契约与审计器收口。
+2. Phase 2：strip / 符号表 / 导出面 / 默认隐藏可见性。
+3. Phase 3：导入导出 / RTTI / vtable / TLS/init。
+4. Phase 4：入口链与 xref hub 收口。
+5. Phase 5：伪代码与反汇编“挖坑”。
+6. Phase 6：CFG / FLIRT / 近邻字符串 / 资源节 / 异常路径。
+7. Phase 7：Android 模拟器 -> 真机/root 分层。
+8. Phase 8：Docker 静态 -> VM/真实内核/驱动分层。
+9. Phase 9：IDA 私有专项 gate。
+
+## 七、三角色复核结论
+
+1. Agent 1 (Planner)
+   - 结论：必须先把 `函数名 / 导入导出 / main` 定义成硬门禁，再做 xref、伪代码、反汇编噪声。
+2. Agent 2 (Engineer)
+   - 结论：当前主要缺口在静态泄漏契约、默认 strip、入口/xref hub、Android backend、kernel/driver 可加载 backend。
+3. Agent 3 (Security Reviewer)
+   - 结论：如果不把 `CFG / FLIRT / 近邻字符串 / 资源节 / 异常路径 / RTTI-vtable-TLS-init` 单列，本计划不算闭环；同时必须明确模拟器、Docker、真实平台三者不能互相替代。
+
+## 八、结论
+
+当前项目已经把“明文字符串定位”压低了一部分，但还没有解决“函数名、导入表、入口点、xref、伪代码、反汇编语义”这条更高阶的静态逆向链。本计划的作用，就是把这条链从“分析结论”变成“工程 gate”，并把 Android 与内核平台的运行环境边界补齐。

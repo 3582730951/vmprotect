@@ -135,7 +135,7 @@ function(eippf_harden_target target_name)
     "${CMAKE_CURRENT_BINARY_DIR}/${target_name}.eippf_runtime_target_anchor.cpp"
   )
   set(_runtime_anchor_content
-"extern \"C\" const unsigned int eippf_runtime_target_kind_anchor = ${_runtime_target_kind}u;\n\
+"extern \"C\" const unsigned int eippf_rtk0 = ${_runtime_target_kind}u;\n\
 #if defined(_MSC_VER)\n\
 #pragma section(\".eipptk\", read)\n\
 extern \"C\" __declspec(allocate(\".eipptk\")) const unsigned char eippf_runtime_target_kind_marker[] = {\n\

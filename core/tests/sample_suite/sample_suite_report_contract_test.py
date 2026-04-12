@@ -37,8 +37,32 @@ def load_protect_and_evaluate_module():
 def build_summary_samples() -> list[dict[str, object]]:
     items: list[dict[str, object]] = []
     for sample_id in SAMPLE_IDS:
+        platform = (
+            "windows"
+            if sample_id.startswith("windows_")
+            else (
+                "linux"
+                if sample_id.startswith("linux_")
+                else (
+                    "android"
+                    if sample_id.startswith("android_")
+                    else ("ios" if sample_id == "ios_macho" else "shell")
+                )
+            )
+        )
+        artifact_kind = (
+            "pe"
+            if sample_id.startswith("windows_")
+            else (
+                "elf"
+                if sample_id.startswith(("linux_", "android_")) and sample_id != "android_dex"
+                else ("dex" if sample_id == "android_dex" else ("macho" if sample_id == "ios_macho" else "shell_script"))
+            )
+        )
         item: dict[str, object] = {
             "id": sample_id,
+            "platform": platform,
+            "artifact_kind": artifact_kind,
             "target_kind": "desktop_native",
             "protect_via": "post_link_mutator",
             "build_mode": "wrapper",
@@ -76,6 +100,32 @@ def build_summary_samples() -> list[dict[str, object]]:
             "validation_scope": "fixture scope",
             "known_limits": "fixture limits",
         }
+        if sample_id in {"windows_exe", "linux_elf"}:
+            item["runtime_probe"] = {
+                "required": True,
+                "host": "windows" if sample_id == "windows_exe" else "linux",
+                "hold_ms": 3000,
+                "startup_delay_ms": 300,
+                "guard_exit_code": 120,
+            }
+        elif sample_id == "ios_macho":
+            item["runtime_probe"] = {
+                "required": False,
+                "host": "macos",
+                "reason": "host_probe_backend_pending",
+            }
+        elif sample_id in {"android_so", "android_dex", "android_ko"}:
+            item["runtime_probe"] = {
+                "required": False,
+                "host": "android",
+                "reason": "device_lab_required",
+            }
+        else:
+            item["runtime_probe"] = {
+                "required": False,
+                "host": "none",
+                "reason": "non_entrypoint_artifact",
+            }
         if sample_id in {"windows_sys", "linux_ko", "android_ko"}:
             item["artifact_shape"] = {
                 "audit_relpath": f"audit/{sample_id}.artifact_shape.audit.json",

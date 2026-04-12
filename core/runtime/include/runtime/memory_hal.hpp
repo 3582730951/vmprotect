@@ -36,9 +36,9 @@
 #include "runtime/dynamic_api_resolver.hpp"
 
 #if defined(__APPLE__) && (defined(__GNUC__) || defined(__clang__))
-extern "C" const std::uint32_t eippf_runtime_target_kind_anchor __attribute__((weak_import));
+extern "C" const std::uint32_t eippf_rtk0 __attribute__((weak_import));
 #elif defined(__GNUC__) || defined(__clang__)
-extern "C" const std::uint32_t eippf_runtime_target_kind_anchor __attribute__((weak));
+extern "C" const std::uint32_t eippf_rtk0 __attribute__((weak));
 #endif
 
 #if defined(_WIN32) || defined(_WIN64)
@@ -157,7 +157,10 @@ struct MemoryHAL final {
 #if defined(_WIN32) || defined(_WIN64)
     constexpr auto kKernel32 = security::make_obfuscated_string<0x23u>("kernel32.dll");
     constexpr auto kVirtualProtect = security::make_obfuscated_string<0x24u>("VirtualProtect");
+    constexpr auto kFlushInstructionCache =
+        security::make_obfuscated_string<0x29u>("FlushInstructionCache");
     using VirtualProtectFn = BOOL(WINAPI*)(LPVOID, SIZE_T, DWORD, PDWORD);
+    using FlushInstructionCacheFn = BOOL(WINAPI*)(HANDLE, LPCVOID, SIZE_T);
 
     const VirtualProtectFn virtual_protect =
         resolver.template resolve<VirtualProtectFn>(kKernel32, kVirtualProtect);
@@ -166,10 +169,22 @@ struct MemoryHAL final {
     }
 
     DWORD old_protect = 0u;
-    return virtual_protect(region.base,
-                           static_cast<SIZE_T>(region.size),
-                           PAGE_EXECUTE_READ,
-                           &old_protect) != FALSE;
+    const bool protected_ok = virtual_protect(region.base,
+                                              static_cast<SIZE_T>(region.size),
+                                              PAGE_EXECUTE_READ,
+                                              &old_protect) != FALSE;
+    if (!protected_ok) {
+      return false;
+    }
+
+    const FlushInstructionCacheFn flush_instruction_cache =
+        resolver.template resolve<FlushInstructionCacheFn>(kKernel32, kFlushInstructionCache);
+    if (flush_instruction_cache == nullptr) {
+      return false;
+    }
+    return flush_instruction_cache(GetCurrentProcess(),
+                                   region.base,
+                                   static_cast<SIZE_T>(region.size)) != FALSE;
 #elif defined(__linux__) || defined(__APPLE__)
 #if defined(__APPLE__) && (defined(__aarch64__) || defined(_M_ARM64))
     (void)resolver;
@@ -196,12 +211,14 @@ struct MemoryHAL final {
     }
 
     const bool ok = mprotect_fn(region.base, region.size, PROT_READ | PROT_EXEC) == 0;
-#if (defined(__aarch64__) || defined(_M_ARM64)) && (defined(__GNUC__) || defined(__clang__))
     if (ok) {
+#if defined(EIPPF_HAS_SYS_ICACHE_INVALIDATE)
+      sys_icache_invalidate(region.base, region.size);
+#elif defined(__GNUC__) || defined(__clang__)
       __builtin___clear_cache(static_cast<char*>(region.base),
                               static_cast<char*>(region.base) + region.size);
-    }
 #endif
+    }
     return ok;
 #endif
 #else
@@ -397,9 +414,9 @@ struct MemoryHAL final {
     }
     return 0u;
 #elif defined(__APPLE__) && (defined(__GNUC__) || defined(__clang__))
-    return &eippf_runtime_target_kind_anchor != nullptr ? eippf_runtime_target_kind_anchor : 0u;
+    return &eippf_rtk0 != nullptr ? eippf_rtk0 : 0u;
 #elif defined(__GNUC__) || defined(__clang__)
-    return &eippf_runtime_target_kind_anchor != nullptr ? eippf_runtime_target_kind_anchor : 0u;
+    return &eippf_rtk0 != nullptr ? eippf_rtk0 : 0u;
 #else
     return 0u;
 #endif

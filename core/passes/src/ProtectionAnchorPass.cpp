@@ -151,7 +151,7 @@ bool can_rename_local_symbol(const llvm::Function& function) {
   if (function.getName() == "main") {
     return false;
   }
-  if (function.getName().startswith("llvm.")) {
+  if (function.getName().starts_with("llvm.")) {
     return false;
   }
   return true;

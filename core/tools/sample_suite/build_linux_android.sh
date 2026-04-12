@@ -100,9 +100,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 SRC_ROOT="${REPO_ROOT}/core/tests/sample_suite/sources"
 HELPER_SOURCE="${REPO_ROOT}/core/runtime/src/string_token_runtime.cpp"
+RUNTIME_SOURCE="${REPO_ROOT}/core/runtime/src/EippfRuntime.cpp"
 SHARED_INCLUDE="${REPO_ROOT}/core/include"
 RUNTIME_INCLUDE="${REPO_ROOT}/core/runtime/include"
 WRAPPER="${REPO_ROOT}/core/wrapper/eippf_cc.py"
+PROTECTION_SUITE_SUMMARY="ProtectionAnchor,StringProtection,IATMinimization,MBAObfuscation,CFFObfuscation"
 
 require_env EIPPF_HOST_LLVM_ROOT
 require_env LLVM_DIR
@@ -110,12 +112,6 @@ require_env EIPPF_ANDROID_NDK_ROOT
 require_env EIPPF_ANDROID_NDK_VERSION
 require_env ANDROID_SDK_ROOT
 
-if [[ "${EIPPF_HOST_LLVM_ROOT}" != "/usr/lib/llvm-18" ]]; then
-  fail "EIPPF_HOST_LLVM_ROOT mismatch: ${EIPPF_HOST_LLVM_ROOT}"
-fi
-if [[ "${LLVM_DIR}" != "/usr/lib/llvm-18/lib/cmake/llvm" ]]; then
-  fail "LLVM_DIR mismatch: ${LLVM_DIR}"
-fi
 if [[ "${EIPPF_ANDROID_NDK_VERSION}" != "26.3.11579264" ]]; then
   fail "EIPPF_ANDROID_NDK_VERSION mismatch: ${EIPPF_ANDROID_NDK_VERSION}"
 fi
@@ -140,6 +136,8 @@ if [[ -x "${HOST_LLVM_ROOT}/bin/clang++" ]]; then
   HOST_CLANGXX="${HOST_LLVM_ROOT}/bin/clang++"
 elif [[ -x "${HOST_LLVM_ROOT}/bin/clang++-18" ]]; then
   HOST_CLANGXX="${HOST_LLVM_ROOT}/bin/clang++-18"
+elif [[ -x "${HOST_LLVM_ROOT}/bin/clang++-19" ]]; then
+  HOST_CLANGXX="${HOST_LLVM_ROOT}/bin/clang++-19"
 else
   fail "host clang++ is missing under ${HOST_LLVM_ROOT}/bin"
 fi
@@ -148,6 +146,8 @@ if [[ -x "${HOST_LLVM_ROOT}/bin/clang" ]]; then
   HOST_CLANG="${HOST_LLVM_ROOT}/bin/clang"
 elif [[ -x "${HOST_LLVM_ROOT}/bin/clang-18" ]]; then
   HOST_CLANG="${HOST_LLVM_ROOT}/bin/clang-18"
+elif [[ -x "${HOST_LLVM_ROOT}/bin/clang-19" ]]; then
+  HOST_CLANG="${HOST_LLVM_ROOT}/bin/clang-19"
 else
   fail "host clang is missing under ${HOST_LLVM_ROOT}/bin"
 fi
@@ -157,6 +157,14 @@ for tool in cmake ninja python3 javac; do
     fail "required tool missing: ${tool}"
   fi
 done
+if ! command -v strip >/dev/null 2>&1; then
+  fail "required tool missing: strip"
+fi
+
+export EIPPF_STRIP_OUTPUT=1
+export EIPPF_STRIP_MODE=all
+export EIPPF_STRIP_FAIL_CLOSED=1
+export EIPPF_STRIP_TOOL=strip
 
 LINUX_ELF_DIR="${OUT_ROOT}/linux_elf"
 LINUX_SO_DIR="${OUT_ROOT}/linux_so"
@@ -173,8 +181,10 @@ COMMANDS_DIR="${TOOLCHAIN_REPORT_DIR}/commands"
 REPORT_PATH="${TOOLCHAIN_REPORT_DIR}/linux_android.txt"
 PASS_PLUGIN_PATH="${PASS_PLUGIN_DIR}/eippf_protection_suite_pass.so"
 LINUX_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.linux.user.o"
+LINUX_USER_RUNTIME_O="${RUNTIME_LIB_DIR}/runtime_core.linux.user.o"
 LINUX_KERNEL_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.linux.ko.o"
 ANDROID_USER_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.android.user.o"
+ANDROID_USER_RUNTIME_O="${RUNTIME_LIB_DIR}/runtime_core.android.user.o"
 ANDROID_KERNEL_HELPER_O="${RUNTIME_LIB_DIR}/string_token_runtime.android.ko.o"
 ANDROID_SO_PROTECTED_O="${RUNTIME_LIB_DIR}/sample_android_so.protected.o"
 ANDROID_KO_PROTECTED_O="${RUNTIME_LIB_DIR}/sample_android_ko.protected.o"
@@ -187,8 +197,10 @@ ANDROID_KO_OUTPUT="${ANDROID_KO_DIR}/sample_android_module.ko"
 
 PLUGIN_BUILD_SIDECAR="${COMMANDS_DIR}/linux_android.plugin_build.txt"
 LINUX_USER_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.linux_user_helper_compile.txt"
+LINUX_USER_RUNTIME_SIDECAR="${COMMANDS_DIR}/linux_android.linux_user_runtime_compile.txt"
 LINUX_KERNEL_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.linux_kernel_helper_compile.txt"
 ANDROID_USER_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.android_user_helper_compile.txt"
+ANDROID_USER_RUNTIME_SIDECAR="${COMMANDS_DIR}/linux_android.android_user_runtime_compile.txt"
 ANDROID_KERNEL_HELPER_SIDECAR="${COMMANDS_DIR}/linux_android.android_kernel_helper_compile.txt"
 ANDROID_SO_PROTECTED_COMPILE_SIDECAR="${COMMANDS_DIR}/linux_android.android_so_protected_compile.txt"
 ANDROID_KO_PROTECTED_COMPILE_SIDECAR="${COMMANDS_DIR}/linux_android.android_ko_protected_compile.txt"
@@ -248,12 +260,37 @@ LINUX_USER_HELPER_CMD=(
   -fno-exceptions
   -fno-rtti
   -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
   -c "${HELPER_SOURCE}"
   -I"${SHARED_INCLUDE}"
   -I"${RUNTIME_INCLUDE}"
   -o "${LINUX_USER_HELPER_O}"
 )
 run_and_record "${LINUX_USER_HELPER_SIDECAR}" "${LINUX_USER_HELPER_CMD[@]}"
+
+LINUX_USER_RUNTIME_CMD=(
+  "${HOST_CLANGXX}"
+  -std=c++20
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Wconversion
+  -Wshadow
+  -Wnull-dereference
+  -fno-exceptions
+  -fno-rtti
+  -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
+  -c "${RUNTIME_SOURCE}"
+  -I"${SHARED_INCLUDE}"
+  -I"${RUNTIME_INCLUDE}"
+  -o "${LINUX_USER_RUNTIME_O}"
+)
+run_and_record "${LINUX_USER_RUNTIME_SIDECAR}" "${LINUX_USER_RUNTIME_CMD[@]}"
 
 LINUX_KERNEL_HELPER_CMD=(
   "${HOST_CLANGXX}"
@@ -292,12 +329,39 @@ ANDROID_USER_HELPER_CMD=(
   -fno-exceptions
   -fno-rtti
   -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
   -c "${HELPER_SOURCE}"
   -I"${SHARED_INCLUDE}"
   -I"${RUNTIME_INCLUDE}"
   -o "${ANDROID_USER_HELPER_O}"
 )
 run_and_record "${ANDROID_USER_HELPER_SIDECAR}" "${ANDROID_USER_HELPER_CMD[@]}"
+
+ANDROID_USER_RUNTIME_CMD=(
+  "${ANDROID_TARGET_CLANGXX}"
+  --target=aarch64-linux-android24
+  --sysroot="${ANDROID_SYSROOT}"
+  -std=c++20
+  -Wall
+  -Wextra
+  -Wpedantic
+  -Wconversion
+  -Wshadow
+  -Wnull-dereference
+  -fno-exceptions
+  -fno-rtti
+  -fPIC
+  -ffunction-sections
+  -fdata-sections
+  -fvisibility=hidden
+  -c "${RUNTIME_SOURCE}"
+  -I"${SHARED_INCLUDE}"
+  -I"${RUNTIME_INCLUDE}"
+  -o "${ANDROID_USER_RUNTIME_O}"
+)
+run_and_record "${ANDROID_USER_RUNTIME_SIDECAR}" "${ANDROID_USER_RUNTIME_CMD[@]}"
 
 ANDROID_KERNEL_HELPER_CMD=(
   "${ANDROID_TARGET_CLANGXX}"
@@ -331,8 +395,10 @@ LINUX_ELF_LINK_ARGS=(
   -O2
   -Wall
   -Wextra
+  -Wl,--gc-sections
   -o "${LINUX_ELF_OUTPUT}"
   "${LINUX_USER_HELPER_O}"
+  "${LINUX_USER_RUNTIME_O}"
 )
 run_wrapper_and_record "${LINUX_ELF_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_ELF_LINK_ARGS[@]}"
 
@@ -344,10 +410,13 @@ LINUX_SO_LINK_ARGS=(
   -Wall
   -Wextra
   -fPIC
+  -fvisibility=hidden
   -shared
+  -Wl,--gc-sections
   -Wl,-soname,libsample_linux.so
   -o "${LINUX_SO_OUTPUT}"
   "${LINUX_USER_HELPER_O}"
+  "${LINUX_USER_RUNTIME_O}"
 )
 run_wrapper_and_record "${LINUX_SO_LINK_SIDECAR}" "${HOST_CLANGXX}" "${LINUX_SO_LINK_ARGS[@]}"
 
@@ -379,6 +448,7 @@ ANDROID_SO_PROTECTED_COMPILE_ARGS=(
   -Wall
   -Wextra
   -fPIC
+  -fvisibility=hidden
   -o "${ANDROID_SO_PROTECTED_O}"
 )
 run_wrapper_and_record "${ANDROID_SO_PROTECTED_COMPILE_SIDECAR}" "${HOST_CLANGXX}" "${ANDROID_SO_PROTECTED_COMPILE_ARGS[@]}"
@@ -387,9 +457,11 @@ ANDROID_SO_LINK_ARGS=(
   --target=aarch64-linux-android24
   --sysroot="${ANDROID_SYSROOT}"
   -shared
+  -Wl,--gc-sections
   -o "${ANDROID_SO_OUTPUT}"
   "${ANDROID_SO_PROTECTED_O}"
   "${ANDROID_USER_HELPER_O}"
+  "${ANDROID_USER_RUNTIME_O}"
 )
 run_and_record "${ANDROID_SO_LINK_SIDECAR}" "${ANDROID_TARGET_CLANGXX}" "${ANDROID_SO_LINK_ARGS[@]}"
 
@@ -441,16 +513,20 @@ LLVM_DIR_ABS="$(resolve_path "${LLVM_CMAKE_DIR}")"
 ANDROID_NDK_ROOT_ABS="$(resolve_path "${ANDROID_NDK_ROOT}")"
 PASS_PLUGIN_PATH_ABS="$(resolve_path "${PASS_PLUGIN_PATH}")"
 LINUX_USER_HELPER_O_ABS="$(resolve_path "${LINUX_USER_HELPER_O}")"
+LINUX_USER_RUNTIME_O_ABS="$(resolve_path "${LINUX_USER_RUNTIME_O}")"
 LINUX_KERNEL_HELPER_O_ABS="$(resolve_path "${LINUX_KERNEL_HELPER_O}")"
 ANDROID_USER_HELPER_O_ABS="$(resolve_path "${ANDROID_USER_HELPER_O}")"
+ANDROID_USER_RUNTIME_O_ABS="$(resolve_path "${ANDROID_USER_RUNTIME_O}")"
 ANDROID_KERNEL_HELPER_O_ABS="$(resolve_path "${ANDROID_KERNEL_HELPER_O}")"
 ANDROID_SO_PROTECTED_O_ABS="$(resolve_path "${ANDROID_SO_PROTECTED_O}")"
 ANDROID_KO_PROTECTED_O_ABS="$(resolve_path "${ANDROID_KO_PROTECTED_O}")"
 
 PLUGIN_BUILD_SIDECAR_ABS="$(resolve_path "${PLUGIN_BUILD_SIDECAR}")"
 LINUX_USER_HELPER_SIDECAR_ABS="$(resolve_path "${LINUX_USER_HELPER_SIDECAR}")"
+LINUX_USER_RUNTIME_SIDECAR_ABS="$(resolve_path "${LINUX_USER_RUNTIME_SIDECAR}")"
 LINUX_KERNEL_HELPER_SIDECAR_ABS="$(resolve_path "${LINUX_KERNEL_HELPER_SIDECAR}")"
 ANDROID_USER_HELPER_SIDECAR_ABS="$(resolve_path "${ANDROID_USER_HELPER_SIDECAR}")"
+ANDROID_USER_RUNTIME_SIDECAR_ABS="$(resolve_path "${ANDROID_USER_RUNTIME_SIDECAR}")"
 ANDROID_KERNEL_HELPER_SIDECAR_ABS="$(resolve_path "${ANDROID_KERNEL_HELPER_SIDECAR}")"
 ANDROID_SO_PROTECTED_COMPILE_SIDECAR_ABS="$(resolve_path "${ANDROID_SO_PROTECTED_COMPILE_SIDECAR}")"
 ANDROID_KO_PROTECTED_COMPILE_SIDECAR_ABS="$(resolve_path "${ANDROID_KO_PROTECTED_COMPILE_SIDECAR}")"
@@ -470,23 +546,28 @@ host_compiler_version_first_line=${HOST_COMPILER_VERSION_FIRST_LINE}
 android_target_compiler_path=${ANDROID_COMPILER_PATH}
 android_target_compiler_version_first_line=${ANDROID_COMPILER_VERSION_FIRST_LINE}
 plugin_path=${PASS_PLUGIN_PATH_ABS}
+suite_summary=${PROTECTION_SUITE_SUMMARY}
 linux_user_helper_o=${LINUX_USER_HELPER_O_ABS}
+linux_user_runtime_o=${LINUX_USER_RUNTIME_O_ABS}
 linux_kernel_helper_o=${LINUX_KERNEL_HELPER_O_ABS}
 android_user_helper_o=${ANDROID_USER_HELPER_O_ABS}
+android_user_runtime_o=${ANDROID_USER_RUNTIME_O_ABS}
 android_kernel_helper_o=${ANDROID_KERNEL_HELPER_O_ABS}
 android_so_protected_o=${ANDROID_SO_PROTECTED_O_ABS}
 android_ko_protected_o=${ANDROID_KO_PROTECTED_O_ABS}
 plugin_build_command=${PLUGIN_BUILD_SIDECAR_ABS}
 linux_user_helper_compile_command=${LINUX_USER_HELPER_SIDECAR_ABS}
+linux_user_runtime_compile_command=${LINUX_USER_RUNTIME_SIDECAR_ABS}
 linux_kernel_helper_compile_command=${LINUX_KERNEL_HELPER_SIDECAR_ABS}
 android_user_helper_compile_command=${ANDROID_USER_HELPER_SIDECAR_ABS}
+android_user_runtime_compile_command=${ANDROID_USER_RUNTIME_SIDECAR_ABS}
 android_kernel_helper_compile_command=${ANDROID_KERNEL_HELPER_SIDECAR_ABS}
 android_so_protected_compile_command=${ANDROID_SO_PROTECTED_COMPILE_SIDECAR_ABS}
 android_ko_protected_compile_command=${ANDROID_KO_PROTECTED_COMPILE_SIDECAR_ABS}
-linux_elf_link_inputs=${LINUX_USER_HELPER_O_ABS}
-linux_so_link_inputs=${LINUX_USER_HELPER_O_ABS}
+linux_elf_link_inputs=${LINUX_USER_HELPER_O_ABS};${LINUX_USER_RUNTIME_O_ABS}
+linux_so_link_inputs=${LINUX_USER_HELPER_O_ABS};${LINUX_USER_RUNTIME_O_ABS}
 linux_ko_link_inputs=${LINUX_KERNEL_HELPER_O_ABS}
-android_so_link_inputs=${ANDROID_SO_PROTECTED_O_ABS};${ANDROID_USER_HELPER_O_ABS}
+android_so_link_inputs=${ANDROID_SO_PROTECTED_O_ABS};${ANDROID_USER_HELPER_O_ABS};${ANDROID_USER_RUNTIME_O_ABS}
 android_ko_link_inputs=${ANDROID_KO_PROTECTED_O_ABS};${ANDROID_KERNEL_HELPER_O_ABS}
 linux_elf_link_command=${LINUX_ELF_LINK_SIDECAR_ABS}
 linux_so_link_command=${LINUX_SO_LINK_SIDECAR_ABS}

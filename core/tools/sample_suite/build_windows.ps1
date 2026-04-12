@@ -12,10 +12,12 @@ $WrapperPath = Join-Path $RepoRoot "core\wrapper\eippf_cc.py"
 $CoreRoot = Join-Path $RepoRoot "core"
 $SharedIncludeRoot = Join-Path $CoreRoot "include"
 $RuntimeIncludeRoot = Join-Path $CoreRoot "runtime\include"
+$BootstrapIncludeRoot = Join-Path $CoreRoot "bootstrap\include"
 $HelperSource = Join-Path $CoreRoot "runtime\src\string_token_runtime.cpp"
-$PinnedLlvmTarballUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang%2Bllvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
-$PinnedLlvmTarballSha256 = "22c5907db053026cc2a8ff96d21c0f642a90d24d66c23c6d28ee7b1d572b82e8"
-$PinnedLlvmRoot = "C:\eippf\llvm18"
+$RuntimeSource = Join-Path $CoreRoot "runtime\src\EippfRuntime.cpp"
+$PinnedLlvmTarballUrl = "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
+$PinnedLlvmTarballSha256 = "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
+$PinnedLlvmRoot = "C:\eippf\llvm19_1_7"
 
 function Resolve-RequiredPath {
     param(
@@ -93,7 +95,7 @@ function Invoke-WrappedCompileAndLink {
     Invoke-NativeCommand -Executable $script:PythonExe -Arguments $wrapperArgs -FailureLabel $FailureLabel
 }
 
-function Ensure-PinnedLlvm18Toolchain {
+function Ensure-PinnedLlvmToolchain {
     param(
         [Parameter(Mandatory = $true)][string]$PinnedLlvmTarballUrl,
         [Parameter(Mandatory = $true)][string]$PinnedLlvmTarballSha256,
@@ -181,19 +183,19 @@ if ([string]::IsNullOrWhiteSpace($RunnerTempRaw)) {
     throw "[FAIL] RUNNER_TEMP is required"
 }
 $RunnerTemp = [System.IO.Path]::GetFullPath($RunnerTempRaw.Trim().Trim('"'))
-$PinnedLlvmArchive = Join-Path $RunnerTemp "clang+llvm-18.1.8-x86_64-pc-windows-msvc.tar.xz"
-$PinnedLlvmStage = Join-Path $RunnerTemp "llvm18_unpack"
+$PinnedLlvmArchive = Join-Path $RunnerTemp "clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz"
+$PinnedLlvmStage = Join-Path $RunnerTemp "llvm19_1_7_unpack"
 
 $RawPinnedLlvmSource = $env:EIPPF_WINDOWS_LLVM_SOURCE
 if ([string]::IsNullOrWhiteSpace($RawPinnedLlvmSource)) {
     throw "[FAIL] EIPPF_WINDOWS_LLVM_SOURCE is required"
 }
 $LLVMSource = $RawPinnedLlvmSource.Trim()
-if ($LLVMSource -ne "pinned_llvm18_tarball") {
+if ($LLVMSource -ne "pinned_llvm19_1_7_tarball") {
     throw "[FAIL] unsupported EIPPF_WINDOWS_LLVM_SOURCE: $LLVMSource"
 }
 
-$PinnedLlvm = Ensure-PinnedLlvm18Toolchain `
+$PinnedLlvm = Ensure-PinnedLlvmToolchain `
     -PinnedLlvmTarballUrl $PinnedLlvmTarballUrl `
     -PinnedLlvmTarballSha256 $PinnedLlvmTarballSha256 `
     -PinnedLlvmRoot $PinnedLlvmRoot `
@@ -203,17 +205,26 @@ $AllowedLlvmRoot = $PinnedLlvm.Root
 $LLVMDir = $PinnedLlvm.LlvmDir
 $ClangClPath = $PinnedLlvm.ClangClPath
 
+$env:PATH = (Join-Path $AllowedLlvmRoot "bin") + ";" + $env:PATH
+$env:EIPPF_STRIP_OUTPUT = "1"
+$env:EIPPF_STRIP_MODE = "all"
+$env:EIPPF_STRIP_FAIL_CLOSED = "1"
+$env:EIPPF_STRIP_TOOL = "llvm-strip"
+
 $env:EIPPF_ALLOWED_LLVM_ROOT = $AllowedLlvmRoot
 $env:LLVM_DIR = $LLVMDir
 
 $SharedIncludeRoot = Resolve-RequiredPath -InputPath $SharedIncludeRoot -Label "core/include"
 $RuntimeIncludeRoot = Resolve-RequiredPath -InputPath $RuntimeIncludeRoot -Label "core/runtime/include"
+$BootstrapIncludeRoot = Resolve-RequiredPath -InputPath $BootstrapIncludeRoot -Label "core/bootstrap/include"
 $HelperSource = Resolve-RequiredPath -InputPath $HelperSource -Label "string_token_runtime.cpp"
+$RuntimeSource = Resolve-RequiredPath -InputPath $RuntimeSource -Label "EippfRuntime.cpp"
 
 $HelperIncludeArgs = @("/I$SharedIncludeRoot", "/I$RuntimeIncludeRoot")
 if ($HelperIncludeArgs.Count -ne 2 -or ($HelperIncludeArgs | Select-Object -Unique).Count -ne 2) {
     throw "[FAIL] helper include roots must be exactly core/include and core/runtime/include"
 }
+$RuntimeIncludeArgs = @("/I$SharedIncludeRoot", "/I$RuntimeIncludeRoot", "/I$BootstrapIncludeRoot")
 
 $Python = Get-Command "python" -ErrorAction SilentlyContinue
 $PythonExe = ""
@@ -255,7 +266,9 @@ New-Item -ItemType Directory -Force -Path $PassBuildDir | Out-Null
 New-Item -ItemType Directory -Force -Path $CommandsDir | Out-Null
 
 $PassPluginPath = Join-Path $PassPluginDir "eippf_protection_suite_pass.dll"
+$ProtectionSuiteSummary = "ProtectionAnchor,StringProtection,IATMinimization,MBAObfuscation,CFFObfuscation"
 $HelperUserObj = Join-Path $RuntimeLibDir "string_token_runtime.windows.user.obj"
+$RuntimeUserObj = Join-Path $RuntimeLibDir "runtime_core.windows.user.obj"
 $HelperKernelObj = Join-Path $RuntimeLibDir "string_token_runtime.windows.sys.obj"
 
 $ExeSource = Resolve-RequiredPath -InputPath (Join-Path $SourceRoot "windows_exe_main.c") -Label "windows_exe_main.c"
@@ -269,6 +282,7 @@ $SysOut = Join-Path $WindowsSysDir "sample_windows.sys"
 $ReportPath = Join-Path $ReportDir "windows.txt"
 $PluginBuildSidecar = Join-Path $CommandsDir "windows.plugin_build.txt"
 $HelperUserSidecar = Join-Path $CommandsDir "windows.helper_user_compile.txt"
+$RuntimeUserSidecar = Join-Path $CommandsDir "windows.runtime_user_compile.txt"
 $HelperKernelSidecar = Join-Path $CommandsDir "windows.helper_kernel_compile.txt"
 $ExeLinkSidecar = Join-Path $CommandsDir "windows.exe_link.txt"
 $DllLinkSidecar = Join-Path $CommandsDir "windows.dll_link.txt"
@@ -309,11 +323,25 @@ $HelperUserArgs = @(
     "/c",
     "/O2",
     "/W4",
+    "/Gy",
+    "/Gw",
     "/GR-",
     "/EHs-c-",
     "/Fo:$HelperUserObj",
     $HelperSource
 ) + $HelperIncludeArgs
+$RuntimeUserArgs = @(
+    "/nologo",
+    "/c",
+    "/O2",
+    "/W4",
+    "/Gy",
+    "/Gw",
+    "/GR-",
+    "/EHs-c-",
+    "/Fo:$RuntimeUserObj",
+    $RuntimeSource
+) + $RuntimeIncludeArgs
 $HelperKernelArgs = @(
     "/nologo",
     "/c",
@@ -328,12 +356,17 @@ $HelperKernelArgs = @(
 ) + $HelperIncludeArgs
 
 Write-AsciiTextFile -Path $HelperUserSidecar -Content (Format-CommandLine -Executable $ClangClPath -Arguments $HelperUserArgs)
+Write-AsciiTextFile -Path $RuntimeUserSidecar -Content (Format-CommandLine -Executable $ClangClPath -Arguments $RuntimeUserArgs)
 Write-AsciiTextFile -Path $HelperKernelSidecar -Content (Format-CommandLine -Executable $ClangClPath -Arguments $HelperKernelArgs)
 Invoke-NativeCommand -Executable $ClangClPath -Arguments $HelperUserArgs -FailureLabel "helper user compile"
+Invoke-NativeCommand -Executable $ClangClPath -Arguments $RuntimeUserArgs -FailureLabel "runtime user compile"
 Invoke-NativeCommand -Executable $ClangClPath -Arguments $HelperKernelArgs -FailureLabel "helper kernel compile"
 
 if (-not (Test-Path -LiteralPath $HelperUserObj)) {
     throw "[FAIL] helper user object missing: $HelperUserObj"
+}
+if (-not (Test-Path -LiteralPath $RuntimeUserObj)) {
+    throw "[FAIL] runtime user object missing: $RuntimeUserObj"
 }
 if (-not (Test-Path -LiteralPath $HelperKernelObj)) {
     throw "[FAIL] helper kernel object missing: $HelperKernelObj"
@@ -347,7 +380,10 @@ Invoke-WrappedCompileAndLink -CompileArgs @(
     $ExeSource,
     "/link",
     "/OUT:$ExeOut",
-    $HelperUserObj
+    "/OPT:REF",
+    "/OPT:ICF",
+    $HelperUserObj,
+    $RuntimeUserObj
 ) -SidecarPath $ExeLinkSidecar -FailureLabel "windows exe link"
 Invoke-WrappedCompileAndLink -CompileArgs @(
     "/nologo",
@@ -358,7 +394,10 @@ Invoke-WrappedCompileAndLink -CompileArgs @(
     $DllSource,
     "/link",
     "/OUT:$DllOut",
-    $HelperUserObj
+    "/OPT:REF",
+    "/OPT:ICF",
+    $HelperUserObj,
+    $RuntimeUserObj
 ) -SidecarPath $DllLinkSidecar -FailureLabel "windows dll link"
 Invoke-WrappedCompileAndLink -CompileArgs @(
     "/nologo",
@@ -376,7 +415,7 @@ Invoke-WrappedCompileAndLink -CompileArgs @(
     "/DRIVER",
     "/SUBSYSTEM:NATIVE",
     "/NODEFAULTLIB",
-    "/ENTRY:DriverEntry",
+    "/ENTRY:ep0",
     $HelperKernelObj
 ) -SidecarPath $SysLinkSidecar -FailureLabel "windows sys link"
 
@@ -402,13 +441,16 @@ $ReportLines = @(
     "compiler_version_first_line=$CompilerVersionFirstLine",
     "llvm_dir=$LLVMDir",
     "plugin_path=$PassPluginPath",
+    "suite_summary=$ProtectionSuiteSummary",
     "helper_user_o=$HelperUserObj",
+    "runtime_user_o=$RuntimeUserObj",
     "helper_kernel_o=$HelperKernelObj",
     "plugin_build_command=$PluginBuildSidecar",
     "helper_user_compile_command=$HelperUserSidecar",
+    "runtime_user_compile_command=$RuntimeUserSidecar",
     "helper_kernel_compile_command=$HelperKernelSidecar",
-    "windows_exe_link_inputs=$HelperUserObj",
-    "windows_dll_link_inputs=$HelperUserObj",
+    "windows_exe_link_inputs=$HelperUserObj;$RuntimeUserObj",
+    "windows_dll_link_inputs=$HelperUserObj;$RuntimeUserObj",
     "windows_sys_link_inputs=$HelperKernelObj",
     "windows_exe_link_command=$ExeLinkSidecar",
     "windows_dll_link_command=$DllLinkSidecar",

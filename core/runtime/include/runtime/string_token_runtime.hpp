@@ -5,9 +5,11 @@
 
 extern "C" {
 
-void eippf_string_token_decode(std::uint8_t* dest, const std::uint8_t* src, std::size_t size,
-                               std::uint8_t key);
+void eippf_sd0(std::uint8_t* dest, const std::uint8_t* src, std::size_t size,
+               std::uint8_t key);
 
-void eippf_string_token_wipe(std::uint8_t* data, std::size_t size);
+void eippf_sw0(std::uint8_t* data, std::size_t size);
+
+int eippf_rg0(void);
 
 }  // extern "C"

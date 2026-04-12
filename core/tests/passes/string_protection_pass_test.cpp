@@ -40,6 +40,12 @@ struct EntryDominanceFixture final {
   llvm::Function* use_function = nullptr;
 };
 
+struct DualUseFixture final {
+  std::unique_ptr<llvm::Module> module;
+  llvm::GlobalVariable* string_global = nullptr;
+  llvm::Function* use_function = nullptr;
+};
+
 ModuleFixture build_fixture(llvm::LLVMContext& context, const std::string& literal) {
   ModuleFixture fixture{};
   fixture.module = std::make_unique<llvm::Module>("string_protection_fixture", context);
@@ -114,6 +120,45 @@ EntryDominanceFixture build_entry_dominance_fixture(llvm::LLVMContext& context,
   return fixture;
 }
 
+DualUseFixture build_dual_use_fixture(llvm::LLVMContext& context, const std::string& literal) {
+  DualUseFixture fixture{};
+  fixture.module = std::make_unique<llvm::Module>("string_protection_dual_use_fixture", context);
+
+  auto* i8_ty = llvm::Type::getInt8Ty(context);
+  auto* i32_ty = llvm::Type::getInt32Ty(context);
+  auto* i8_ptr_ty = llvm::PointerType::getUnqual(i8_ty);
+
+  auto* sink_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(context), {i8_ptr_ty}, false);
+  llvm::FunctionCallee sink = fixture.module->getOrInsertFunction("sink", sink_ty);
+  auto* barrier_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(context), false);
+  llvm::FunctionCallee barrier = fixture.module->getOrInsertFunction("barrier", barrier_ty);
+
+  llvm::Constant* string_initializer = llvm::ConstantDataArray::getString(context, literal, true);
+  fixture.string_global = new llvm::GlobalVariable(*fixture.module, string_initializer->getType(), true,
+                                                   llvm::GlobalValue::PrivateLinkage,
+                                                   string_initializer, ".dual.str");
+  fixture.string_global->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+  fixture.string_global->setAlignment(llvm::Align(1));
+
+  auto* function_ty = llvm::FunctionType::get(llvm::Type::getVoidTy(context), false);
+  fixture.use_function = llvm::Function::Create(function_ty, llvm::GlobalValue::ExternalLinkage,
+                                                "dual_use_string", fixture.module.get());
+  llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", fixture.use_function);
+  llvm::IRBuilder<> builder(entry);
+
+  llvm::Constant* zero = llvm::ConstantInt::get(i32_ty, 0);
+  const std::array<llvm::Constant*, 2> gep_indices{zero, zero};
+  const llvm::ArrayRef<llvm::Constant*> gep_index_ref(gep_indices);
+  llvm::Constant* string_ptr = llvm::ConstantExpr::getInBoundsGetElementPtr(
+      string_initializer->getType(), fixture.string_global, gep_index_ref);
+  builder.CreateCall(sink, {string_ptr});
+  builder.CreateCall(barrier, {});
+  builder.CreateCall(sink, {string_ptr});
+  builder.CreateRetVoid();
+
+  return fixture;
+}
+
 bool run_pass(llvm::Module& module) {
   eippf::passes::StringProtectionPass pass;
   llvm::ModuleAnalysisManager analysis_manager;
@@ -148,6 +193,21 @@ bool has_callee(const llvm::Function& function, llvm::StringRef name) {
     }
   }
   return false;
+}
+
+std::size_t count_callee_calls(const llvm::Function& function, llvm::StringRef name) {
+  std::size_t count = 0u;
+  for (const llvm::Instruction& instruction : llvm::instructions(function)) {
+    const auto* call = llvm::dyn_cast<llvm::CallBase>(&instruction);
+    if (call == nullptr) {
+      continue;
+    }
+    const llvm::Function* callee = call->getCalledFunction();
+    if (callee != nullptr && callee->getName() == name) {
+      ++count;
+    }
+  }
+  return count;
 }
 
 bool call_to_sink_uses_dynamic_buffer(const llvm::Function& function) {
@@ -192,11 +252,11 @@ bool test_normal_candidate_rewrite_success() {
     return false;
   }
 
-  if (!expect(has_callee(*fixture.use_function, "eippf_string_token_decode"),
+  if (!expect(has_callee(*fixture.use_function, "eippf_sd0"),
               "decode helper call should be injected")) {
     return false;
   }
-  return expect(has_callee(*fixture.use_function, "eippf_string_token_wipe"),
+  return expect(has_callee(*fixture.use_function, "eippf_sw0"),
                 "wipe helper call should be injected");
 }
 
@@ -225,7 +285,7 @@ bool test_sample_anchor_literals_are_rewritten() {
                 "sample anchor literal must not remain plaintext after rewrite")) {
       return false;
     }
-    if (!expect(has_callee(*fixture.use_function, "eippf_string_token_decode"),
+    if (!expect(has_callee(*fixture.use_function, "eippf_sd0"),
                 "sample anchor rewrite should inject decode helper call")) {
       return false;
     }
@@ -262,8 +322,48 @@ bool test_tutorial_anchor_is_disallowed() {
     return false;
   }
 
-  return expect(!has_callee(*fixture.use_function, "eippf_string_token_decode"),
+  return expect(!has_callee(*fixture.use_function, "eippf_sd0"),
                 "disallowed candidate should not inject decode helper call");
+}
+
+bool test_reverse_tool_markers_are_disallowed() {
+  constexpr std::array<const char*, 3> kReverseMarkers = {
+      "IDA Pro marker",
+      "Cheat Engine marker",
+      "Frida gadget marker",
+  };
+
+  for (const char* marker : kReverseMarkers) {
+    llvm::LLVMContext context;
+    ModuleFixture fixture = build_fixture(context, marker);
+    const bool changed = run_pass(*fixture.module);
+    if (!expect(changed, "reverse-tool lexical candidate should be observably marked")) {
+      return false;
+    }
+
+    auto* data = llvm::dyn_cast<llvm::ConstantDataSequential>(fixture.string_global->getInitializer());
+    if (!expect(data != nullptr, "reverse-tool candidate should keep original constant data form")) {
+      return false;
+    }
+
+    const std::string expected = std::string(marker) + '\0';
+    if (!expect(data->getRawDataValues() == expected,
+                "reverse-tool candidate must remain in original plaintext initializer")) {
+      return false;
+    }
+
+    if (!expect(fixture.module->getNamedGlobal(kDisallowedMarker) != nullptr,
+                "reverse-tool marker should emit disallowed marker")) {
+      return false;
+    }
+
+    if (!expect(!has_callee(*fixture.use_function, "eippf_sd0"),
+                "reverse-tool candidate should not inject decode helper call")) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 bool test_rewrite_avoids_long_lived_plaintext_semantics() {
@@ -278,7 +378,7 @@ bool test_rewrite_avoids_long_lived_plaintext_semantics() {
     return false;
   }
 
-  return expect(has_callee(*fixture.use_function, "eippf_string_token_wipe"),
+  return expect(has_callee(*fixture.use_function, "eippf_sw0"),
                 "rewritten function should wipe decoded buffer before exit");
 }
 
@@ -294,12 +394,30 @@ bool test_entry_block_dominance_regression() {
               "rewritten entry-block dominance fixture must pass verifier")) {
     return false;
   }
-  if (!expect(has_callee(*fixture.use_function, "eippf_string_token_decode"),
+  if (!expect(has_callee(*fixture.use_function, "eippf_sd0"),
               "entry-block dominance fixture should inject decode helper call")) {
     return false;
   }
-  return expect(has_callee(*fixture.use_function, "eippf_string_token_wipe"),
+  return expect(has_callee(*fixture.use_function, "eippf_sw0"),
                 "entry-block dominance fixture should inject wipe helper call");
+}
+
+bool test_repeated_uses_decode_on_demand() {
+  llvm::LLVMContext context;
+  DualUseFixture fixture = build_dual_use_fixture(context, "decode_twice");
+  if (!expect(run_pass(*fixture.module), "dual-use fixture should be rewritten")) {
+    return false;
+  }
+  if (!expect(verify_module_ok(*fixture.module, "repeated_uses_decode_on_demand"),
+              "dual-use fixture must pass verifier")) {
+    return false;
+  }
+  if (!expect(count_callee_calls(*fixture.use_function, "eippf_sd0") == 2u,
+              "dual-use fixture should decode once per use site")) {
+    return false;
+  }
+  return expect(count_callee_calls(*fixture.use_function, "eippf_sw0") == 2u,
+                "dual-use fixture should wipe once per use site");
 }
 
 }  // namespace
@@ -309,8 +427,10 @@ int main() {
   ok = test_normal_candidate_rewrite_success() && ok;
   ok = test_sample_anchor_literals_are_rewritten() && ok;
   ok = test_tutorial_anchor_is_disallowed() && ok;
+  ok = test_reverse_tool_markers_are_disallowed() && ok;
   ok = test_rewrite_avoids_long_lived_plaintext_semantics() && ok;
   ok = test_entry_block_dominance_regression() && ok;
+  ok = test_repeated_uses_decode_on_demand() && ok;
 
   if (!ok) {
     return 1;

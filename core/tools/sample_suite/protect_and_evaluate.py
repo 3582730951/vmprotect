@@ -69,6 +69,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-root", type=Path, required=True)
     parser.add_argument("--build-root", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--redteam-report", type=Path)
+    parser.add_argument("--redteam-probe-results", type=Path)
+    parser.add_argument("--redteam-perf-results", type=Path)
     return parser.parse_args()
 
 
@@ -544,6 +547,25 @@ def validate_summary_contract(summary_payload: dict[str, Any]) -> list[str]:
             errors.append(f"sample[{sample_id}] input_sha256 must be 64 hex chars")
         if not is_sha256_hex(sample.get("output_sha256")):
             errors.append(f"sample[{sample_id}] output_sha256 must be 64 hex chars")
+        if not isinstance(sample.get("platform"), str) or not sample.get("platform"):
+            errors.append(f"sample[{sample_id}] platform must be non-empty string")
+        if not isinstance(sample.get("artifact_kind"), str) or not sample.get("artifact_kind"):
+            errors.append(f"sample[{sample_id}] artifact_kind must be non-empty string")
+        runtime_probe = sample.get("runtime_probe")
+        if not isinstance(runtime_probe, dict):
+            errors.append(f"sample[{sample_id}] runtime_probe must be object")
+        else:
+            if not isinstance(runtime_probe.get("required"), bool):
+                errors.append(f"sample[{sample_id}] runtime_probe.required must be boolean")
+            if not isinstance(runtime_probe.get("host"), str) or not runtime_probe.get("host"):
+                errors.append(f"sample[{sample_id}] runtime_probe.host must be non-empty string")
+            if runtime_probe.get("required") is True:
+                for field in ("hold_ms", "startup_delay_ms", "guard_exit_code"):
+                    if not isinstance(runtime_probe.get(field), int):
+                        errors.append(f"sample[{sample_id}] runtime_probe.{field} must be integer")
+            else:
+                if not isinstance(runtime_probe.get("reason"), str) or not runtime_probe.get("reason"):
+                    errors.append(f"sample[{sample_id}] runtime_probe.reason must be non-empty string when probe is optional")
         if not isinstance(sample.get("validation_scope"), str) or not sample.get("validation_scope"):
             errors.append(f"sample[{sample_id}] validation_scope must be non-empty string")
         if not isinstance(sample.get("known_limits"), str) or not sample.get("known_limits"):
@@ -707,6 +729,64 @@ def render_report(
         .replace("{{implementation_defect_rows}}", "".join(implementation_defect_rows))
     )
     output_path.write_text(report, encoding="utf-8")
+
+
+def maybe_generate_redteam_report(
+    summary_path: Path,
+    output_path: Path | None,
+    denylist_path: Path,
+    probe_results_path: Path | None,
+    perf_results_path: Path | None,
+) -> None:
+    if output_path is None:
+        return
+
+    tool_path = Path(__file__).resolve().parents[1] / "redteam_harness.py"
+    if not tool_path.exists():
+        raise FileNotFoundError(f"redteam_harness.py missing: {tool_path}")
+
+    command = [
+        sys.executable,
+        str(tool_path),
+        "--summary",
+        str(summary_path),
+        "--output",
+        str(output_path),
+        "--denylist",
+        str(denylist_path),
+    ]
+    if probe_results_path is not None:
+        command.extend(["--probe-results", str(probe_results_path)])
+    if perf_results_path is not None:
+        command.extend(["--perf-results", str(perf_results_path)])
+
+    rc, stdout, stderr = run_command(command)
+    if rc != 0:
+        raise RuntimeError(
+            "redteam harness failed with rc="
+            + str(rc)
+            + "\nstdout="
+            + stdout
+            + "\nstderr="
+            + stderr
+        )
+    report_payload = json.loads(output_path.read_text(encoding="utf-8"))
+    samples = report_payload.get("samples", [])
+    failing_samples: list[str] = []
+    if isinstance(samples, list):
+        for sample in samples:
+            if not isinstance(sample, dict):
+                continue
+            if sample.get("final_verdict") == "pass":
+                continue
+            sample_id = str(sample.get("artifact_id", "unknown"))
+            reasons = sample.get("failure_reasons", [])
+            if isinstance(reasons, list) and reasons:
+                failing_samples.append(sample_id + ":" + ",".join(str(item) for item in reasons))
+            else:
+                failing_samples.append(sample_id + ":redteam_failed")
+    if failing_samples:
+        raise RuntimeError("redteam gate failed: " + "; ".join(failing_samples))
 
 
 def main() -> int:
@@ -1106,6 +1186,8 @@ def main() -> int:
 
         summary_item: dict[str, Any] = {
             "id": sample_id,
+            "platform": platform,
+            "artifact_kind": artifact_kind,
             "target_kind": target_kind,
             "protect_via": protect_via,
             "build_mode": build_mode,
@@ -1135,6 +1217,9 @@ def main() -> int:
             "validation_scope": validation_scope,
             "known_limits": known_limits,
         }
+        runtime_probe = sample.get("runtime_probe")
+        if isinstance(runtime_probe, dict):
+            summary_item["runtime_probe"] = runtime_probe
 
         if signed_policy_item is not None:
             summary_item["signed_policy"] = signed_policy_item
@@ -1172,6 +1257,18 @@ def main() -> int:
         )
     summary_path = output_root / "summary.json"
     write_json(summary_path, summary_payload)
+
+    maybe_generate_redteam_report(
+        summary_path=summary_path,
+        output_path=args.redteam_report.resolve() if args.redteam_report else None,
+        denylist_path=denylist_path,
+        probe_results_path=args.redteam_probe_results.resolve()
+        if args.redteam_probe_results
+        else None,
+        perf_results_path=args.redteam_perf_results.resolve()
+        if args.redteam_perf_results
+        else None,
+    )
 
     tool_versions_payload = {
         "python": sys.version.split()[0],

@@ -34,8 +34,8 @@ constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
 constexpr std::size_t kMaxStackStringSize = 1024u;
 constexpr llvm::StringLiteral kAppliedMarkerName("__eippf_inline_string_protect_applied");
 constexpr llvm::StringLiteral kDisallowedMarkerName("__eippf_string_disallowed_detected");
-constexpr llvm::StringLiteral kDecodeHelperSymbol("eippf_string_token_decode");
-constexpr llvm::StringLiteral kWipeHelperSymbol("eippf_string_token_wipe");
+constexpr llvm::StringLiteral kDecodeHelperSymbol("eippf_sd0");
+constexpr llvm::StringLiteral kWipeHelperSymbol("eippf_sw0");
 
 struct CandidateInfo {
   llvm::GlobalVariable* global = nullptr;
@@ -120,8 +120,33 @@ bool contains_ascii_token_ignore_case(llvm::StringRef haystack, llvm::StringRef 
 }
 
 bool has_disallowed_lexical_anchor(llvm::StringRef text) {
-  return contains_ascii_token_ignore_case(text, "tutorial") ||
-         contains_ascii_token_ignore_case(text, "crack");
+  constexpr llvm::StringLiteral kDisallowedTokens[] = {
+      "tutorial",
+      "crack",
+      "ida",
+      "idapro",
+      "cheatengine",
+      "cheat engine",
+      "ollydbg",
+      "x64dbg",
+      "gdb",
+      "frida",
+      "xposed",
+      "lsposed",
+      "magisk",
+      "zygisk",
+      "jdwp",
+      "lldb",
+      "substrate",
+      "substitute",
+  };
+
+  for (llvm::StringLiteral token : kDisallowedTokens) {
+    if (contains_ascii_token_ignore_case(text, token)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 std::uint8_t derive_key(const llvm::Module& module, const llvm::GlobalVariable& global,
@@ -750,6 +775,79 @@ llvm::PreservedAnalyses StringProtectionPass::run(llvm::Module& module,
       }
 
       const CandidateInfo& candidate = candidates[global];
+      bool has_phi_use = false;
+      for (const OperandUseSite& site : uses) {
+        has_phi_use = has_phi_use || site.is_phi;
+      }
+
+      if (!has_phi_use) {
+        for (const OperandUseSite& site : uses) {
+          if (site.instruction == nullptr) {
+            continue;
+          }
+
+          RuntimeState state = create_runtime_state(function, candidate);
+          llvm::IRBuilder<> decrypt_builder(site.instruction);
+
+          if (state.use_heap) {
+            llvm::Value* alloc_size = decrypt_builder.getInt64(candidate.byte_count);
+            llvm::Value* heap_ptr =
+                decrypt_builder.CreateCall(malloc_callee, {alloc_size}, "eippf.heap.ptr");
+            auto* heap_ptr_ty = llvm::cast<llvm::PointerType>(heap_ptr->getType());
+            llvm::Value* heap_is_null = decrypt_builder.CreateICmpEQ(
+                heap_ptr, llvm::ConstantPointerNull::get(heap_ptr_ty), "eippf.heap.is_null");
+
+            llvm::BasicBlock* alloc_check_block = decrypt_builder.GetInsertBlock();
+            llvm::Instruction* continue_ip = &*decrypt_builder.GetInsertPoint();
+            llvm::BasicBlock* alloc_ok_block =
+                alloc_check_block->splitBasicBlock(continue_ip, "eippf.heap.alloc.ok");
+            alloc_check_block->getTerminator()->eraseFromParent();
+
+            llvm::BasicBlock* alloc_trap_block = llvm::BasicBlock::Create(
+                module.getContext(), "eippf.heap.alloc.trap", &function, alloc_ok_block);
+            llvm::IRBuilder<> alloc_check_builder(alloc_check_block);
+            alloc_check_builder.CreateCondBr(heap_is_null, alloc_trap_block, alloc_ok_block);
+
+            llvm::IRBuilder<> trap_builder(alloc_trap_block);
+            trap_builder.CreateCall(trap_function);
+            trap_builder.CreateUnreachable();
+
+            decrypt_builder.SetInsertPoint(&*alloc_ok_block->getFirstInsertionPt());
+            decrypt_builder.CreateStore(heap_ptr, state.heap_ptr_slot);
+            state.runtime_base = heap_ptr;
+          } else {
+            state.runtime_base = state.stack_byte_ptr;
+          }
+
+          emit_runtime_decode(decrypt_builder, candidate, state.runtime_base, decode_callee);
+          decrypt_builder.CreateStore(decrypt_builder.getTrue(), state.active_flag);
+
+          llvm::Value* replacement = materialize_replacement_operand(
+              decrypt_builder, site.original_operand, state.runtime_base, state.stack_array,
+              state.replacement_cache);
+
+          llvm::Type* expected = site.instruction->getOperand(site.operand_index)->getType();
+          if (replacement->getType() != expected) {
+            if (!expected->isPointerTy()) {
+              continue;
+            }
+            replacement = decrypt_builder.CreatePointerCast(replacement, expected, "eippf.use.fixcast");
+          }
+
+          site.instruction->setOperand(site.operand_index, replacement);
+          llvm::Instruction* cleanup_ip = site.instruction->getNextNode();
+          if (cleanup_ip == nullptr) {
+            cleanup_ip = site.instruction->getParent()->getTerminator();
+          }
+          if (cleanup_ip != nullptr) {
+            llvm::IRBuilder<> cleanup_builder(cleanup_ip);
+            emit_secure_cleanup(cleanup_builder, candidate, state, wipe_callee, free_callee);
+          }
+          changed = true;
+        }
+        continue;
+      }
+
       RuntimeState state = create_runtime_state(function, candidate);
 
       llvm::BasicBlock* decrypt_block = compute_decrypt_block(function, dt, uses);

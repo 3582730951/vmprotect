@@ -2,7 +2,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <string>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -31,63 +30,11 @@ constexpr llvm::StringLiteral kJitTargetAnnotation("drm_jit_target");
 constexpr llvm::StringLiteral kFlattenAnnotation("drm_flatten");
 constexpr llvm::StringLiteral kRouteAttribute("eippf.route");
 constexpr llvm::StringLiteral kRouteCff("cff");
-constexpr llvm::StringLiteral kDecryptHelperName("__eippf_xor_decrypt");
-constexpr llvm::StringLiteral kStringEncryptionMarker("__eippf_strenc_done");
-constexpr std::uint32_t kFlattenGatePercent = 20u;
-constexpr std::uint8_t kStringXorKey = 0x5Au;
-constexpr std::uint64_t kFnv1aOffset = 14695981039346656037ull;
-constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
-
 struct AnnotationSets {
   llvm::SmallPtrSet<llvm::Function*, 32> critical_functions;
   llvm::SmallPtrSet<llvm::Function*, 32> jit_target_functions;
   llvm::SmallPtrSet<llvm::Function*, 32> flatten_functions;
 };
-
-struct EncryptedStringInfo {
-  llvm::GlobalVariable* global = nullptr;
-  std::uint64_t size = 0u;
-};
-
-std::uint64_t fnv1a_append(std::uint64_t seed, llvm::StringRef text) {
-  std::uint64_t hash = seed;
-  for (const char ch : text) {
-    hash ^= static_cast<std::uint8_t>(ch);
-    hash *= kFnv1aPrime;
-  }
-  return hash;
-}
-
-std::uint64_t fnv1a_append_u64(std::uint64_t seed, std::uint64_t value) {
-  std::uint64_t hash = seed;
-  for (int index = 0; index < 8; ++index) {
-    hash ^= static_cast<std::uint8_t>((value >> (index * 8)) & 0xFFu);
-    hash *= kFnv1aPrime;
-  }
-  return hash;
-}
-
-std::uint64_t derive_deterministic_gate_hash(const llvm::Module& module,
-                                             const llvm::Function& function) {
-  std::uint64_t hash = kFnv1aOffset;
-  hash = fnv1a_append(hash, module.getModuleIdentifier());
-  hash = fnv1a_append(hash, function.getName());
-  hash = fnv1a_append_u64(hash, static_cast<std::uint64_t>(function.arg_size()));
-  hash = fnv1a_append_u64(hash, static_cast<std::uint64_t>(function.size()));
-  return hash;
-}
-
-bool passes_deterministic_gate(const llvm::Module& module, const llvm::Function& function) {
-  if (kFlattenGatePercent == 0u) {
-    return false;
-  }
-  if (kFlattenGatePercent >= 100u) {
-    return true;
-  }
-
-  const std::uint64_t hash = derive_deterministic_gate_hash(module, function);
-  return (hash % 100u) < kFlattenGatePercent;
-}
 
 llvm::StringRef extract_annotation_text(llvm::Constant* annotation_operand) {
   llvm::Constant* cursor = annotation_operand;
@@ -165,11 +112,8 @@ bool has_annotation(const llvm::Function& function,
 
 bool should_attempt_flattening(const llvm::Module& module, const llvm::Function& function,
                                const AnnotationSets& annotation_sets) {
+  (void)module;
   if (function.isDeclaration() || function.isIntrinsic() || function.empty()) {
-    return false;
-  }
-
-  if (function.getName() == kDecryptHelperName) {
     return false;
   }
 
@@ -187,7 +131,7 @@ bool should_attempt_flattening(const llvm::Module& module, const llvm::Function&
     return true;
   }
 
-  return passes_deterministic_gate(module, function);
+  return false;
 }
 
 bool supports_flattening(const llvm::SmallVectorImpl<llvm::BasicBlock*>& blocks) {
@@ -272,6 +216,8 @@ void demote_phi_nodes_to_stack(llvm::Function& function, llvm::Instruction* allo
     return;
   }
 
+  const std::optional<llvm::BasicBlock::iterator> alloca_point = alloca_insertion_point->getIterator();
+
   llvm::SmallVector<llvm::PHINode*, 32> phi_nodes;
   for (llvm::BasicBlock& block : function) {
     for (llvm::Instruction& instruction : block) {
@@ -284,7 +230,7 @@ void demote_phi_nodes_to_stack(llvm::Function& function, llvm::Instruction* allo
   }
 
   for (llvm::PHINode* phi : phi_nodes) {
-    llvm::DemotePHIToStack(phi, alloca_insertion_point);
+    llvm::DemotePHIToStack(phi, alloca_point);
   }
 }
 
@@ -445,201 +391,6 @@ bool rewrite_cfg_to_dispatcher(llvm::Function& function) {
   return true;
 }
 
-bool string_encryption_already_applied(const llvm::Module& module) {
-  return module.getNamedGlobal(kStringEncryptionMarker) != nullptr;
-}
-
-void mark_string_encryption_applied(llvm::Module& module) {
-  if (module.getNamedGlobal(kStringEncryptionMarker) != nullptr) {
-    return;
-  }
-
-  llvm::LLVMContext& context = module.getContext();
-  auto* marker = new llvm::GlobalVariable(
-      module,
-      llvm::Type::getInt8Ty(context),
-      true,
-      llvm::GlobalValue::InternalLinkage,
-      llvm::ConstantInt::get(llvm::Type::getInt8Ty(context), 1u),
-      kStringEncryptionMarker);
-  marker->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-}
-
-llvm::Function* get_or_create_xor_decrypt_helper(llvm::Module& module) {
-  llvm::LLVMContext& context = module.getContext();
-  llvm::Type* void_type = llvm::Type::getVoidTy(context);
-  llvm::Type* i8_ptr_type = llvm::PointerType::getUnqual(llvm::Type::getInt8Ty(context));
-  llvm::Type* i64_type = llvm::Type::getInt64Ty(context);
-  llvm::Type* i8_type = llvm::Type::getInt8Ty(context);
-
-  auto* helper_type = llvm::FunctionType::get(void_type, {i8_ptr_type, i64_type, i8_type}, false);
-  if (llvm::Function* existing = module.getFunction(kDecryptHelperName)) {
-    if (existing->getFunctionType() != helper_type) {
-      return nullptr;
-    }
-    if (!existing->isDeclaration()) {
-      return existing;
-    }
-    existing->setLinkage(llvm::GlobalValue::InternalLinkage);
-  }
-
-  llvm::Function* helper = module.getFunction(kDecryptHelperName);
-  if (helper == nullptr) {
-    helper = llvm::Function::Create(helper_type, llvm::GlobalValue::InternalLinkage,
-                                    kDecryptHelperName, module);
-  }
-  helper->addFnAttr(llvm::Attribute::NoInline);
-  helper->setDoesNotThrow();
-
-  if (!helper->empty()) {
-    return helper;
-  }
-
-  auto argument_it = helper->arg_begin();
-  llvm::Argument* base_ptr = argument_it++;
-  llvm::Argument* length = argument_it++;
-  llvm::Argument* key = argument_it++;
-  base_ptr->setName("base");
-  length->setName("len");
-  key->setName("key");
-
-  llvm::BasicBlock* entry = llvm::BasicBlock::Create(context, "entry", helper);
-  llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(context, "loop.header", helper);
-  llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(context, "loop.body", helper);
-  llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(context, "loop.exit", helper);
-
-  llvm::IRBuilder<> entry_builder(entry);
-  entry_builder.CreateBr(loop_header);
-
-  llvm::IRBuilder<> header_builder(loop_header);
-  llvm::PHINode* index = header_builder.CreatePHI(i64_type, 2u, "idx");
-  index->addIncoming(header_builder.getInt64(0u), entry);
-  llvm::Value* has_more = header_builder.CreateICmpULT(index, length, "has_more");
-  header_builder.CreateCondBr(has_more, loop_body, loop_exit);
-
-  llvm::IRBuilder<> body_builder(loop_body);
-  llvm::Value* byte_ptr = body_builder.CreateInBoundsGEP(i8_type, base_ptr, index, "byte_ptr");
-  llvm::LoadInst* encoded = body_builder.CreateLoad(i8_type, byte_ptr, "encoded");
-  llvm::Value* decoded = body_builder.CreateXor(encoded, key, "decoded");
-  body_builder.CreateStore(decoded, byte_ptr);
-  llvm::Value* next_index = body_builder.CreateAdd(index, body_builder.getInt64(1u), "next_idx");
-  body_builder.CreateBr(loop_header);
-  index->addIncoming(next_index, loop_body);
-
-  llvm::IRBuilder<> exit_builder(loop_exit);
-  exit_builder.CreateRetVoid();
-  return helper;
-}
-
-llvm::SmallVector<EncryptedStringInfo, 32> encrypt_global_strings(llvm::Module& module) {
-  llvm::SmallVector<EncryptedStringInfo, 32> encrypted_strings;
-  for (llvm::GlobalVariable& global : module.globals()) {
-    if (global.isDeclaration() || !global.hasInitializer()) {
-      continue;
-    }
-    if (global.getName().startswith("llvm.") || global.getName() == kStringEncryptionMarker) {
-      continue;
-    }
-    if (global.hasSection() && global.getSection() == "llvm.metadata") {
-      continue;
-    }
-
-    auto* data = llvm::dyn_cast<llvm::ConstantDataSequential>(global.getInitializer());
-    if (data == nullptr || !data->isString()) {
-      continue;
-    }
-
-    const llvm::StringRef raw_bytes = data->getAsString();
-    if (raw_bytes.empty()) {
-      continue;
-    }
-
-    std::string encoded;
-    encoded.resize(raw_bytes.size());
-    for (std::size_t index = 0; index < raw_bytes.size(); ++index) {
-      encoded[index] = static_cast<char>(static_cast<std::uint8_t>(raw_bytes[index]) ^ kStringXorKey);
-    }
-
-    auto* encrypted_initializer =
-        llvm::ConstantDataArray::getString(module.getContext(), encoded, false);
-    if (encrypted_initializer->getType() != global.getValueType()) {
-      continue;
-    }
-
-    global.setInitializer(encrypted_initializer);
-    global.setConstant(false);
-    encrypted_strings.push_back(
-        EncryptedStringInfo{&global, static_cast<std::uint64_t>(encoded.size())});
-  }
-  return encrypted_strings;
-}
-
-bool inject_string_decryption_calls(llvm::Function& main_function, llvm::Function& decrypt_helper,
-                                    const llvm::SmallVectorImpl<EncryptedStringInfo>& strings) {
-  if (main_function.isDeclaration() || main_function.empty() || strings.empty()) {
-    return false;
-  }
-
-  llvm::BasicBlock& entry = main_function.getEntryBlock();
-  llvm::BasicBlock::iterator insertion_it = entry.getFirstInsertionPt();
-  if (insertion_it == entry.end()) {
-    return false;
-  }
-
-  llvm::IRBuilder<> builder(&*insertion_it);
-  llvm::Type* i64_type = builder.getInt64Ty();
-  llvm::Type* i8_type = builder.getInt8Ty();
-
-  bool injected = false;
-  for (const EncryptedStringInfo& item : strings) {
-    if (item.global == nullptr || item.size == 0u) {
-      continue;
-    }
-
-    auto* array_type = llvm::dyn_cast<llvm::ArrayType>(item.global->getValueType());
-    if (array_type == nullptr) {
-      continue;
-    }
-
-    llvm::Value* string_base = builder.CreateInBoundsGEP(
-        array_type, item.global, {builder.getInt64(0u), builder.getInt64(0u)},
-        item.global->getName() + ".base");
-    builder.CreateCall(&decrypt_helper,
-                       {string_base, llvm::ConstantInt::get(i64_type, item.size),
-                        llvm::ConstantInt::get(i8_type, kStringXorKey)});
-    injected = true;
-  }
-  return injected;
-}
-
-bool apply_global_string_encryption(llvm::Module& module) {
-  if (string_encryption_already_applied(module)) {
-    return false;
-  }
-
-  llvm::Function* main_function = module.getFunction("main");
-  if (main_function == nullptr || main_function->isDeclaration() || main_function->empty()) {
-    return false;
-  }
-
-  llvm::Function* decrypt_helper = get_or_create_xor_decrypt_helper(module);
-  if (decrypt_helper == nullptr) {
-    llvm::report_fatal_error("CFF string encryption failed to create decrypt helper.");
-  }
-
-  llvm::SmallVector<EncryptedStringInfo, 32> encrypted_strings = encrypt_global_strings(module);
-  if (encrypted_strings.empty()) {
-    return false;
-  }
-
-  if (!inject_string_decryption_calls(*main_function, *decrypt_helper, encrypted_strings)) {
-    llvm::report_fatal_error("CFF string encryption failed to inject main decryption calls.");
-  }
-
-  mark_string_encryption_applied(module);
-  return true;
-}
-
 }  // namespace
 
 namespace eippf::passes {
@@ -655,8 +406,6 @@ llvm::PreservedAnalyses CFFObfuscationPass::run(llvm::Module& module, llvm::Modu
 
     changed = rewrite_cfg_to_dispatcher(function) || changed;
   }
-
-  changed = apply_global_string_encryption(module) || changed;
 
   return changed ? llvm::PreservedAnalyses::none() : llvm::PreservedAnalyses::all();
 }

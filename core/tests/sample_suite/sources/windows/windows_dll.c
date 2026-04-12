@@ -30,6 +30,6 @@ static int32_t dll_mix(int32_t left, int32_t right) {
   return value;
 }
 
-EIPPF_EXPORT int32_t sample_windows_dll_entry(int32_t left, int32_t right) {
+EIPPF_EXPORT int32_t p0(int32_t left, int32_t right) {
   return dll_mix(left, right);
 }

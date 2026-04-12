@@ -25,6 +25,7 @@ PF_W = 0x2
 
 SHT_SYMTAB = 2
 SHT_DYNSYM = 11
+SHN_UNDEF = 0
 
 IMAGE_SCN_MEM_EXECUTE = 0x20000000
 IMAGE_SCN_MEM_READ = 0x40000000
@@ -32,6 +33,7 @@ IMAGE_SCN_MEM_WRITE = 0x80000000
 
 IMAGE_DIRECTORY_ENTRY_EXPORT = 0
 IMAGE_DIRECTORY_ENTRY_IMPORT = 1
+IMAGE_DIRECTORY_ENTRY_DEBUG = 6
 IMAGE_DIRECTORY_ENTRY_SECURITY = 4
 
 VM_PROT_WRITE = 0x2
@@ -48,11 +50,91 @@ LC_CODE_SIGNATURE = 0x1D
 SUSPICIOUS_IMPORT_TOKENS = (
     "dbghelp",
     "symsrv",
+    "ida",
+    "idapro",
+    "cheatengine",
+    "cheat engine",
     "frida",
     "lldb",
+    "gdb",
+    "gdbserver",
     "ghidra",
     "x64dbg",
     "ollydbg",
+    "xposed",
+    "lsposed",
+    "magisk",
+    "zygisk",
+    "substrate",
+    "substitute",
+    "dlopen",
+    "dlsym",
+    "dlclose",
+    "dlerror",
+    "prctl",
+    "ptrace",
+)
+
+SEMANTIC_SYMBOL_PHRASES = (
+    "anti_tamper",
+    "resolve_candidate",
+    "runtime_guard",
+    "runtime_init",
+    "string_token",
+    "token_decode",
+    "token_wipe",
+    "jit_enclave",
+    "signature_verify",
+    "license_check",
+    "decrypt_block",
+)
+
+SEMANTIC_SYMBOL_STEMS = (
+    "anchor",
+    "guard",
+    "runtime",
+    "resolve",
+    "resolver",
+    "candidate",
+    "token",
+    "decode",
+    "wipe",
+    "policy",
+    "verify",
+    "validate",
+    "decrypt",
+    "tamper",
+    "auth",
+    "signature",
+    "license",
+    "jit",
+    "hook",
+)
+
+ENTRYPOINT_SYMBOL_NAMES = (
+    "main",
+    "wmain",
+    "winmain",
+    "wwinmain",
+    "dllmain",
+    "driverentry",
+    "jni_onload",
+    "_start",
+    "start",
+    "maincrtstartup",
+    "winmaincrtstartup",
+)
+
+DEBUG_SECTION_MARKERS = (
+    ".debug",
+    ".zdebug",
+    ".comment",
+    ".note.gnu.build-id",
+    ".gdb_index",
+    ".dwo",
+    ".dwp",
+    ".symtab",
+    ".strtab",
 )
 
 MODULE_SIGNATURE_MAGIC = b"~Module signature appended~\n"
@@ -261,19 +343,121 @@ def read_c_string(data: bytes, offset: int, end: int | None = None) -> str | Non
     return data[offset:cursor].decode("utf-8", errors="replace")
 
 
-def contains_analysis_import(value: str) -> bool:
+def keyword_requires_boundary_match(keyword: str) -> bool:
+    normalized = keyword.strip().lower()
+    return normalized.isalpha() and len(normalized) <= 4
+
+
+def is_ascii_alnum(value: str) -> bool:
+    return ("a" <= value <= "z") or ("A" <= value <= "Z") or ("0" <= value <= "9")
+
+
+def trim_component_suffix_digits(value: str) -> str:
+    end = len(value)
+    while end > 0 and "0" <= value[end - 1] <= "9":
+        end -= 1
+    return value[:end]
+
+
+def iter_normalized_keyword_components(value: str):
     lowered = value.lower()
-    return any(token in lowered for token in SUSPICIOUS_IMPORT_TOKENS)
+    cursor = 0
+    while cursor < len(lowered):
+        while cursor < len(lowered) and not is_ascii_alnum(lowered[cursor]):
+            cursor += 1
+        start = cursor
+        while cursor < len(lowered) and is_ascii_alnum(lowered[cursor]):
+            cursor += 1
+        if start == cursor:
+            continue
+
+        component = lowered[start:cursor]
+        yield component
+
+        trimmed = trim_component_suffix_digits(component)
+        if trimmed != component:
+            yield trimmed
+
+        if component.startswith("lib") and len(component) > 3:
+            lib_trimmed = component[3:]
+            yield lib_trimmed
+            lib_trimmed_digits = trim_component_suffix_digits(lib_trimmed)
+            if lib_trimmed_digits != lib_trimmed:
+                yield lib_trimmed_digits
+
+
+def keyword_matches_value(value: str, keyword: str) -> bool:
+    lowered_value = value.lower()
+    lowered_keyword = keyword.lower()
+    if keyword_requires_boundary_match(lowered_keyword):
+        return any(component == lowered_keyword for component in iter_normalized_keyword_components(value))
+    return lowered_keyword in lowered_value
+
+
+def contains_analysis_import(value: str) -> bool:
+    return any(keyword_matches_value(value, token) for token in SUSPICIOUS_IMPORT_TOKENS)
+
+
+def is_ignorable_symbol_name(value: str) -> bool:
+    lowered = value.lower()
+    return (
+        not lowered
+        or lowered.startswith("__")
+        or lowered.startswith(".")
+        or lowered.startswith("_zst")
+        or lowered.startswith("_znst")
+        or lowered.startswith("std::")
+        or lowered.startswith("typeinfo")
+        or lowered.startswith("vtable")
+        or lowered.startswith("guard variable")
+    )
+
+
+def find_semantic_symbol_hits(values: list[str]) -> list[dict[str, str]]:
+    hits: list[dict[str, str]] = []
+    for value in values:
+        if is_ignorable_symbol_name(value):
+            continue
+        lowered = value.lower()
+        matched_phrases = [phrase for phrase in SEMANTIC_SYMBOL_PHRASES if phrase in lowered]
+        matched_stems = [stem for stem in SEMANTIC_SYMBOL_STEMS if stem in lowered]
+        if not matched_phrases and len(matched_stems) < 2:
+            continue
+        detail = ",".join(matched_phrases if matched_phrases else matched_stems[:4])
+        hits.append({"field": "symbol", "kind": "semantic_symbol_leak", "detail": detail, "value": value})
+    return hits
+
+
+def find_entrypoint_symbol_hits(values: list[str]) -> list[dict[str, str]]:
+    hits: list[dict[str, str]] = []
+    exact_names = {entry.lower() for entry in ENTRYPOINT_SYMBOL_NAMES}
+    for value in values:
+        if is_ignorable_symbol_name(value):
+            continue
+        lowered = value.lower()
+        if lowered in exact_names:
+            hits.append(
+                {
+                    "field": "symbol",
+                    "kind": "entrypoint_symbol_exposed",
+                    "detail": lowered,
+                    "value": value,
+                }
+            )
+    return hits
+
+
+def is_debug_section_name(name: str) -> bool:
+    lowered = name.lower()
+    return any(lowered == marker or lowered.startswith(marker) for marker in DEBUG_SECTION_MARKERS)
 
 
 def find_denylist_hits(values: list[str], denylist: list[str], field_name: str) -> list[dict[str, str]]:
     hits: list[dict[str, str]] = []
-    denylist_lower = [(entry, entry.lower()) for entry in denylist]
     for value in values:
-        lowered = value.lower()
-        for original, lowered_entry in denylist_lower:
-            if lowered_entry in lowered:
-                hits.append({"field": field_name, "pattern": original, "value": value})
+        for entry in denylist:
+            if keyword_matches_value(value, entry):
+                hits.append({"field": field_name, "pattern": entry, "value": value})
     return hits
 
 
@@ -295,6 +479,7 @@ def parse_elf_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[s
             phnum = unpack_u16(data, 56, little_endian)
             shentsize = unpack_u16(data, 58, little_endian)
             shnum = unpack_u16(data, 60, little_endian)
+            shstrndx = unpack_u16(data, 62, little_endian)
             if phentsize < 56 or (shnum != 0 and shentsize < 64):
                 return None, [{"kind": "malformed_elf", "detail": "invalid_entry_sizes"}]
         else:
@@ -304,6 +489,7 @@ def parse_elf_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[s
             phnum = unpack_u16(data, 44, little_endian)
             shentsize = unpack_u16(data, 46, little_endian)
             shnum = unpack_u16(data, 48, little_endian)
+            shstrndx = unpack_u16(data, 50, little_endian)
             if phentsize < 32 or (shnum != 0 and shentsize < 40):
                 return None, [{"kind": "malformed_elf", "detail": "invalid_entry_sizes"}]
     except ValueError:
@@ -348,6 +534,7 @@ def parse_elf_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[s
             if entry_offset + shentsize > len(data):
                 return None, [{"kind": "malformed_elf", "detail": "truncated_section_header_table"}]
             try:
+                sh_name = unpack_u32(data, entry_offset, little_endian)
                 sh_type = unpack_u32(data, entry_offset + 4, little_endian)
                 if elf_class == 2:
                     sh_offset = unpack_u64(data, entry_offset + 24, little_endian)
@@ -363,6 +550,8 @@ def parse_elf_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[s
                 return None, [{"kind": "malformed_elf", "detail": "truncated_section_header"}]
             sections.append(
                 {
+                    "name_offset": sh_name,
+                    "name": "",
                     "type": sh_type,
                     "offset": sh_offset,
                     "size": sh_size,
@@ -370,6 +559,21 @@ def parse_elf_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[s
                     "entsize": sh_entsize,
                 }
             )
+
+        if 0 <= shstrndx < len(sections):
+            shstr_section = sections[shstrndx]
+            shstr_offset = int(shstr_section["offset"])
+            shstr_size = int(shstr_section["size"])
+            if shstr_offset + shstr_size > len(data):
+                return None, [{"kind": "malformed_elf", "detail": "section_string_table_out_of_range"}]
+            shstr_end = shstr_offset + shstr_size
+            for section in sections:
+                name_offset = int(section["name_offset"])
+                if name_offset == 0 or name_offset >= shstr_size:
+                    continue
+                name = read_c_string(data, shstr_offset + name_offset, shstr_end)
+                if name is not None:
+                    section["name"] = name
 
     return {
         "class": elf_class,
@@ -425,6 +629,8 @@ def parse_pe_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[st
 
     try:
         number_of_sections = unpack_u16(data, pe_offset + 6, True)
+        pointer_to_symbol_table = unpack_u32(data, pe_offset + 12, True)
+        number_of_symbols = unpack_u32(data, pe_offset + 16, True)
         size_of_optional_header = unpack_u16(data, pe_offset + 20, True)
     except ValueError:
         return None, [{"kind": "malformed_pe", "detail": "truncated_coff_header"}]
@@ -481,6 +687,8 @@ def parse_pe_layout(data: bytes) -> tuple[dict[str, object] | None, list[dict[st
     return {
         "pe_offset": pe_offset,
         "pe32_plus": pe32_plus,
+        "pointer_to_symbol_table": pointer_to_symbol_table,
+        "number_of_symbols": number_of_symbols,
         "data_directory_offset": data_directory_offset,
         "number_of_rva_and_sizes": number_of_rva_and_sizes,
         "sections": sections,
@@ -741,6 +949,8 @@ def audit_pe_imports(data: bytes) -> dict[str, object]:
                     "violations": [{"kind": "malformed_pe", "detail": "invalid_import_hint_name"}],
                 }
             symbols.append(symbol_name)
+            if contains_analysis_import(symbol_name):
+                violations.append({"kind": "analysis_surface_import", "detail": symbol_name})
 
     if len(libraries) > 12 or len(symbols) > 128:
         violations.append(
@@ -827,6 +1037,7 @@ def audit_elf_imports(data: bytes) -> dict[str, object]:
         }
 
     libraries: list[str] = []
+    symbols: list[str] = []
     violations: list[dict[str, object]] = []
     strtab_end = strtab_offset + strtab_size
     for needed_offset in needed_offsets:
@@ -836,20 +1047,76 @@ def audit_elf_imports(data: bytes) -> dict[str, object]:
                 "parsed": False,
                 "passed": False,
                 "libraries": libraries,
-                "symbols": [],
+                "symbols": symbols,
                 "violations": [{"kind": "malformed_elf", "detail": "invalid_needed_entry"}],
             }
         libraries.append(library)
         if contains_analysis_import(library):
             violations.append({"kind": "analysis_surface_import", "detail": library})
 
-    if len(libraries) > 12:
-        violations.append({"kind": "import_surface_too_large", "library_count": len(libraries)})
+    sections = list(layout["sections"])
+    for section in sections:
+        if section["type"] != SHT_DYNSYM:
+            continue
+        if section["entsize"] == 0 or section["size"] == 0:
+            continue
+
+        link_index = int(section["link"])
+        if link_index < 0 or link_index >= len(sections):
+            return {
+                "parsed": False,
+                "passed": False,
+                "libraries": libraries,
+                "symbols": symbols,
+                "violations": [{"kind": "malformed_elf", "detail": "invalid_import_string_table_link"}],
+            }
+        strtab = sections[link_index]
+        strtab_offset = int(strtab["offset"])
+        strtab_size = int(strtab["size"])
+        section_offset = int(section["offset"])
+        section_size = int(section["size"])
+        symbol_entry_size = int(section["entsize"])
+        if section_offset + section_size > len(data) or strtab_offset + strtab_size > len(data):
+            return {
+                "parsed": False,
+                "passed": False,
+                "libraries": libraries,
+                "symbols": symbols,
+                "violations": [{"kind": "malformed_elf", "detail": "import_symbol_table_out_of_range"}],
+            }
+
+        count = section_size // symbol_entry_size
+        for index in range(min(count, 2048)):
+            entry_offset = section_offset + index * symbol_entry_size
+            name_offset = unpack_u32(data, entry_offset, little_endian)
+            if name_offset == 0 or name_offset >= strtab_size:
+                continue
+            if is_64:
+                shndx = unpack_u16(data, entry_offset + 6, little_endian)
+            else:
+                shndx = unpack_u16(data, entry_offset + 14, little_endian)
+            if shndx != SHN_UNDEF:
+                continue
+            symbol_name = read_c_string(data, strtab_offset + name_offset, strtab_offset + strtab_size)
+            if not symbol_name:
+                continue
+            symbols.append(symbol_name)
+            if contains_analysis_import(symbol_name):
+                violations.append({"kind": "analysis_surface_import", "detail": symbol_name})
+
+    if len(libraries) > 12 or len(symbols) > 128:
+        violations.append(
+            {
+                "kind": "import_surface_too_large",
+                "library_count": len(libraries),
+                "symbol_count": len(symbols),
+            }
+        )
     return {
         "parsed": True,
         "passed": len(violations) == 0,
         "libraries": libraries,
-        "symbols": [],
+        "symbols": symbols,
         "violations": violations,
     }
 
@@ -961,6 +1228,8 @@ def audit_pe_symbols(data: bytes, denylist: list[str]) -> dict[str, object]:
         names.append(name)
 
     violations = find_denylist_hits(names, denylist, "symbol")
+    violations.extend(find_semantic_symbol_hits(names))
+    violations.extend(find_entrypoint_symbol_hits(names))
     return {"parsed": True, "passed": len(violations) == 0, "names": names, "violations": violations}
 
 
@@ -1013,6 +1282,8 @@ def audit_elf_symbols(data: bytes, denylist: list[str]) -> dict[str, object]:
                 names.append(name)
 
     violations = find_denylist_hits(names, denylist, "symbol")
+    violations.extend(find_semantic_symbol_hits(names))
+    violations.extend(find_entrypoint_symbol_hits(names))
     return {"parsed": True, "passed": len(violations) == 0, "names": names, "violations": violations}
 
 
@@ -1051,6 +1322,8 @@ def audit_macho_symbols(data: bytes, denylist: list[str]) -> dict[str, object]:
             names.append(name)
 
     violations = find_denylist_hits(names, denylist, "symbol")
+    violations.extend(find_semantic_symbol_hits(names))
+    violations.extend(find_entrypoint_symbol_hits(names))
     return {"parsed": True, "passed": len(violations) == 0, "names": names, "violations": violations}
 
 
@@ -1061,6 +1334,81 @@ def audit_symbol_surface(data: bytes, artifact_kind: str, denylist: list[str]) -
         return audit_elf_symbols(data, denylist)
     if artifact_kind == "macho":
         return audit_macho_symbols(data, denylist)
+    return {"parsed": True, "passed": True, "names": [], "violations": []}
+
+
+def audit_pe_metadata_surface(data: bytes) -> dict[str, object]:
+    layout, errors = parse_pe_layout(data)
+    if layout is None:
+        return {"parsed": False, "passed": False, "names": [], "violations": errors}
+
+    violations: list[dict[str, object]] = []
+    section_names = [str(section.get("name", "")) for section in layout["sections"]]
+    for name in section_names:
+        if name and is_debug_section_name(name):
+            violations.append({"kind": "debug_metadata_exposed", "detail": name})
+
+    if int(layout["pointer_to_symbol_table"]) != 0 or int(layout["number_of_symbols"]) != 0:
+        violations.append(
+            {
+                "kind": "coff_symbol_table_present",
+                "pointer_to_symbol_table": int(layout["pointer_to_symbol_table"]),
+                "number_of_symbols": int(layout["number_of_symbols"]),
+            }
+        )
+
+    debug_directory = pe_directory(data, layout, IMAGE_DIRECTORY_ENTRY_DEBUG)
+    if debug_directory is not None and debug_directory != (0, 0):
+        violations.append(
+            {
+                "kind": "debug_directory_present",
+                "virtual_address": int(debug_directory[0]),
+                "size": int(debug_directory[1]),
+            }
+        )
+
+    return {
+        "parsed": True,
+        "passed": len(violations) == 0,
+        "names": section_names,
+        "violations": violations,
+    }
+
+
+def audit_elf_metadata_surface(data: bytes) -> dict[str, object]:
+    layout, errors = parse_elf_layout(data)
+    if layout is None:
+        return {"parsed": False, "passed": False, "names": [], "violations": errors}
+
+    section_names = [str(section.get("name", "")) for section in layout["sections"]]
+    violations = [
+        {"kind": "debug_metadata_exposed", "detail": name}
+        for name in section_names
+        if name and is_debug_section_name(name)
+    ]
+    return {
+        "parsed": True,
+        "passed": len(violations) == 0,
+        "names": section_names,
+        "violations": violations,
+    }
+
+
+def audit_macho_metadata_surface(data: bytes) -> dict[str, object]:
+    layout, errors = parse_macho_load_commands(data)
+    if layout is None:
+        return {"parsed": False, "passed": False, "names": [], "violations": errors}
+    command_names = [f"cmd:{int(command['cmd'])}" for command in layout["commands"]]
+    return {"parsed": True, "passed": True, "names": command_names, "violations": []}
+
+
+def audit_metadata_surface(data: bytes, artifact_kind: str) -> dict[str, object]:
+    if artifact_kind == "pe":
+        return audit_pe_metadata_surface(data)
+    if artifact_kind == "elf":
+        return audit_elf_metadata_surface(data)
+    if artifact_kind == "macho":
+        return audit_macho_metadata_surface(data)
     return {"parsed": True, "passed": True, "names": [], "violations": []}
 
 
@@ -2019,6 +2367,7 @@ def audit_artifact(
     )
     imports_result = audit_import_surface(data, artifact_kind)
     symbols_result = audit_symbol_surface(data, artifact_kind, denylist)
+    metadata_result = audit_metadata_surface(data, artifact_kind)
     signature_result = audit_signature_surface(
         data,
         artifact_kind,
@@ -2059,6 +2408,8 @@ def audit_artifact(
         strict_failures.append("import_surface_parse_failed")
     if not symbols_result["parsed"]:
         strict_failures.append("symbol_surface_parse_failed")
+    if not metadata_result["parsed"]:
+        strict_failures.append("metadata_surface_parse_failed")
     if signature_result["required"] and not signature_result["policy_parse_ok"]:
         strict_failures.append("signature_policy_unresolved")
     if signature_result["required"] and not signature_result["parse_ok"]:
@@ -2073,6 +2424,18 @@ def audit_artifact(
         strict_failures.append("imports_policy_failed")
     if not symbols_result["passed"]:
         strict_failures.append("symbols_policy_failed")
+    if not metadata_result["passed"]:
+        strict_failures.append("metadata_surface_policy_failed")
+    if any(
+        isinstance(violation, dict) and violation.get("kind") == "semantic_symbol_leak"
+        for violation in symbols_result["violations"]
+    ):
+        strict_failures.append("semantic_symbol_surface_policy_failed")
+    if any(
+        isinstance(violation, dict) and violation.get("kind") == "entrypoint_symbol_exposed"
+        for violation in symbols_result["violations"]
+    ):
+        strict_failures.append("entrypoint_surface_policy_failed")
     if signature_result["required"] and not signature_result["structure_present"]:
         strict_failures.append("signature_missing")
     if signature_result["required"] and signature_result["structure_present"] and not signature_result["format_valid"]:
@@ -2290,6 +2653,13 @@ def audit_artifact(
             "symbol_count": len(symbols_result["names"]),
             "symbols": symbols_result["names"][:64],
             "violations": symbols_result["violations"],
+        },
+        "metadata_surface_sanitized": bool(metadata_result["passed"]),
+        "metadata_summary": {
+            "parsed": bool(metadata_result["parsed"]),
+            "name_count": len(metadata_result["names"]),
+            "names": metadata_result["names"][:64],
+            "violations": metadata_result["violations"],
         },
         "section_permission_scan_passed": section_permission_scan_passed,
         "permission_violations": permission_violations,

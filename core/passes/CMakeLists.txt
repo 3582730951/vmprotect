@@ -116,8 +116,8 @@ eippf_add_pass_plugin_target(eippf_protection_suite_pass
     src/ProtectionSuitePassPlugin.cpp
     src/StringProtectionPass.cpp
     src/ProtectionAnchorPass.cpp
-    src/SelectiveVMPass.cpp
-    src/JITEnclavePass.cpp
+    src/IATMinimizationPass.cpp
+    src/MBAObfuscationPass.cpp
     src/CFFObfuscationPass.cpp
   WINDOWS_LLVM_COMPONENTS
     Core

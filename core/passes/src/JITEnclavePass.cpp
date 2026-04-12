@@ -36,7 +36,7 @@ namespace {
 constexpr llvm::StringLiteral kJitTargetAnnotation("drm_jit_target");
 constexpr llvm::StringLiteral kRouteAttribute("eippf.route");
 constexpr llvm::StringLiteral kRouteJit("jit");
-constexpr llvm::StringLiteral kJitEntryPointName("eippf_execute_jit_enclave");
+constexpr llvm::StringLiteral kJitEntryPointName("eippf_je0");
 constexpr llvm::StringLiteral kJitInjectedAttr("eippf.jit.enclave.injected");
 constexpr llvm::StringLiteral kGateCodeJitRouteForbidden("jit_route_forbidden_for_target");
 constexpr std::uint8_t kDummyPayloadKey = 0x5Au;

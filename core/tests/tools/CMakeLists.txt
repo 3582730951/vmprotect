@@ -81,6 +81,79 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/tools/artifact_audit.py")
     )
   endif()
 
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/redteam_report_contract_test.py")
+    add_test(
+      NAME redteam_report_contract_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/redteam_report_contract_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/artifact_audit_matching_test.py")
+    add_test(
+      NAME artifact_audit_matching_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/artifact_audit_matching_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/redteam_harness_integration_test.py")
+    add_test(
+      NAME redteam_harness_integration_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/redteam_harness_integration_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/gate_redteam_report_test.py")
+    add_test(
+      NAME gate_redteam_report_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/gate_redteam_report_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/run_redteam_runtime_probes_test.py")
+    add_test(
+      NAME run_redteam_runtime_probes_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/run_redteam_runtime_probes_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/protect_and_evaluate_redteam_gate_test.py")
+    add_test(
+      NAME protect_and_evaluate_redteam_gate_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/protect_and_evaluate_redteam_gate_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/redteam_perf_compare_test.py")
+    add_test(
+      NAME redteam_perf_compare_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/redteam_perf_compare_test.py"
+    )
+  endif()
+
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/redteam_perf_smoke_collect_test.py")
+    add_test(
+      NAME redteam_perf_smoke_collect_test
+      COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/redteam_perf_smoke_collect_test.py"
+    )
+  endif()
+
+  if(TARGET eippf_redteam_host_probe)
+    add_test(
+      NAME redteam_host_probe_self_test
+      COMMAND eippf_redteam_host_probe --self-test
+    )
+
+    if(EXISTS "${CMAKE_SOURCE_DIR}/tests/tools/redteam_runtime_probe_test.py")
+      add_test(
+        NAME redteam_runtime_probe_test
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tests/tools/redteam_runtime_probe_test.py"
+      )
+      set_tests_properties(redteam_runtime_probe_test PROPERTIES
+        ENVIRONMENT "EIPPF_REDTEAM_HOST_PROBE=$<TARGET_FILE:eippf_redteam_host_probe>"
+      )
+    endif()
+  endif()
+
   if(TARGET eippf_runtime)
     add_executable(android_so_pipeline_smoke_test
       android_so_pipeline_smoke_test.cpp

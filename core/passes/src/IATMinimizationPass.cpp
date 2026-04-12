@@ -16,13 +16,14 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 
 namespace {
 
 constexpr std::uint64_t kFnv1aOffset = 14695981039346656037ull;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
-constexpr llvm::StringLiteral kResolverFunctionName("eippf_resolve_api");
+constexpr llvm::StringLiteral kResolverFunctionName("eippf_ra0");
 
 struct RewriteSite {
   llvm::CallBase* call_base = nullptr;
@@ -39,7 +40,108 @@ std::uint64_t fnv1a_hash(llvm::StringRef text) {
   return hash;
 }
 
-bool is_supported_direct_external_target(llvm::CallBase& call_base, llvm::Function*& direct_callee) {
+bool is_supported_named_api(llvm::StringRef callee_name, llvm::ArrayRef<llvm::StringLiteral> allowlist) {
+  for (const llvm::StringLiteral candidate : allowlist) {
+    if (callee_name == candidate) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_runtime_resolver_supported_api(const llvm::Module& module, llvm::StringRef callee_name) {
+  static constexpr llvm::StringLiteral kWindowsAllowlist[] = {
+      "Sleep",
+      "VirtualAlloc",
+      "VirtualFree",
+      "VirtualProtect",
+      "LoadLibraryA",
+      "LoadLibraryW",
+      "GetProcAddress",
+      "GetModuleHandleA",
+      "GetModuleHandleW",
+      "GetModuleFileNameA",
+      "GetModuleFileNameW",
+      "GetLastError",
+      "SetLastError",
+      "CreateFileA",
+      "ReadFile",
+      "WriteFile",
+      "CloseHandle",
+      "HeapAlloc",
+      "HeapFree",
+      "ExitProcess",
+      "TerminateProcess",
+      "RtlMoveMemory",
+      "RtlFillMemory",
+      "MessageBoxA",
+      "MessageBoxW",
+      "malloc",
+      "free",
+      "calloc",
+      "realloc",
+      "memcpy",
+      "memmove",
+      "memset",
+      "memcmp",
+      "getenv",
+      "strtol",
+      "puts",
+      "printf",
+  };
+
+  static constexpr llvm::StringLiteral kPosixAllowlist[] = {
+      "malloc",
+      "free",
+      "calloc",
+      "realloc",
+      "memcpy",
+      "memmove",
+      "memset",
+      "memcmp",
+      "strlen",
+      "strnlen",
+      "strcmp",
+      "strncmp",
+      "strchr",
+      "strrchr",
+      "strstr",
+      "getenv",
+      "strtol",
+      "usleep",
+      "printf",
+      "fprintf",
+      "snprintf",
+      "puts",
+      "fputs",
+      "fopen",
+      "fclose",
+      "fread",
+      "fwrite",
+      "open",
+      "close",
+      "read",
+      "write",
+      "mmap",
+      "munmap",
+      "mprotect",
+      "dlopen",
+      "dlsym",
+      "dlclose",
+      "abort",
+      "exit",
+  };
+
+  const llvm::Triple triple(module.getTargetTriple());
+  if (triple.isOSWindows()) {
+    return is_supported_named_api(callee_name, kWindowsAllowlist);
+  }
+  return is_supported_named_api(callee_name, kPosixAllowlist);
+}
+
+bool is_supported_direct_external_target(const llvm::Module& module,
+                                         llvm::CallBase& call_base,
+                                         llvm::Function*& direct_callee) {
   llvm::Value* called_operand = call_base.getCalledOperand();
   if (called_operand == nullptr) {
     return false;
@@ -53,10 +155,13 @@ bool is_supported_direct_external_target(llvm::CallBase& call_base, llvm::Functi
   if (!callee->isDeclaration() || callee->isIntrinsic()) {
     return false;
   }
-  if (callee->getName().startswith("llvm.")) {
+  if (callee->getName().starts_with("llvm.")) {
     return false;
   }
   if (callee->hasLocalLinkage() || callee->getName() == kResolverFunctionName) {
+    return false;
+  }
+  if (!is_runtime_resolver_supported_api(module, callee->getName())) {
     return false;
   }
 
@@ -84,7 +189,7 @@ llvm::SmallVector<RewriteSite, 64> collect_rewrite_sites(llvm::Module& module) {
         }
 
         llvm::Function* callee = nullptr;
-        if (!is_supported_direct_external_target(*call_base, callee)) {
+        if (!is_supported_direct_external_target(module, *call_base, callee)) {
           continue;
         }
 
@@ -149,13 +254,15 @@ bool rewrite_call_site(const RewriteSite& site, llvm::FunctionCallee resolver) {
   resolver_call->setDebugLoc(site.call_base->getDebugLoc());
   emit_fail_closed_guard(*site.call_base, resolver_call);
 
+  llvm::IRBuilder<> replacement_builder(site.call_base);
   llvm::Value* replacement_callee = resolver_call;
   llvm::Type* expected_callee_type = site.call_base->getCalledOperand()->getType();
   if (replacement_callee->getType() != expected_callee_type) {
     if (!expected_callee_type->isPointerTy()) {
       return false;
     }
-    replacement_callee = builder.CreateBitCast(replacement_callee, expected_callee_type, "eippf.api.fnptr");
+    replacement_callee = replacement_builder.CreateBitCast(
+        replacement_callee, expected_callee_type, "eippf.api.fnptr");
   }
 
   site.call_base->setCalledOperand(replacement_callee);

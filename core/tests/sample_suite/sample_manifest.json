@@ -15,8 +15,15 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_WINDOWS_EXE"
       ],
+      "runtime_probe": {
+        "required": true,
+        "host": "windows",
+        "hold_ms": 3000,
+        "startup_delay_ms": 300,
+        "guard_exit_code": 120
+      },
       "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Windows user-mode executable lane.",
-      "known_limits": "No Authenticode signing and no runtime deployment verification."
+      "known_limits": "CI runs runtime attach-and-dump redteam probing for this lane; no Authenticode signing and no production deployment verification."
     },
     {
       "id": "windows_dll",
@@ -32,6 +39,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_WINDOWS_DLL"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "none",
+        "reason": "non_entrypoint_artifact"
+      },
       "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Windows user-mode shared-library lane.",
       "known_limits": "No Authenticode signing and no in-process loader compatibility verification."
     },
@@ -49,6 +61,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_WINDOWS_SYS"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "none",
+        "reason": "kernel_artifact_not_host_runnable"
+      },
       "validation_scope": "Artifact and lane-policy evaluation for Windows driver target using SYS-shaped sample.",
       "known_limits": "No real driver signing, no kernel loading, and no production HVCI deployment validation."
     },
@@ -66,8 +83,15 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_LINUX_ELF"
       ],
+      "runtime_probe": {
+        "required": true,
+        "host": "linux",
+        "hold_ms": 3000,
+        "startup_delay_ms": 300,
+        "guard_exit_code": 120
+      },
       "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Linux ELF executable lane.",
-      "known_limits": "No runtime deployment hardening verification beyond static artifact checks."
+      "known_limits": "CI runs runtime attach-and-dump redteam probing for this lane; broader distro/runtime deployment coverage is still out of scope."
     },
     {
       "id": "linux_so",
@@ -83,6 +107,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_LINUX_SO"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "none",
+        "reason": "non_entrypoint_artifact"
+      },
       "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Linux shared-library lane.",
       "known_limits": "No runtime linker compatibility validation across full distro matrix."
     },
@@ -100,6 +129,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_LINUX_KO"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "none",
+        "reason": "kernel_artifact_not_host_runnable"
+      },
       "validation_scope": "Artifact and lane-policy evaluation for Linux kernel-module target using KO-shaped sample.",
       "known_limits": "No real module signing, no vermagic/runtime loading validation on production kernels."
     },
@@ -117,6 +151,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_ANDROID_SO"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "android",
+        "reason": "device_lab_required"
+      },
       "validation_scope": "Artifact mutation and static reverse-visibility evaluation for Android native shared-library lane.",
       "known_limits": "No on-device runtime hook/frida resistance validation in this sample run."
     },
@@ -134,6 +173,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_ANDROID_DEX"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "android",
+        "reason": "device_lab_required"
+      },
       "validation_scope": "DEX bundle protection and static reverse-visibility evaluation for Android DEX lane.",
       "known_limits": "No full APK packaging, no app-store distribution, and no runtime app behavior verification."
     },
@@ -151,6 +195,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_ANDROID_KO"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "android",
+        "reason": "device_lab_required"
+      },
       "validation_scope": "Artifact and lane-policy evaluation for Android kernel-module target using KO-shaped sample.",
       "known_limits": "No real Android GKI signing/load validation; artifact-level and lane-level checks only."
     },
@@ -168,6 +217,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_IOS_MACHO"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "macos",
+        "reason": "host_probe_backend_pending"
+      },
       "validation_scope": "Artifact and lane-policy evaluation for iOS Mach-O target in App Store safe lane.",
       "known_limits": "No real Apple signing/notarization/store submission verification; artifact and lane checks only."
     },
@@ -185,6 +239,11 @@
       "anchor_strings": [
         "EIPPF_SAMPLE_ANCHOR_SHELL_SCRIPT"
       ],
+      "runtime_probe": {
+        "required": false,
+        "host": "none",
+        "reason": "shell_bundle_static_gate_only"
+      },
       "validation_scope": "Encrypted shell bundle generation and static reverse-visibility evaluation for shell launcher lane.",
       "known_limits": "No full production environment hardening validation for all shell runtime variants."
     }

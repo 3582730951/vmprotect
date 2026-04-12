@@ -34,7 +34,7 @@ bool test_decode_success() {
   }
 
   std::array<std::uint8_t, plain.size()> decoded{};
-  eippf_string_token_decode(decoded.data(), encoded.data(), decoded.size(), key);
+  eippf_sd0(decoded.data(), encoded.data(), decoded.size(), key);
 
   return expect(decoded == plain, "decode helper should restore plaintext bytes");
 }
@@ -45,7 +45,7 @@ bool test_wipe_clears_buffer() {
     buffer[i] = static_cast<std::uint8_t>(i + 1u);
   }
 
-  eippf_string_token_wipe(buffer.data(), buffer.size());
+  eippf_sw0(buffer.data(), buffer.size());
 
   for (std::uint8_t value : buffer) {
     if (value != 0u) {
@@ -60,11 +60,11 @@ bool test_empty_and_boundary_inputs() {
   std::array<std::uint8_t, 4> dest = {0x11u, 0x22u, 0x33u, 0x44u};
   const std::array<std::uint8_t, 4> baseline = dest;
 
-  eippf_string_token_decode(nullptr, src.data(), src.size(), 0x31u);
-  eippf_string_token_decode(dest.data(), nullptr, src.size(), 0x31u);
-  eippf_string_token_decode(dest.data(), src.data(), 0u, 0x31u);
-  eippf_string_token_wipe(nullptr, src.size());
-  eippf_string_token_wipe(dest.data(), 0u);
+  eippf_sd0(nullptr, src.data(), src.size(), 0x31u);
+  eippf_sd0(dest.data(), nullptr, src.size(), 0x31u);
+  eippf_sd0(dest.data(), src.data(), 0u, 0x31u);
+  eippf_sw0(nullptr, src.size());
+  eippf_sw0(dest.data(), 0u);
 
   return expect(dest == baseline, "empty/boundary helper inputs must not corrupt destination bytes");
 }

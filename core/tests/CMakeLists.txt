@@ -288,6 +288,23 @@ eippf_apply_common_compile_options(environment_attestation_test)
 
 add_test(NAME runtime_environment_attestation_test COMMAND environment_attestation_test)
 
+add_executable(runtime_init_smoke_test
+  runtime/attestation/runtime_init_smoke_test.cpp
+)
+
+target_link_libraries(runtime_init_smoke_test
+  PRIVATE
+    eippf_runtime
+)
+
+target_include_directories(runtime_init_smoke_test PRIVATE
+  "${CMAKE_SOURCE_DIR}/runtime/include"
+)
+
+eippf_apply_common_compile_options(runtime_init_smoke_test)
+
+add_test(NAME runtime_init_smoke_test COMMAND runtime_init_smoke_test)
+
 add_executable(gpu_graphics_coverage_test
   runtime/gpu/gpu_graphics_coverage_test.cpp
 )

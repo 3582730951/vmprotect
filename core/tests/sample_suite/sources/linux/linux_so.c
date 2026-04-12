@@ -30,6 +30,6 @@ static int32_t so_mix(int32_t input) {
   return value;
 }
 
-EIPPF_SO_EXPORT int32_t sample_linux_so_entry(int32_t input) {
+EIPPF_SO_EXPORT int32_t p0(int32_t input) {
   return so_mix(input);
 }

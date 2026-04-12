@@ -30,6 +30,6 @@ static int32_t android_mix(int32_t value) {
   return acc;
 }
 
-EIPPF_ANDROID_EXPORT int32_t sample_android_so_entry(int32_t value) {
+EIPPF_ANDROID_EXPORT int32_t p0(int32_t value) {
   return android_mix(value);
 }

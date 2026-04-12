@@ -24,6 +24,7 @@
 namespace {
 
 constexpr llvm::StringLiteral kCriticalAnnotation("drm_critical_ip");
+constexpr llvm::StringLiteral kRouteAttribute("eippf.route");
 constexpr llvm::StringLiteral kAppliedMarkerName("__eippf_mba_obfuscation_applied");
 constexpr std::uint64_t kFnv1aOffset = 1469598103934665603ull;
 constexpr std::uint64_t kFnv1aPrime = 1099511628211ull;
@@ -501,9 +502,14 @@ bool insert_opaque_predicate(llvm::Function& function, std::mt19937_64& rng) {
   return true;
 }
 
-bool should_skip_function(const llvm::Function& function,
-                          const llvm::SmallPtrSetImpl<llvm::Function*>& critical_functions) {
-  return critical_functions.contains(&function) || function.hasFnAttribute(kCriticalAnnotation);
+bool should_process_function(const llvm::Function& function,
+                             const llvm::SmallPtrSetImpl<llvm::Function*>& critical_functions) {
+  const llvm::Attribute route_attribute = function.getFnAttribute(kRouteAttribute);
+  if (critical_functions.contains(&function) || function.hasFnAttribute(kCriticalAnnotation)) {
+    return true;
+  }
+  return route_attribute.isValid() && route_attribute.isStringAttribute() &&
+         route_attribute.getValueAsString() == "vm";
 }
 
 bool mark_pass_applied(llvm::Module& module) {
@@ -535,7 +541,7 @@ llvm::PreservedAnalyses MBAObfuscationPass::run(llvm::Module& module, llvm::Modu
     if (function.isDeclaration() || function.empty()) {
       continue;
     }
-    if (should_skip_function(function, critical_functions)) {
+    if (!should_process_function(function, critical_functions)) {
       continue;
     }
 
