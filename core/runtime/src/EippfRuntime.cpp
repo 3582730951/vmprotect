@@ -693,6 +693,56 @@ void* resolve_symbol_in_module(std::uintptr_t module_base,
   return nullptr;
 }
 
+#if defined(__ANDROID__)
+struct LinuxLookupContext {
+  std::uint64_t module_hash = 0u;
+  std::uint64_t symbol_hash = 0u;
+  void* result = nullptr;
+};
+
+int linux_lookup_callback(dl_phdr_info* info, std::size_t, void* userdata) noexcept {
+  auto* ctx = static_cast<LinuxLookupContext*>(userdata);
+  if (ctx == nullptr || info == nullptr || ctx->result != nullptr) {
+    return 1;
+  }
+
+  const char* module_path = info->dlpi_name;
+  if (module_path == nullptr || module_path[0] == '\0') {
+    return 0;
+  }
+
+  const char* module_name = basename_ptr(module_path);
+  if (module_name == nullptr || fnv1a_hash_cstr(module_name) != ctx->module_hash) {
+    return 0;
+  }
+
+  const ElfW(Phdr)* dynamic_header = nullptr;
+  for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
+    if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+      dynamic_header = &info->dlpi_phdr[i];
+      break;
+    }
+  }
+  if (dynamic_header == nullptr) {
+    return 0;
+  }
+
+  const auto* dynamic =
+      reinterpret_cast<const ElfW(Dyn)*>(static_cast<std::uintptr_t>(info->dlpi_addr) +
+                                         dynamic_header->p_vaddr);
+  ctx->result =
+      resolve_symbol_in_module(static_cast<std::uintptr_t>(info->dlpi_addr), dynamic, ctx->symbol_hash);
+  return ctx->result != nullptr ? 1 : 0;
+}
+
+void* resolve_symbol_linux(const char* module_name, std::uint64_t symbol_hash) noexcept {
+  LinuxLookupContext context{};
+  context.module_hash = fnv1a_hash_cstr(module_name);
+  context.symbol_hash = symbol_hash;
+  ::dl_iterate_phdr(linux_lookup_callback, &context);
+  return context.result;
+}
+#else
 const r_debug* runtime_debug_state() noexcept {
   for (const ElfW(Dyn)* entry = _DYNAMIC; entry != nullptr && entry->d_tag != DT_NULL; ++entry) {
     if (entry->d_tag == DT_DEBUG && entry->d_un.d_ptr != 0u) {
@@ -733,6 +783,7 @@ void* resolve_symbol_linux(const char* module_name, std::uint64_t symbol_hash) n
   }
   return nullptr;
 }
+#endif
 
 #endif
 
