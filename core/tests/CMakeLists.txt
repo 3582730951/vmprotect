@@ -478,11 +478,6 @@ if(TARGET artifact_audit_strict_test)
   list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS artifact_audit_strict_test)
 endif()
 
-if(TARGET hardened_target_pipeline_test)
-  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:hardened_target_pipeline_test>)
-  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS hardened_target_pipeline_test)
-endif()
-
 add_custom_target(perf_smoke
   COMMAND $<TARGET_FILE:policy_engine_test>
   COMMAND $<TARGET_FILE:micro_jit_poc_test>

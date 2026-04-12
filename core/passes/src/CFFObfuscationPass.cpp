@@ -2,7 +2,9 @@
 
 #include <cassert>
 #include <cstdint>
+#include <optional>
 
+#include "llvm/Config/llvm-config.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -215,8 +217,9 @@ void demote_phi_nodes_to_stack(llvm::Function& function, llvm::Instruction* allo
   if (alloca_insertion_point == nullptr) {
     return;
   }
-
+#if LLVM_VERSION_MAJOR >= 19
   const std::optional<llvm::BasicBlock::iterator> alloca_point = alloca_insertion_point->getIterator();
+#endif
 
   llvm::SmallVector<llvm::PHINode*, 32> phi_nodes;
   for (llvm::BasicBlock& block : function) {
@@ -230,7 +233,11 @@ void demote_phi_nodes_to_stack(llvm::Function& function, llvm::Instruction* allo
   }
 
   for (llvm::PHINode* phi : phi_nodes) {
+#if LLVM_VERSION_MAJOR >= 19
     llvm::DemotePHIToStack(phi, alloca_point);
+#else
+    llvm::DemotePHIToStack(phi, alloca_insertion_point);
+#endif
   }
 }
 
