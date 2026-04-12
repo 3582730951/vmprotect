@@ -443,11 +443,6 @@ foreach(_safe_perf_target IN ITEMS
   endif()
 endforeach()
 
-if(TARGET post_link_mutator_smoke_test)
-  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:post_link_mutator_smoke_test>)
-  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS post_link_mutator_smoke_test)
-endif()
-
 if(TARGET dex_toolchain_smoke_test)
   list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:dex_toolchain_smoke_test>)
   list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS dex_toolchain_smoke_test)
@@ -471,11 +466,6 @@ endif()
 if(TARGET shell_launcher_perf_smoke_test)
   list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:shell_launcher_perf_smoke_test>)
   list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS shell_launcher_perf_smoke_test)
-endif()
-
-if(TARGET artifact_audit_strict_test)
-  list(APPEND EIPPF_EXTRA_PERF_COMMANDS COMMAND $<TARGET_FILE:artifact_audit_strict_test>)
-  list(APPEND EIPPF_EXTRA_PERF_DEPENDS DEPENDS artifact_audit_strict_test)
 endif()
 
 add_custom_target(perf_smoke

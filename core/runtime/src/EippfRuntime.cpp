@@ -25,14 +25,19 @@
 #include "bootstrap/os_hal_windows.hpp"
 #else
 #include <cerrno>
+#if defined(__APPLE__) && defined(__MACH__)
+#include <TargetConditionals.h>
+#endif
 #if defined(__linux__)
 #include <fcntl.h>
 #include <sys/syscall.h>
 #endif
 #if defined(__linux__) || (defined(__APPLE__) && defined(__MACH__))
 #include <sys/mman.h>
-#include <sys/ptrace.h>
 #include <sys/types.h>
+#endif
+#if defined(__APPLE__) && defined(__MACH__) && (!defined(TARGET_OS_IPHONE) || TARGET_OS_IPHONE == 0)
+#include <sys/ptrace.h>
 #endif
 #if defined(__linux__)
 #include <elf.h>
@@ -272,9 +277,13 @@ bool anti_tamper_check_passed() noexcept {
 #endif
 #elif defined(__APPLE__) && defined(__MACH__)
 #if defined(__x86_64__) || defined(__i386__) || defined(__arm64__) || defined(__aarch64__)
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+  return true;
+#else
   errno = 0;
   const int ptrace_result = ::ptrace(PT_DENY_ATTACH, 0, static_cast<caddr_t>(nullptr), 0);
   return ptrace_result != -1;
+#endif
 #else
   return false;
 #endif

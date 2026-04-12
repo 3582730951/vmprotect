@@ -22,8 +22,6 @@
 #include <linux/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
-#elif defined(__APPLE__)
-#include <sys/ptrace.h>
 #endif
 
 namespace {
